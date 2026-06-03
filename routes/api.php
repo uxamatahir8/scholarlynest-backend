@@ -9,6 +9,8 @@ use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\TagController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\NewsletterController;
+use App\Http\Controllers\FaqController;
+use App\Http\Controllers\GlobalSearchController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -23,6 +25,11 @@ use Illuminate\Support\Facades\Route;
 
 // Public Dynamic CMS Pages Fetching
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
+Route::get('/faqs', [FaqController::class, 'index']);
+
+// Unified Global Search
+Route::get('/search/preview', [GlobalSearchController::class, 'preview']);
+Route::get('/search/full', [GlobalSearchController::class, 'full']);
 
 // Public Contact Page Settings & Submission
 Route::get('/contact-settings', [ContactController::class, 'getSettings']);
@@ -34,8 +41,10 @@ Route::get('/newsletter/unsubscribe/{token}', [NewsletterController::class, 'uns
 
 // Public Magazines & Articles Read Routes
 Route::get('/magazines', [MagazineController::class, 'index']);
+Route::get('/magazines/latest', [MagazineController::class, 'latest']);
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
+Route::get('/articles/latest', [ArticleController::class, 'latest']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
@@ -90,7 +99,13 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/newsletter/send', [NewsletterController::class, 'sendCampaign'])->middleware('permission:newsletters.send');
  
         // CMS Content Management (Restricted to Admin / Super Admin)
-        Route::put('/cms/{slug}', [CmsPageController::class, 'update']);
+        Route::put('/cms/{slug}', [CmsPageController::class, 'update'])->middleware('permission:settings.manage');
+
+        // FAQ Management (Restricted to Admin / Super Admin)
+        Route::get('/faqs', [FaqController::class, 'adminIndex'])->middleware('permission:settings.manage');
+        Route::post('/faqs', [FaqController::class, 'store'])->middleware('permission:settings.manage');
+        Route::put('/faqs/{id}', [FaqController::class, 'update'])->middleware('permission:settings.manage');
+        Route::delete('/faqs/{id}', [FaqController::class, 'destroy'])->middleware('permission:settings.manage');
  
         // Magazines & Custom Pages (Restricted to Admin / Super Admin)
         Route::post('/magazines', [MagazineController::class, 'store'])->middleware('permission:magazines.create');

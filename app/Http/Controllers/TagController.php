@@ -16,13 +16,27 @@ class TagController extends Controller
     public function index(Request $request): JsonResponse
     {
         $magazineId = $request->query('magazine_id');
+        $search = $request->query('search');
+        $paginate = $request->query('paginate');
+        $limit = $request->query('limit', 12);
+
         $query = Tag::with('magazine:id,title');
 
-        if ($magazineId) {
+        if ($magazineId && $magazineId !== 'all') {
             $query->where('magazine_id', $magazineId);
         }
 
-        $tags = $query->orderBy('name', 'asc')->get();
+        if ($search) {
+            $query->where('name', 'like', '%' . $search . '%');
+        }
+
+        $query->orderBy('name', 'asc');
+
+        if ($paginate) {
+            $tags = $query->paginate($limit);
+        } else {
+            $tags = $query->get();
+        }
 
         return response()->json($tags);
     }

@@ -168,4 +168,71 @@ class MagazineTest extends TestCase
         $this->assertNotNull($article->pdf_path);
         $this->assertStringContainsString('storage/articles/scholarlynest_article_', $article->pdf_path);
     }
+
+    /**
+     * Test fetching latest magazines.
+     */
+    public function test_can_fetch_latest_magazines(): void
+    {
+        // Create 12 magazines to verify the limit of 10 and latest order
+        for ($i = 1; $i <= 12; $i++) {
+            $magazine = Magazine::create([
+                'title' => "Magazine $i",
+                'slug' => "magazine-$i",
+                'cover_image' => "https://example.com/cover-$i.png",
+                'description' => "Description $i",
+            ]);
+            $magazine->created_at = now()->addMinutes($i);
+            $magazine->save();
+        }
+
+        $response = $this->getJson('/api/magazines/latest');
+
+        $response->assertStatus(200)
+                 ->assertJsonCount(10, 'data')
+                 ->assertJsonPath('data.0.title', 'Magazine 12')
+                 ->assertJsonPath('data.9.title', 'Magazine 3');
+    }
+
+    /**
+     * Test fetching latest articles.
+     */
+    public function test_can_fetch_latest_articles(): void
+    {
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $user = User::factory()->create();
+
+        // Create 8 approved articles to verify the limit of 6 and latest order
+        for ($i = 1; $i <= 8; $i++) {
+            $article = Article::create([
+                'magazine_id' => $magazine->id,
+                'user_id' => $user->id,
+                'title' => "Article $i",
+                'slug' => "article-$i",
+                'abstract' => "Abstract $i",
+                'full_text' => "Full Text $i",
+                'status' => 'approved'
+            ]);
+            $article->created_at = now()->addMinutes($i);
+            $article->save();
+        }
+
+        // Create a pending article which should not be returned
+        Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Pending Article',
+            'slug' => 'pending-article',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full Text',
+            'status' => 'pending'
+        ]);
+
+        $response = $this->getJson('/api/articles/latest');
+
+        $response->assertStatus(200)
+                 ->assertJsonCount(6, 'data')
+                 ->assertJsonPath('data.0.title', 'Article 8')
+                 ->assertJsonPath('data.5.title', 'Article 3');
+    }
 }

@@ -53,6 +53,26 @@ class ArticleController extends Controller
     }
 
     /**
+     * GET /api/articles/latest
+     * Fetch a list of recently approved articles across all magazines.
+     */
+    public function latest(Request $request): JsonResponse
+    {
+        $limit = $request->integer('limit', 6);
+        
+        $articles = Article::where('status', 'approved')
+            ->with(['magazine:id,title,slug', 'user:id,name'])
+            ->latest()
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $articles
+        ]);
+    }
+
+    /**
      * POST /api/articles/{id}/click
      * Track a click on an article.
      */

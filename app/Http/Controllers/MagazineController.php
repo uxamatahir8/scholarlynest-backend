@@ -36,6 +36,25 @@ class MagazineController extends Controller
     }
 
     /**
+     * GET /api/magazines/latest
+     * Returns the latest 10 magazines, ordered explicitly by creation date.
+     */
+    public function latest(Request $request): JsonResponse
+    {
+        $magazines = Magazine::withCount(['articles' => function ($query) {
+            $query->where('status', 'approved');
+        }])
+        ->latest()
+        ->limit(10)
+        ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $magazines
+        ]);
+    }
+
+    /**
      * GET /api/magazines/{slug}
      * Returns the magazine shell along with sorted magazine_pages.
      */

@@ -6,6 +6,7 @@ use App\Models\CmsPage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class CmsPageController extends Controller
 {
@@ -14,9 +15,22 @@ class CmsPageController extends Controller
      */
     public function show(string $slug): JsonResponse
     {
-        $page = CmsPage::where('slug', $slug)
-            ->where('is_active', true)
-            ->first();
+        $cacheKey = "cms_page_{$slug}";
+        $page = null;
+
+        try {
+            $page = Cache::tags(['cms_pages'])->remember($cacheKey, 3600, function () use ($slug) {
+                return CmsPage::where('slug', $slug)
+                    ->where('is_active', true)
+                    ->first();
+            });
+        } catch (\BadMethodCallException $e) {
+            $page = Cache::remember($cacheKey, 3600, function () use ($slug) {
+                return CmsPage::where('slug', $slug)
+                    ->where('is_active', true)
+                    ->first();
+            });
+        }
 
         if (!$page) {
             return response()->json([
@@ -32,9 +46,9 @@ class CmsPageController extends Controller
      */
     public function update(Request $request, string $slug): JsonResponse
     {
-        // 1. Strict RBAC Enforcement (Only admin / super admin)
+        // 1. Strict RBAC Enforcement (Only admin / super admin / settings managers)
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasPermission('settings.manage'))) {
             return response()->json([
                 'message' => 'Unauthorized. Super Admin or Admin role privileges are required.'
             ], 403);
@@ -43,22 +57,21 @@ class CmsPageController extends Controller
         // 2. Strict Input Validation
         $validatedData = $request->validate([
             'title' => 'sometimes|required|string|max:255',
-            'content_html' => 'required|string',
+            'content_html' => 'sometimes|required|string',
+            'content' => 'sometimes|required|string',
             'content_text' => 'sometimes|nullable|string',
             'is_active' => 'sometimes|boolean',
         ]);
 
-        $page = CmsPage::where('slug', $slug)->first();
-        if (!$page) {
+        $htmlContent = $validatedData['content_html'] ?? $validatedData['content'] ?? null;
+
+        if ($htmlContent === null) {
             return response()->json([
-                'message' => 'The targeted CMS page does not exist.'
-            ], 404);
+                'message' => 'The content_html or content field is required.'
+            ], 422);
         }
 
         // 3. Automated HTML to Plain-Text Conversion Fallback
-        $htmlContent = $validatedData['content_html'];
-        
-        // If content_text is omitted or empty, generate a clean text version using strip_tags
         $textContent = $validatedData['content_text'] 
             ?? trim(preg_replace('/\s+/', ' ', strip_tags($htmlContent)));
 
@@ -66,15 +79,26 @@ class CmsPageController extends Controller
         // We strip <script> blocks completely for robust security.
         $sanitizedHtml = preg_replace('/<script\b[^>]*>(.*?)<\/script>/is', '', $htmlContent);
 
-        // Update record
-        $page->update([
-            'title' => $validatedData['title'] ?? $page->title,
-            'content_html' => $sanitizedHtml,
-            'content_text' => $textContent,
-            'is_active' => $validatedData['is_active'] ?? $page->is_active,
-        ]);
+        // 5. Upsert or update record
+        $page = CmsPage::updateOrCreate(
+            ['slug' => $slug],
+            [
+                'title' => $validatedData['title'] ?? ($slug === 'editorial-board' ? 'Editorial Board' : ucfirst($slug)),
+                'content_html' => $sanitizedHtml,
+                'content_text' => $textContent,
+                'is_active' => $validatedData['is_active'] ?? true,
+            ]
+        );
 
-        Log::info("CMS Page '{$slug}' updated by User ID: {$user->id} ({$user->email})");
+        // 6. Flush Cache
+        $cacheKey = "cms_page_{$slug}";
+        try {
+            Cache::tags(['cms_pages'])->flush();
+        } catch (\BadMethodCallException $e) {
+            Cache::forget($cacheKey);
+        }
+
+        Log::info("CMS Page '{$slug}' updated/created by User ID: {$user->id} ({$user->email})");
 
         return response()->json([
             'message' => 'CMS Page Content updated successfully.',

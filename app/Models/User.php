@@ -134,7 +134,7 @@ class User extends Authenticatable
 
         // Super Admin has absolute system override
         $roleName = str_replace('_', '-', $role->name);
-        if ($roleName === 'super_admin') {
+        if ($role->name === 'super_admin' || $roleName === 'super-admin') {
             return true;
         }
 

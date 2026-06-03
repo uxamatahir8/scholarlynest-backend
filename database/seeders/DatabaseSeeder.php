@@ -38,7 +38,8 @@ class DatabaseSeeder extends Seeder
                 'settings',
                 'permission_role',
                 'roles',
-                'permissions'
+                'permissions',
+                'faqs'
             ];
 
             foreach ($tables as $table) {
@@ -135,7 +136,9 @@ class DatabaseSeeder extends Seeder
             // 8. CALL MODULE SEEDERS
             // ==========================================
             $this->call(CmsPageSeeder::class);
+            $this->call(EditorialBoardSeeder::class);
             $this->call(MagazineSeeder::class);
+            $this->call(FaqSeeder::class);
 
             try {
                 if (DB::transactionLevel() > 0) {
