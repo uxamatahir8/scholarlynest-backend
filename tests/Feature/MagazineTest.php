@@ -235,4 +235,134 @@ class MagazineTest extends TestCase
                  ->assertJsonPath('data.0.title', 'Article 8')
                  ->assertJsonPath('data.5.title', 'Article 3');
     }
+
+    /**
+     * Test fetching magazine details returns approved articles grouped by month and year.
+     */
+    public function test_magazine_details_returns_grouped_articles(): void
+    {
+        $magazine = Magazine::create(['title' => 'Biology Today', 'slug' => 'biology-today']);
+        $user = User::factory()->create();
+
+        // Create approved articles with specific published_at timestamps
+        $article1 = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Article One',
+            'slug' => 'article-one',
+            'abstract' => 'Abstract 1',
+            'full_text' => 'Full text 1',
+            'status' => 'approved',
+            'published_at' => \Carbon\Carbon::parse('2026-09-15 10:00:00'),
+        ]);
+
+        $article2 = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Article Two',
+            'slug' => 'article-two',
+            'abstract' => 'Abstract 2',
+            'full_text' => 'Full text 2',
+            'status' => 'approved',
+            'published_at' => \Carbon\Carbon::parse('2026-10-20 12:00:00'),
+        ]);
+
+        // Pending article should be filtered out
+        Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Article Pending',
+            'slug' => 'article-pending',
+            'abstract' => 'Abstract P',
+            'full_text' => 'Full text P',
+            'status' => 'pending',
+            'published_at' => \Carbon\Carbon::parse('2026-10-22 12:00:00'),
+        ]);
+
+        $response = $this->getJson("/api/magazines/biology-today");
+
+        $response->assertStatus(200)
+                 ->assertJsonStructure([
+                     'grouped_articles' => [
+                         'Sep 2026',
+                         'Oct 2026',
+                     ]
+                 ])
+                 ->assertJsonCount(1, 'grouped_articles.Sep 2026')
+                 ->assertJsonCount(1, 'grouped_articles.Oct 2026')
+                 ->assertJsonPath('grouped_articles.Sep 2026.0.slug', 'article-one')
+                 ->assertJsonPath('grouped_articles.Oct 2026.0.slug', 'article-two');
+    }
+
+    /**
+     * Test fetching article details returns correct previous/next article slugs.
+     */
+    public function test_article_details_returns_adjacent_articles(): void
+    {
+        $magazine = Magazine::create(['title' => 'Physics Today', 'slug' => 'physics-today']);
+        $user = User::factory()->create();
+
+        // Create three approved articles chronologically ordered
+        $art1 = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'First Article',
+            'slug' => 'first-article',
+            'abstract' => 'Abstract 1',
+            'full_text' => 'Full text 1',
+            'status' => 'approved',
+            'published_at' => \Carbon\Carbon::parse('2026-01-01 10:00:00'),
+        ]);
+
+        $art2 = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Second Article',
+            'slug' => 'second-article',
+            'abstract' => 'Abstract 2',
+            'full_text' => 'Full text 2',
+            'status' => 'approved',
+            'published_at' => \Carbon\Carbon::parse('2026-02-01 10:00:00'),
+        ]);
+
+        $art3 = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Third Article',
+            'slug' => 'third-article',
+            'abstract' => 'Abstract 3',
+            'full_text' => 'Full text 3',
+            'status' => 'approved',
+            'published_at' => \Carbon\Carbon::parse('2026-03-01 10:00:00'),
+        ]);
+
+        // Request second article - should have first as previous and third as next
+        $response = $this->getJson("/api/articles/second-article");
+
+        $response->assertStatus(200)
+                 ->assertJsonPath('article.previous_article_slug', 'first-article')
+                 ->assertJsonPath('article.next_article_slug', 'third-article')
+                 ->assertJsonPath('article.previous_article_title', 'First Article')
+                 ->assertJsonPath('article.next_article_title', 'Third Article')
+                 ->assertJsonPath('previous_article_slug', 'first-article')
+                 ->assertJsonPath('next_article_slug', 'third-article')
+                 ->assertJsonPath('previous_article_title', 'First Article')
+                 ->assertJsonPath('next_article_title', 'Third Article');
+
+        // Request first article - should have null as previous and second as next
+        $responseFirst = $this->getJson("/api/articles/first-article");
+        $responseFirst->assertStatus(200)
+                      ->assertJsonPath('article.previous_article_slug', null)
+                      ->assertJsonPath('article.next_article_slug', 'second-article')
+                      ->assertJsonPath('article.previous_article_title', null)
+                      ->assertJsonPath('article.next_article_title', 'Second Article');
+
+        // Request third article - should have second as previous and null as next
+        $responseThird = $this->getJson("/api/articles/third-article");
+        $responseThird->assertStatus(200)
+                      ->assertJsonPath('article.previous_article_slug', 'second-article')
+                      ->assertJsonPath('article.next_article_slug', null)
+                      ->assertJsonPath('article.previous_article_title', 'Second Article')
+                      ->assertJsonPath('article.next_article_title', null);
+    }
 }

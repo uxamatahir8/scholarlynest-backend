@@ -24,6 +24,14 @@ class Article extends Model
         'rejection_reason',
         'clicks',
         'impressions',
+        'published_at',
+        'seo_title',
+        'seo_description',
+        'seo_keywords',
+    ];
+
+    protected $casts = [
+        'published_at' => 'datetime',
     ];
 
     /**

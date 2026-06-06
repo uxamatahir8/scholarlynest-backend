@@ -17,6 +17,9 @@ class Magazine extends Model
         'cover_image',
         'description',
         'about_text',
+        'seo_title',
+        'seo_description',
+        'seo_keywords',
     ];
 
     /**

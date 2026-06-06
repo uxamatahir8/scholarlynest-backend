@@ -99,6 +99,11 @@ class DatabaseSeeder extends Seeder
                 ['name' => 'newsletters.create', 'module' => 'newsletters', 'description' => 'Create newsletter campaigns'],
                 ['name' => 'newsletters.send', 'module' => 'newsletters', 'description' => 'Send newsletter campaigns'],
                 ['name' => 'newsletters.delete', 'module' => 'newsletters', 'description' => 'Delete newsletter campaigns'],
+
+                // SEO module
+                ['name' => 'seo.articles', 'module' => 'seo', 'description' => 'Manage SEO fields for articles'],
+                ['name' => 'seo.magazines', 'module' => 'seo', 'description' => 'Manage SEO fields for magazines'],
+                ['name' => 'seo.cms-pages', 'module' => 'seo', 'description' => 'Manage SEO fields for CMS pages'],
             ];
 
             foreach ($permissionsData as $p) {

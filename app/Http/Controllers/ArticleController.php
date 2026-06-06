@@ -25,7 +25,7 @@ class ArticleController extends Controller
     public function show(string $slug): JsonResponse
     {
         $article = Article::where('slug', $slug)
-            ->with(['magazine:id,title,slug', 'user:id,name,email,created_at', 'tags'])
+            ->with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags'])
             ->first();
 
         if (!$article) {
@@ -46,9 +46,51 @@ class ArticleController extends Controller
             'member_since' => $article->user->created_at->format('M Y'),
         ];
 
+        // Fetch adjacent articles
+        $publishedAt = $article->published_at ?? $article->created_at;
+
+        $previousArticle = Article::where('magazine_id', $article->magazine_id)
+            ->where('status', 'approved')
+            ->where(function($query) use ($publishedAt) {
+                $query->where('published_at', '<', $publishedAt)
+                      ->orWhere(function($q) use ($publishedAt) {
+                          $q->whereNull('published_at')->where('created_at', '<', $publishedAt);
+                      });
+            })
+            ->orderBy('published_at', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        $nextArticle = Article::where('magazine_id', $article->magazine_id)
+            ->where('status', 'approved')
+            ->where(function($query) use ($publishedAt) {
+                $query->where('published_at', '>', $publishedAt)
+                      ->orWhere(function($q) use ($publishedAt) {
+                          $q->whereNull('published_at')->where('created_at', '>', $publishedAt);
+                      });
+            })
+            ->orderBy('published_at', 'asc')
+            ->orderBy('created_at', 'asc')
+            ->first();
+
+        $articleData = $article->toArray();
+        $articleData['seo_title'] = $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest');
+        $articleData['seo_description'] = $article->seo_description ?: Str::limit(strip_tags($article->abstract), 160, '');
+        $articleData['seo_keywords'] = $article->seo_keywords ?: $article->tags->pluck('name')->implode(', ');
+        $articleData['og_image'] = ($article->magazine && $article->magazine->cover_image) ? $article->magazine->cover_image : null;
+
+        $articleData['previous_article_slug'] = $previousArticle?->slug;
+        $articleData['next_article_slug'] = $nextArticle?->slug;
+        $articleData['previous_article_title'] = $previousArticle?->title;
+        $articleData['next_article_title'] = $nextArticle?->title;
+
         return response()->json([
-            'article' => $article,
-            'author_metrics' => $authorMetrics
+            'article' => $articleData,
+            'author_metrics' => $authorMetrics,
+            'previous_article_slug' => $previousArticle?->slug,
+            'next_article_slug' => $nextArticle?->slug,
+            'previous_article_title' => $previousArticle?->title,
+            'next_article_title' => $nextArticle?->title,
         ]);
     }
 
@@ -143,6 +185,9 @@ class ArticleController extends Controller
             'full_text' => 'required|string',
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
             'tags' => 'nullable',
+            'seo_title' => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $pdfPath = null;
@@ -153,7 +198,7 @@ class ArticleController extends Controller
 
         $slug = Str::slug($validated['title']) . '-' . Str::random(6);
 
-        $article = Article::create([
+        $articleData = [
             'magazine_id' => $validated['magazine_id'],
             'user_id' => $user->id,
             'title' => $validated['title'],
@@ -162,7 +207,15 @@ class ArticleController extends Controller
             'full_text' => $validated['full_text'],
             'pdf_path' => $pdfPath,
             'status' => 'pending',
-        ]);
+        ];
+
+        if ($user->hasPermission('seo.articles')) {
+            $articleData['seo_title'] = $validated['seo_title'] ?? null;
+            $articleData['seo_description'] = $validated['seo_description'] ?? null;
+            $articleData['seo_keywords'] = $validated['seo_keywords'] ?? null;
+        }
+
+        $article = Article::create($articleData);
 
         $this->syncTags($article, $request->input('tags'));
 
@@ -195,7 +248,27 @@ class ArticleController extends Controller
             $query->where('status', $status);
         }
 
-        $articles = $query->orderBy('created_at', 'desc')->get();
+        if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
+            $query->where('magazine_id', $request->query('magazine_id'));
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->query('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                  ->orWhere('abstract', 'like', "%{$search}%")
+                  ->orWhereHas('user', function ($uq) use ($search) {
+                      $uq->where('name', 'like', "%{$search}%")
+                         ->orWhere('email', 'like', "%{$search}%");
+                  })
+                  ->orWhereHas('tags', function ($tq) use ($search) {
+                      $tq->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        $perPage = $request->integer('per_page', 25);
+        $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
 
         return response()->json($articles);
     }
@@ -227,6 +300,9 @@ class ArticleController extends Controller
             $article->rejection_reason = $validated['rejection_reason'];
         } else {
             $article->rejection_reason = null;
+            if ($validated['status'] === 'approved' && !$article->published_at) {
+                $article->published_at = now();
+            }
         }
 
         // If approved and pdf_path is empty, compile and generate a clean dynamic PDF download
@@ -307,6 +383,9 @@ class ArticleController extends Controller
             'full_text' => 'required|string',
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
             'status' => 'nullable|in:pending,approved,rejected',
+            'seo_title' => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $pdfPath = $article->pdf_path;
@@ -331,7 +410,12 @@ class ArticleController extends Controller
             $status = $validated['status'] ?? $article->status;
         }
 
-        $article->update([
+        $publishedAt = $article->published_at;
+        if ($status === 'approved' && !$publishedAt) {
+            $publishedAt = now();
+        }
+
+        $updateData = [
             'magazine_id' => $validated['magazine_id'],
             'title' => $validated['title'],
             'slug' => $slug,
@@ -339,7 +423,16 @@ class ArticleController extends Controller
             'full_text' => $validated['full_text'],
             'pdf_path' => $pdfPath,
             'status' => $status,
-        ]);
+            'published_at' => $publishedAt,
+        ];
+
+        if ($user->hasPermission('seo.articles')) {
+            $updateData['seo_title'] = $validated['seo_title'] ?? null;
+            $updateData['seo_description'] = $validated['seo_description'] ?? null;
+            $updateData['seo_keywords'] = $validated['seo_keywords'] ?? null;
+        }
+
+        $article->update($updateData);
 
         $this->syncTags($article, $request->input('tags'));
 
@@ -526,5 +619,42 @@ class ArticleController extends Controller
         } catch (\Exception $e) {
             logger()->error("Error sending article newsletter announcement: " . $e->getMessage());
         }
+    }
+
+    /**
+     * PATCH /api/admin/articles/{id}/seo
+     * SEO-only update with ownership checking.
+     */
+    public function updateSeo(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('seo.articles')) {
+            return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
+        }
+
+        $article = Article::findOrFail($id);
+
+        // Ownership-aware scoping:
+        // If user has edit-own (but NOT edit-any), they can only update SEO on their own articles.
+        // If the user has a dedicated SEO role and NO article editing permissions at all, they edit all articles.
+        $hasEditAny = $user->hasPermission('articles.edit-any');
+        $hasEditOwn = $user->hasPermission('articles.edit-own');
+
+        if ($hasEditOwn && !$hasEditAny && $article->user_id !== $user->id) {
+            return response()->json(['message' => 'You can only manage SEO for your own articles.'], 403);
+        }
+
+        $validated = $request->validate([
+            'seo_title'       => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords'    => 'nullable|string|max:500',
+        ]);
+
+        $article->update($validated);
+
+        return response()->json([
+            'message' => 'Article SEO metadata updated successfully.',
+            'article' => $article,
+        ]);
     }
 }

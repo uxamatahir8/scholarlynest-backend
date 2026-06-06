@@ -12,5 +12,14 @@ class ContactMessage extends Model
         'affiliation',
         'subject',
         'message',
+        'status',
     ];
+
+    /**
+     * Get the replies associated with the contact message.
+     */
+    public function replies(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ContactReply::class, 'contact_message_id')->orderBy('created_at', 'asc');
+    }
 }

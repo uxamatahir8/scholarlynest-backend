@@ -150,8 +150,74 @@ class ContactController extends Controller
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
-        $messages = ContactMessage::orderBy('created_at', 'desc')->get();
+        $messages = ContactMessage::with(['replies.user:id,name,email'])
+            ->orderBy('created_at', 'desc')
+            ->get();
         return response()->json($messages);
+    }
+
+    /**
+     * POST /api/admin/contact-messages/{id}/reply
+     * Compose and send a reply email to a contact message, and log it in the database.
+     */
+    public function reply(Request $request, $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        $contactMessage = ContactMessage::findOrFail($id);
+
+        $request->validate([
+            'subject' => 'required|string|max:255',
+            'message' => 'required|string',
+        ]);
+
+        $subject = $request->input('subject');
+        $messageContent = $request->input('message');
+
+        // 1. Save reply in database
+        $reply = \App\Models\ContactReply::create([
+            'contact_message_id' => $contactMessage->id,
+            'user_id' => $user->id,
+            'subject' => $subject,
+            'message' => $messageContent,
+        ]);
+
+        // 2. Update contact message status to 'replied'
+        $contactMessage->update([
+            'status' => 'replied'
+        ]);
+
+        // 3. Send Email using NotificationService
+        try {
+            $this->notificationService->send(
+                $contactMessage->email,
+                $subject,
+                "Dear " . $contactMessage->name . ",",
+                [$messageContent],
+                null,
+                'default',
+                $user->id,
+                $user->email,
+                $user->name
+            );
+        } catch (\Exception $e) {
+            logger()->error('Failed to send contact reply email: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Reply saved, but sending email failed.',
+                'reply' => $reply->load('user:id,name,email'),
+                'contact_message' => $contactMessage,
+                'error' => $e->getMessage()
+            ], 500);
+        }
+
+        return response()->json([
+            'message' => 'Reply sent and saved successfully.',
+            'reply' => $reply->load('user:id,name,email'),
+            'contact_message' => $contactMessage
+        ]);
     }
 
     /**

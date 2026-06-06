@@ -70,7 +70,25 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Magazine not found.'], 404);
         }
 
-        return response()->json($magazine);
+        $articles = $magazine->articles()
+            ->where('status', 'approved')
+            ->orderBy('published_at', 'desc')
+            ->with('user:id,name,email')
+            ->get();
+
+        $groupedArticles = $articles->groupBy(function ($article) {
+            $date = $article->published_at ?? $article->created_at;
+            return \Carbon\Carbon::parse($date)->format('M Y');
+        });
+
+        $magazineData = $magazine->toArray();
+        $magazineData['seo_title'] = $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest';
+        $magazineData['seo_description'] = $magazine->seo_description ?: Str::limit(strip_tags($magazine->description), 160, '');
+        $magazineData['seo_keywords'] = $magazine->seo_keywords ?: '';
+        $magazineData['og_image'] = $magazine->cover_image;
+        $magazineData['grouped_articles'] = $groupedArticles;
+
+        return response()->json($magazineData);
     }
 
     /**
@@ -110,6 +128,9 @@ class MagazineController extends Controller
             'cover_image' => 'nullable', // can be file or string
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
+            'seo_title' => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $coverImagePath = null;
@@ -122,13 +143,21 @@ class MagazineController extends Controller
 
         $slug = Str::slug($validated['title']) . '-' . Str::random(5);
 
-        $magazine = Magazine::create([
+        $magazineData = [
             'title' => $validated['title'],
             'slug' => $slug,
             'cover_image' => $coverImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
-        ]);
+        ];
+
+        if ($user->hasPermission('seo.magazines')) {
+            $magazineData['seo_title'] = $validated['seo_title'] ?? null;
+            $magazineData['seo_description'] = $validated['seo_description'] ?? null;
+            $magazineData['seo_keywords'] = $validated['seo_keywords'] ?? null;
+        }
+
+        $magazine = Magazine::create($magazineData);
 
         // Dispatch newsletter announcement to subscribers
         try {
@@ -244,6 +273,9 @@ class MagazineController extends Controller
             'cover_image' => 'nullable',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
+            'seo_title' => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $coverImagePath = $magazine->cover_image;
@@ -258,12 +290,20 @@ class MagazineController extends Controller
             $coverImagePath = $request->input('cover_image');
         }
 
-        $magazine->update([
+        $updateData = [
             'title' => $validated['title'],
             'cover_image' => $coverImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
-        ]);
+        ];
+
+        if ($user->hasPermission('seo.magazines')) {
+            $updateData['seo_title'] = $validated['seo_title'] ?? null;
+            $updateData['seo_description'] = $validated['seo_description'] ?? null;
+            $updateData['seo_keywords'] = $validated['seo_keywords'] ?? null;
+        }
+
+        $magazine->update($updateData);
 
         return response()->json([
             'message' => 'Magazine updated successfully.',
@@ -357,6 +397,33 @@ class MagazineController extends Controller
 
         return response()->json([
             'message' => 'Magazine page deleted successfully.'
+        ]);
+    }
+
+    /**
+     * PATCH /api/admin/magazines/{slug}/seo
+     * SEO-only update.
+     */
+    public function updateSeo(Request $request, string $slug): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('seo.magazines')) {
+            return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
+        }
+
+        $magazine = Magazine::where('slug', $slug)->firstOrFail();
+
+        $validated = $request->validate([
+            'seo_title'       => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords'    => 'nullable|string|max:500',
+        ]);
+
+        $magazine->update($validated);
+
+        return response()->json([
+            'message' => 'Magazine SEO metadata updated successfully.',
+            'magazine' => $magazine,
         ]);
     }
 }

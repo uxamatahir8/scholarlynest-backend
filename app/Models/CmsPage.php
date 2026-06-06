@@ -16,5 +16,8 @@ class CmsPage extends Model
         'content_text',
         'content_html',
         'is_active',
-    ];
+        'seo_title',
+        'seo_description',
+        'seo_keywords',
+     ];
 }

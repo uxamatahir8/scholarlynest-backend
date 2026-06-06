@@ -21,7 +21,7 @@ class MagazineDevDataSeeder extends Seeder
         // 1. Temporarily disable foreign key constraints
         DB::statement('SET FOREIGN_KEY_CHECKS = 0');
 
-        // 2. Truncate historical tables to ensure absolute clean seed
+        // // 2. Truncate historical tables to ensure absolute clean seed
         $tables = [
             'article_tag',
             'tags',
@@ -31,11 +31,11 @@ class MagazineDevDataSeeder extends Seeder
             'magazines',
         ];
 
-        foreach ($tables as $table) {
-            if (DB::getSchemaBuilder()->hasTable($table)) {
-                DB::table($table)->truncate();
-            }
-        }
+        // foreach ($tables as $table) {
+        //     if (DB::getSchemaBuilder()->hasTable($table)) {
+        //         DB::table($table)->truncate();
+        //     }
+        // }
 
         // Re-enable foreign key constraints
         DB::statement('SET FOREIGN_KEY_CHECKS = 1');
@@ -713,6 +713,7 @@ class MagazineDevDataSeeder extends Seeder
                 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?auto=format&fit=crop&w=800&q=80',
                 'https://images.unsplash.com/photo-1582719508461-905c673771fd?auto=format&fit=crop&w=800&q=80',
             ];
+            $i = 150;
 
             // Loop and seed Magazines
             foreach ($magazinesData as $idx => $m) {
@@ -721,7 +722,7 @@ class MagazineDevDataSeeder extends Seeder
 
                 $magazine = Magazine::create([
                     'title' => $m['title'],
-                    'slug' => Str::slug($m['title']),
+                    'slug' => Str::slug($m['title']) . '-' . $i++ . '-45e6d4f6',
                     'cover_image' => $coverPath,
                     'description' => $m['description'],
                     'about_text' => $m['about_text']
@@ -733,7 +734,7 @@ class MagazineDevDataSeeder extends Seeder
                     MagazinePage::create([
                         'magazine_id' => $magazine->id,
                         'title' => $pTitle,
-                        'slug' => Str::slug($pTitle),
+                        'slug' => Str::slug($pTitle . '-45e6d4f6') . '-' . $i++,
                         'content' => "<h3>" . e($pTitle) . "</h3><p>" . e($pContent) . "</p><p>All submissions must follow the designated formatting instructions to ensure rapid editorial sorting and review compliance.</p>",
                         'sort_order' => $pageIdx++
                     ]);
@@ -829,7 +830,8 @@ class MagazineDevDataSeeder extends Seeder
                         'status' => $status,
                         'rejection_reason' => $rejectionReason,
                         'clicks' => rand(10, 100),
-                        'impressions' => rand(150, 1000)
+                        'impressions' => rand(150, 1000),
+                        'published_at' => ($status === 'approved') ? now()->subMonths(rand(0, 5))->subDays(rand(0, 28)) : null,
                     ]);
 
                     // Attach 4 to 5 random tags from the magazine's tag pool

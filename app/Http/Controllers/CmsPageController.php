@@ -38,7 +38,12 @@ class CmsPageController extends Controller
             ], 404);
         }
 
-        return response()->json($page);
+        $pageData = $page->toArray();
+        $pageData['seo_title'] = $page->seo_title ?: $page->title . ' | ScholarlyNest';
+        $pageData['seo_description'] = $page->seo_description ?: \Illuminate\Support\Str::limit(strip_tags($page->content_html), 160, '');
+        $pageData['seo_keywords'] = $page->seo_keywords ?: '';
+
+        return response()->json($pageData);
     }
 
     /**
@@ -61,6 +66,9 @@ class CmsPageController extends Controller
             'content' => 'sometimes|required|string',
             'content_text' => 'sometimes|nullable|string',
             'is_active' => 'sometimes|boolean',
+            'seo_title' => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $htmlContent = $validatedData['content_html'] ?? $validatedData['content'] ?? null;
@@ -79,15 +87,23 @@ class CmsPageController extends Controller
         // We strip <script> blocks completely for robust security.
         $sanitizedHtml = preg_replace('/<script\b[^>]*>(.*?)<\/script>/is', '', $htmlContent);
 
+        $updatePayload = [
+            'title' => $validatedData['title'] ?? ($slug === 'editorial-board' ? 'Editorial Board' : ucfirst($slug)),
+            'content_html' => $sanitizedHtml,
+            'content_text' => $textContent,
+            'is_active' => $validatedData['is_active'] ?? true,
+        ];
+
+        if ($user->hasPermission('seo.cms-pages')) {
+            $updatePayload['seo_title'] = $validatedData['seo_title'] ?? null;
+            $updatePayload['seo_description'] = $validatedData['seo_description'] ?? null;
+            $updatePayload['seo_keywords'] = $validatedData['seo_keywords'] ?? null;
+        }
+
         // 5. Upsert or update record
         $page = CmsPage::updateOrCreate(
             ['slug' => $slug],
-            [
-                'title' => $validatedData['title'] ?? ($slug === 'editorial-board' ? 'Editorial Board' : ucfirst($slug)),
-                'content_html' => $sanitizedHtml,
-                'content_text' => $textContent,
-                'is_active' => $validatedData['is_active'] ?? true,
-            ]
+            $updatePayload
         );
 
         // 6. Flush Cache
@@ -103,6 +119,41 @@ class CmsPageController extends Controller
         return response()->json([
             'message' => 'CMS Page Content updated successfully.',
             'page' => $page
+        ]);
+    }
+
+    /**
+     * PATCH /api/admin/cms/{slug}/seo
+     * SEO-only update.
+     */
+    public function updateSeo(Request $request, string $slug): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('seo.cms-pages')) {
+            return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
+        }
+
+        $page = CmsPage::where('slug', $slug)->firstOrFail();
+
+        $validated = $request->validate([
+            'seo_title'       => 'nullable|string|max:255',
+            'seo_description' => 'nullable|string|max:500',
+            'seo_keywords'    => 'nullable|string|max:500',
+        ]);
+
+        $page->update($validated);
+
+        // Flush Cache
+        $cacheKey = "cms_page_{$slug}";
+        try {
+            Cache::tags(['cms_pages'])->flush();
+        } catch (\BadMethodCallException $e) {
+            Cache::forget($cacheKey);
+        }
+
+        return response()->json([
+            'message' => 'CMS Page SEO metadata updated successfully.',
+            'page' => $page,
         ]);
     }
 }

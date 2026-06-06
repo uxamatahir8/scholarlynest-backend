@@ -57,7 +57,7 @@ class RbacController extends Controller
             'is_system' => false,
         ]);
 
-        return response()->json($role, 201);
+        return response()->json($role->load('permissions'), 201);
     }
 
     /**

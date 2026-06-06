@@ -92,6 +92,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/stats', [ArticleController::class, 'adminStats']);
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
         Route::get('/contact-messages', [ContactController::class, 'getMessages']);
+        Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);
  
         // Newsletter Campaign Management (Admin only)
         Route::get('/newsletter/subscribers', [NewsletterController::class, 'listSubscribers'])->middleware('permission:newsletters.view-any');
@@ -125,6 +126,9 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/articles/{id}', [ArticleController::class, 'showById'])->middleware('permission:articles.view-own');
         Route::put('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');
         Route::patch('/articles/{id}/review', [ArticleController::class, 'review'])->middleware('permission:articles.approve');
+        Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
+        Route::patch('/magazines/{slug}/seo', [MagazineController::class, 'updateSeo']);
+        Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
  
         // Dynamic RBAC Management
         Route::prefix('rbac')->group(function () {
