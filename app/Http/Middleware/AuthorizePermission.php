@@ -34,6 +34,11 @@ class AuthorizePermission
             return $next($request);
         }
 
+        // Special override: articles.auto-approve is allowed to perform articles.approve tasks (review/approval)
+        if ($permission === 'articles.approve' && $user->hasPermission('articles.auto-approve')) {
+            return $next($request);
+        }
+
         // 2. Scoped Ownership validation (e.g. articles.edit-own or articles.view-own)
         if (str_ends_with($permission, '-own')) {
             $resource = null;
@@ -68,8 +73,24 @@ class AuthorizePermission
             }
 
             // Verify if resource belongs to the current user
-            if ($resource && isset($resource->user_id) && $resource->user_id === $user->id) {
-                return $next($request);
+            if ($resource) {
+                if ($resource instanceof \App\Models\Article) {
+                    if ($resource->user_id === $user->id) {
+                        return $next($request);
+                    }
+                    $isCoAuthorEditor = \DB::table('article_author')
+                        ->where('article_id', $resource->id)
+                        ->where('user_id', $user->id)
+                        ->where('can_edit', true)
+                        ->exists();
+                    if ($isCoAuthorEditor) {
+                        return $next($request);
+                    }
+                } else {
+                    if (isset($resource->user_id) && $resource->user_id === $user->id) {
+                        return $next($request);
+                    }
+                }
             }
         }
 

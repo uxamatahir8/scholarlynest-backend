@@ -27,6 +27,10 @@ use Illuminate\Support\Facades\Route;
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
 
+// Public Footer & Dynamic Custom Pages
+Route::get('/public/footer', [\App\Http\Controllers\FooterController::class, 'index']);
+Route::get('/public/footer/pages/{slug}', [\App\Http\Controllers\FooterController::class, 'showPage']);
+
 // Unified Global Search
 Route::get('/search/preview', [GlobalSearchController::class, 'preview']);
 Route::get('/search/full', [GlobalSearchController::class, 'full']);
@@ -71,6 +75,11 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     
     // Session profile & Logout
     Route::get('/me', [AuthController::class, 'me']);
+    Route::put('/profile', [AuthController::class, 'updateProfile']);
+    Route::post('/profile/email/request-current-code', [AuthController::class, 'requestCurrentEmailCode']);
+    Route::post('/profile/email/verify-current-code', [AuthController::class, 'verifyCurrentEmailCode']);
+    Route::post('/profile/email/request-new-code', [AuthController::class, 'requestNewEmailCode']);
+    Route::post('/profile/email/verify-new-code', [AuthController::class, 'verifyNewEmailCode']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::post('/2fa/enable', [AuthController::class, 'enable2Fa']);
     Route::post('/2fa/request-disable-code', [AuthController::class, 'request2FaDisableCode']);
@@ -78,6 +87,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('/password/request-code', [AuthController::class, 'requestPasswordChangeCode']);
     Route::post('/password/verify-code', [AuthController::class, 'verifyPasswordChangeCode']);
     Route::post('/password/change', [AuthController::class, 'changePassword']);
+    Route::post('/password/reset-enforced', [AuthController::class, 'resetEnforcedPassword']);
 
     // Article submissions
     Route::post('/articles', [ArticleController::class, 'store'])->middleware('permission:articles.create');
@@ -107,6 +117,18 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/faqs', [FaqController::class, 'store'])->middleware('permission:settings.manage');
         Route::put('/faqs/{id}', [FaqController::class, 'update'])->middleware('permission:settings.manage');
         Route::delete('/faqs/{id}', [FaqController::class, 'destroy'])->middleware('permission:settings.manage');
+
+        // Footer CMS Categories Management
+        Route::get('/footer/categories', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'index'])->middleware('permission:footer.manage');
+        Route::post('/footer/categories', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'store'])->middleware('permission:footer.manage');
+        Route::put('/footer/categories/{id}', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'update'])->middleware('permission:footer.manage');
+        Route::delete('/footer/categories/{id}', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'destroy'])->middleware('permission:footer.manage');
+
+        // Footer CMS Pages Management
+        Route::get('/footer/pages', [\App\Http\Controllers\Admin\FooterPageController::class, 'index'])->middleware('permission:footer.manage');
+        Route::post('/footer/pages', [\App\Http\Controllers\Admin\FooterPageController::class, 'store'])->middleware('permission:footer.manage');
+        Route::put('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'update'])->middleware('permission:footer.manage');
+        Route::delete('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'destroy'])->middleware('permission:footer.manage');
  
         // Magazines & Custom Pages (Restricted to Admin / Super Admin)
         Route::post('/magazines', [MagazineController::class, 'store'])->middleware('permission:magazines.create');

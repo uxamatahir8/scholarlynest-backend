@@ -365,4 +365,78 @@ class MagazineTest extends TestCase
                       ->assertJsonPath('article.previous_article_title', 'Second Article')
                       ->assertJsonPath('article.next_article_title', null);
     }
+
+    /**
+     * Test user with auto-approve permission can approve article.
+     */
+    public function test_user_with_auto_approve_permission_can_approve_article(): void
+    {
+        Storage::fake('public');
+
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $author = User::factory()->create();
+        
+        // Create custom role and assign permission
+        $customRole = Role::create(['name' => 'pdf_compiler', 'guard_name' => 'web']);
+        $permission = \App\Models\Permission::firstOrCreate([
+            'name' => 'articles.auto-approve'
+        ], [
+            'module' => 'articles',
+            'description' => 'Auto-Approve & Compile PDF'
+        ]);
+        $customRole->permissions()->attach($permission->id);
+
+        $user = User::factory()->create(['role_id' => $customRole->id]);
+
+        $article = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $author->id,
+            'title' => 'Auto Approved Article',
+            'slug' => 'auto-approved-article',
+            'abstract' => 'Abstract info',
+            'full_text' => 'Full text info',
+            'status' => 'pending'
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $response = $this->patchJson("/api/admin/articles/{$article->id}/review", [
+            'status' => 'approved',
+        ]);
+
+        $response->assertStatus(200)
+                 ->assertJsonPath('article.status', 'approved');
+
+        $article->refresh();
+        $this->assertNotNull($article->pdf_path);
+    }
+
+    /**
+     * Test user without auto-approve permission is forbidden.
+     */
+    public function test_user_without_auto_approve_permission_cannot_approve_article(): void
+    {
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $author = User::factory()->create();
+        $user = User::factory()->create();
+        $user->assignRole('author');
+
+        $article = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $author->id,
+            'title' => 'Auto Approved Article 2',
+            'slug' => 'auto-approved-article-2',
+            'abstract' => 'Abstract info',
+            'full_text' => 'Full text info',
+            'status' => 'pending'
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $response = $this->patchJson("/api/admin/articles/{$article->id}/review", [
+            'status' => 'approved',
+        ]);
+
+        $response->assertStatus(403);
+    }
 }

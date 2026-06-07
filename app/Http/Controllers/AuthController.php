@@ -785,4 +785,211 @@ class AuthController extends Controller
             $userId
         );
     }
+
+    /**
+     * Enforce password reset for newly provisioned user.
+     */
+    public function resetEnforcedPassword(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user->needs_password_reset) {
+            return response()->json(['message' => 'Password reset is not required.'], 400);
+        }
+
+        $request->validate([
+            'password' => [
+                'required',
+                'string',
+                'min:8',
+                'confirmed',
+                \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+            ],
+        ]);
+
+        $user->update([
+            'password' => \Illuminate\Support\Facades\Hash::make($request->password),
+            'needs_password_reset' => false,
+        ]);
+
+        return response()->json([
+            'message' => 'Password updated successfully.',
+            'user' => $user->load('role.permissions')
+        ]);
+    }
+
+    /**
+     * Update user profile information.
+     */
+    public function updateProfile(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'profile_image' => 'nullable|string|max:2048',
+        ]);
+
+        $user->update([
+            'name' => $request->name,
+            'profile_image' => $request->profile_image,
+        ]);
+
+        return response()->json([
+            'message' => 'Profile updated successfully.',
+            'user' => $user->load('role.permissions')
+        ]);
+    }
+
+    /**
+     * Request a verification code to be sent to current email for change authorization.
+     */
+    public function requestCurrentEmailCode(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $code = sprintf("%06d", mt_rand(100000, 999999));
+
+        $user->update([
+            'email_change_code' => $code,
+            'email_change_code_expires_at' => now()->addMinutes(15),
+            'current_email_verified' => false,
+        ]);
+
+        // Send email
+        $this->notificationService->send(
+            $user->email,
+            "Email Change Verification Code",
+            "Verify Current Email Ownership",
+            [
+                "You have requested to change your ScholarlyNest account email.",
+                "Please use the 6-digit verification code below to authorize the first step of this change:",
+                "Verification Code: " . $code,
+                "This code will expire in 15 minutes. If you did not initiate this change, please ignore this email and secure your account credentials."
+            ],
+            null,
+            'high',
+            $user->id
+        );
+
+        return response()->json([
+            'message' => 'Verification code sent to your current email address.'
+        ]);
+    }
+
+    /**
+     * Verify the code sent to the current email address.
+     */
+    public function verifyCurrentEmailCode(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $request->validate([
+            'code' => 'required|string|size:6',
+        ]);
+
+        if (!$user->email_change_code || $user->email_change_code !== $request->code) {
+            return response()->json(['message' => 'Invalid verification code.'], 400);
+        }
+
+        if (now()->gt($user->email_change_code_expires_at)) {
+            return response()->json(['message' => 'Verification code has expired.'], 400);
+        }
+
+        $user->update([
+            'email_change_code' => null,
+            'email_change_code_expires_at' => null,
+            'current_email_verified' => true,
+        ]);
+
+        return response()->json([
+            'message' => 'Current email verified. You may now specify your new email address.'
+        ]);
+    }
+
+    /**
+     * Request a verification code to be sent to the new email address.
+     */
+    public function requestNewEmailCode(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user->current_email_verified) {
+            return response()->json(['message' => 'Please verify ownership of your current email first.'], 403);
+        }
+
+        $request->validate([
+            'email' => 'required|string|email|max:255|unique:users,email',
+        ]);
+
+        $code = sprintf("%06d", mt_rand(100000, 999999));
+
+        $user->update([
+            'pending_email' => $request->email,
+            'new_email_verification_code' => $code,
+            'new_email_verification_code_expires_at' => now()->addMinutes(15),
+        ]);
+
+        // Send email to new email address
+        $this->notificationService->send(
+            $request->email,
+            "Confirm New Email Address",
+            "Verify New Email Ownership",
+            [
+                "A request was made to set this email as the primary academic email for your ScholarlyNest account.",
+                "Please use the 6-digit confirmation code below to complete the transition:",
+                "Confirmation Code: " . $code,
+                "This code will expire in 15 minutes. If you did not request this update, no action is required."
+            ],
+            null,
+            'high',
+            $user->id
+        );
+
+        return response()->json([
+            'message' => 'Verification code sent to your new email address.'
+        ]);
+    }
+
+    /**
+     * Verify the code sent to the new email address to complete the update.
+     */
+    public function verifyNewEmailCode(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user->current_email_verified || !$user->pending_email) {
+            return response()->json(['message' => 'Verify current email and submit a new email address first.'], 403);
+        }
+
+        $request->validate([
+            'code' => 'required|string|size:6',
+        ]);
+
+        // Enforce uniqueness check again on final submit to prevent race conditions
+        $exists = User::where('email', $user->pending_email)->where('id', '!=', $user->id)->exists();
+        if ($exists) {
+            return response()->json(['message' => 'The pending email address has already been taken.'], 422);
+        }
+
+        if (!$user->new_email_verification_code || $user->new_email_verification_code !== $request->code) {
+            return response()->json(['message' => 'Invalid verification code.'], 400);
+        }
+
+        if (now()->gt($user->new_email_verification_code_expires_at)) {
+            return response()->json(['message' => 'Verification code has expired.'], 400);
+        }
+
+        // Apply change
+        $user->update([
+            'email' => $user->pending_email,
+            'pending_email' => null,
+            'new_email_verification_code' => null,
+            'new_email_verification_code_expires_at' => null,
+            'current_email_verified' => false,
+        ]);
+
+        return response()->json([
+            'message' => 'Email updated successfully.',
+            'user' => $user->load('role.permissions')
+        ]);
+    }
 }

@@ -65,4 +65,12 @@ class Article extends Model
     {
         return $this->hasMany(ArticleShareClick::class);
     }
+
+    /**
+     * Get the co-authors/collaborators associated with this article.
+     */
+    public function articleAuthors()
+    {
+        return $this->hasMany(ArticleAuthor::class);
+    }
 }

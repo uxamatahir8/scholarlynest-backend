@@ -25,11 +25,23 @@ class ArticleController extends Controller
     public function show(string $slug): JsonResponse
     {
         $article = Article::where('slug', $slug)
-            ->with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags'])
+            ->with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags', 'articleAuthors'])
             ->first();
 
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
+        }
+
+        // If the article is not approved, authorize the viewer via ArticlePolicy
+        if ($article->status === 'pending' || $article->status === 'rejected') {
+            $user = request()->user('sanctum');
+            if (!$user) {
+                // Hide the page entirely for unauthorized public viewers
+                return response()->json(['message' => 'Article not found.'], 404);
+            }
+            if ($user->cannot('view', $article)) {
+                return response()->json(['message' => 'This action is unauthorized.'], 403);
+            }
         }
 
         // Increment impressions on view
@@ -188,7 +200,39 @@ class ArticleController extends Controller
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
+            'co_authors' => 'nullable|string',
         ]);
+
+        // Decode co_authors stringified JSON
+        $coAuthors = is_string($request->input('co_authors'))
+            ? (json_decode($request->input('co_authors'), true) ?: [])
+            : ($request->input('co_authors') ?: []);
+
+        // Validate co_authors array structure
+        $coAuthorsValidator = \Validator::make(['co_authors' => $coAuthors], [
+            'co_authors' => 'array',
+            'co_authors.*.name' => 'required|string|max:255',
+            'co_authors.*.email' => 'required|email|max:255',
+            'co_authors.*.can_edit' => 'boolean',
+            'co_authors.*.create_account' => 'boolean',
+        ]);
+
+        if ($coAuthorsValidator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed for co-authors.',
+                'errors' => $coAuthorsValidator->errors()
+            ], 422);
+        }
+
+        // Validate that primary author does not list themselves
+        foreach ($coAuthors as $coAuthor) {
+            if (strtolower(trim($coAuthor['email'])) === strtolower(trim($user->email))) {
+                return response()->json([
+                    'message' => 'Validation failed',
+                    'errors' => ['co_authors' => ['You cannot list yourself as a co-author.']]
+                ], 422);
+            }
+        }
 
         $pdfPath = null;
         if ($request->hasFile('pdf_file')) {
@@ -215,13 +259,76 @@ class ArticleController extends Controller
             $articleData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        $article = Article::create($articleData);
+        $coAuthorsData = [];
 
-        $this->syncTags($article, $request->input('tags'));
+        $article = \DB::transaction(function() use ($articleData, $request, $coAuthors, $user, &$coAuthorsData) {
+            $article = Article::create($articleData);
+            $this->syncTags($article, $request->input('tags'));
+
+            foreach ($coAuthors as $coAuthor) {
+                $email = strtolower(trim($coAuthor['email']));
+                $name = trim($coAuthor['name']);
+                $canEdit = (bool)($coAuthor['can_edit'] ?? false);
+                $createAccount = (bool)($coAuthor['create_account'] ?? false);
+
+                $existingUser = \App\Models\User::where('email', $email)->first();
+                $userId = null;
+                $accountProvisioned = false;
+                $tempPassword = null;
+
+                if ($existingUser) {
+                    $userId = $existingUser->id;
+                    $accountProvisioned = false;
+                } elseif ($createAccount) {
+                    $tempPassword = \Illuminate\Support\Str::random(12);
+                    $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
+                    $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
+
+                    $newUser = \App\Models\User::create([
+                        'name' => $name,
+                        'email' => $email,
+                        'password' => \Illuminate\Support\Facades\Hash::make($tempPassword),
+                        'needs_password_reset' => true,
+                        'email_verified_at' => now(),
+                        'role_id' => $defaultRole?->id,
+                    ]);
+
+                    $userId = $newUser->id;
+                    $accountProvisioned = true;
+                }
+
+                \App\Models\ArticleAuthor::create([
+                    'article_id' => $article->id,
+                    'user_id' => $userId,
+                    'co_author_name' => $name,
+                    'co_author_email' => $email,
+                    'can_edit' => $canEdit,
+                    'account_provisioned' => $accountProvisioned,
+                ]);
+
+                $coAuthorItem = [
+                    'name' => $name,
+                    'email' => $email,
+                    'can_edit' => $canEdit,
+                    'create_account' => $createAccount,
+                    'user_id' => $userId,
+                    'account_provisioned' => $accountProvisioned,
+                ];
+                if ($tempPassword) {
+                    $coAuthorItem['temporary_password'] = $tempPassword;
+                }
+                $coAuthorsData[] = $coAuthorItem;
+            }
+
+            return $article;
+        });
+
+        // Dispatch synchronized queued notifications
+        event(new \App\Events\ArticleSubmitted($article, $coAuthorsData));
 
         return response()->json([
             'message' => 'Your research article has been submitted successfully for peer review.',
-            'article' => $article->load('tags')
+            'article' => $article->load(['tags', 'articleAuthors'])
         ], 211);
     }
 
@@ -280,8 +387,14 @@ class ArticleController extends Controller
     public function review(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
-            return response()->json(['message' => 'Forbidden. Admin/Editor privileges required.'], 403);
+        if (!$user || (
+            !$user->hasRole('super_admin') &&
+            !$user->hasRole('admin') &&
+            !$user->hasRole('editor') &&
+            !$user->hasPermission('articles.approve') &&
+            !$user->hasPermission('articles.auto-approve')
+        )) {
+            return response()->json(['message' => 'Forbidden. Admin/Editor/Approve privileges required.'], 403);
         }
 
         $validated = $request->validate([
@@ -342,13 +455,13 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $article = Article::with(['tags', 'magazine', 'shareClicks'])->find($id);
+        $article = Article::with(['tags', 'magazine', 'shareClicks', 'articleAuthors'])->find($id);
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // Authorize if admin/editor OR if the user is the owner of the article
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && $article->user_id !== $user->id) {
+        // Authorize via ArticlePolicy
+        if ($user->cannot('view', $article)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -371,8 +484,8 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // Authorize if admin/editor OR if the user is the owner of the article
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && $article->user_id !== $user->id) {
+        // Authorize via ArticlePolicy
+        if ($user->cannot('update', $article)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -386,7 +499,39 @@ class ArticleController extends Controller
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
+            'co_authors' => 'nullable|string',
         ]);
+
+        // Decode co_authors stringified JSON
+        $coAuthors = is_string($request->input('co_authors'))
+            ? (json_decode($request->input('co_authors'), true) ?: [])
+            : ($request->input('co_authors') ?: []);
+
+        // Validate co_authors array structure
+        $coAuthorsValidator = \Validator::make(['co_authors' => $coAuthors], [
+            'co_authors' => 'array',
+            'co_authors.*.name' => 'required|string|max:255',
+            'co_authors.*.email' => 'required|email|max:255',
+            'co_authors.*.can_edit' => 'boolean',
+            'co_authors.*.create_account' => 'boolean',
+        ]);
+
+        if ($coAuthorsValidator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed for co-authors.',
+                'errors' => $coAuthorsValidator->errors()
+            ], 422);
+        }
+
+        // Validate that primary author does not list themselves
+        foreach ($coAuthors as $coAuthor) {
+            if (strtolower(trim($coAuthor['email'])) === strtolower(trim($user->email))) {
+                return response()->json([
+                    'message' => 'Validation failed',
+                    'errors' => ['co_authors' => ['You cannot list yourself as a co-author.']]
+                ], 422);
+            }
+        }
 
         $pdfPath = $article->pdf_path;
         if ($request->hasFile('pdf_file')) {
@@ -432,9 +577,73 @@ class ArticleController extends Controller
             $updateData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        $article->update($updateData);
+        $coAuthorsData = [];
 
-        $this->syncTags($article, $request->input('tags'));
+        \DB::transaction(function() use ($article, $updateData, $request, $coAuthors, $user, &$coAuthorsData) {
+            $article->update($updateData);
+            $this->syncTags($article, $request->input('tags'));
+
+            // Refresh co-authors relation
+            $article->articleAuthors()->delete();
+
+            foreach ($coAuthors as $coAuthor) {
+                $email = strtolower(trim($coAuthor['email']));
+                $name = trim($coAuthor['name']);
+                $canEdit = (bool)($coAuthor['can_edit'] ?? false);
+                $createAccount = (bool)($coAuthor['create_account'] ?? false);
+
+                $existingUser = \App\Models\User::where('email', $email)->first();
+                $userId = null;
+                $accountProvisioned = false;
+                $tempPassword = null;
+
+                if ($existingUser) {
+                    $userId = $existingUser->id;
+                    $accountProvisioned = false;
+                } elseif ($createAccount) {
+                    $tempPassword = \Illuminate\Support\Str::random(12);
+                    $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
+                    $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
+
+                    $newUser = \App\Models\User::create([
+                        'name' => $name,
+                        'email' => $email,
+                        'password' => \Illuminate\Support\Facades\Hash::make($tempPassword),
+                        'needs_password_reset' => true,
+                        'email_verified_at' => now(),
+                        'role_id' => $defaultRole?->id,
+                    ]);
+
+                    $userId = $newUser->id;
+                    $accountProvisioned = true;
+                }
+
+                \App\Models\ArticleAuthor::create([
+                    'article_id' => $article->id,
+                    'user_id' => $userId,
+                    'co_author_name' => $name,
+                    'co_author_email' => $email,
+                    'can_edit' => $canEdit,
+                    'account_provisioned' => $accountProvisioned,
+                ]);
+
+                $coAuthorItem = [
+                    'name' => $name,
+                    'email' => $email,
+                    'can_edit' => $canEdit,
+                    'create_account' => $createAccount,
+                    'user_id' => $userId,
+                    'account_provisioned' => $accountProvisioned,
+                ];
+                if ($tempPassword) {
+                    $coAuthorItem['temporary_password'] = $tempPassword;
+                }
+                $coAuthorsData[] = $coAuthorItem;
+            }
+        });
+
+        // Dispatch synchronized queued notifications
+        event(new \App\Events\ArticleSubmitted($article, $coAuthorsData));
 
         // If approved and pdf_path is empty, generate dynamic PDF
         if ($article->status === 'approved' && empty($article->pdf_path)) {
@@ -455,7 +664,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article updated successfully.',
-            'article' => $article->load('tags')
+            'article' => $article->load(['tags', 'articleAuthors'])
         ]);
     }
 
