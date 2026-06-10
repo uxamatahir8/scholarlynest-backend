@@ -25,12 +25,7 @@ class FooterManagementSeeder extends Seeder
             ['sort_order' => 1]
         );
 
-        $quickLinksCat = FooterCategory::updateOrCreate(
-            ['name' => 'Quick Links'],
-            ['sort_order' => 2]
-        );
-
-        // 2. Link Editorial Board to Resources
+        // 2. Link Editorial Board and Contact Us to Resources
         $editorialCms = CmsPage::where('slug', 'editorial-board')->first();
         FooterPage::updateOrCreate(
             ['slug' => 'editorial-board'],
@@ -43,14 +38,25 @@ class FooterManagementSeeder extends Seeder
             ]
         );
 
+        FooterPage::updateOrCreate(
+            ['slug' => 'contact'],
+            [
+                'footer_category_id' => $resourcesCat->id,
+                'title' => 'Contact Us',
+                'content' => '<h3>Contact Us</h3><p>Connect with our Editorial Board via our contact form.</p>',
+                'is_visible' => true,
+                'sort_order' => 1
+            ]
+        );
+
         // 3. Link privacy, terms, and manifests to Institutional
         $privacyCms = CmsPage::where('slug', 'privacy')->first();
         FooterPage::updateOrCreate(
             ['slug' => 'privacy'],
             [
                 'footer_category_id' => $institutionalCat->id,
-                'title' => 'Privacy Policy',
-                'content' => $privacyCms ? $privacyCms->content_html : '<h3>Privacy Policy</h3><p>Privacy statement details...</p>',
+                'title' => 'Privacy Statement',
+                'content' => $privacyCms ? $privacyCms->content_html : '<h3>Privacy Statement</h3><p>Privacy statement details...</p>',
                 'is_visible' => true,
                 'sort_order' => 0
             ]
@@ -77,18 +83,6 @@ class FooterManagementSeeder extends Seeder
                 'content' => $manifestsCms ? $manifestsCms->content_html : '<h3>Metadata Manifests Guidelines</h3><p>Metadata compliance guidelines...</p>',
                 'is_visible' => true,
                 'sort_order' => 2
-            ]
-        );
-
-        // 4. Populate a placeholder/example inside Quick Links if empty
-        FooterPage::updateOrCreate(
-            ['slug' => 'about-us'],
-            [
-                'footer_category_id' => $quickLinksCat->id,
-                'title' => 'About ScholarlyNest',
-                'content' => '<section class="space-y-4"><h3>About ScholarlyNest</h3><p>ScholarlyNest is a premier academic blogging and open research exchange platform designed for researchers, peer reviewers, and enthusiasts.</p></section>',
-                'is_visible' => true,
-                'sort_order' => 0
             ]
         );
     }

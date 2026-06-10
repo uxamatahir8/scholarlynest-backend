@@ -37,6 +37,7 @@ Route::get('/search/full', [GlobalSearchController::class, 'full']);
 
 // Public Contact Page Settings & Submission
 Route::get('/contact-settings', [ContactController::class, 'getSettings']);
+Route::get('/contact-subjects', [ContactController::class, 'getSubjects']);
 Route::post('/contact', [ContactController::class, 'submit']);
 
 // Public Newsletter Subscription
@@ -53,6 +54,7 @@ Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf']);
+Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download']);
 
 // Authentication (Strictly throttled to 10 requests per minute per IP)
 Route::middleware('throttle:10,1')->group(function () {
@@ -76,6 +78,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     // Session profile & Logout
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/profile', [AuthController::class, 'updateProfile']);
+    Route::put('/user/profile', [AuthController::class, 'updateProfile']);
     Route::post('/profile/email/request-current-code', [AuthController::class, 'requestCurrentEmailCode']);
     Route::post('/profile/email/verify-current-code', [AuthController::class, 'verifyCurrentEmailCode']);
     Route::post('/profile/email/request-new-code', [AuthController::class, 'requestNewEmailCode']);
@@ -96,6 +99,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     // Media polymorphic uploads
     Route::post('/media', [MediaController::class, 'store']);
     Route::delete('/media/{id}', [MediaController::class, 'destroy']);
+
+    // Article assets
+    Route::post('/articles/{id}/assets', [\App\Http\Controllers\ArticleAssetController::class, 'store'])
+        ->middleware('permission:articles.manage-assets');
+    Route::delete('/articles/assets/{asset_id}', [\App\Http\Controllers\ArticleAssetController::class, 'destroy'])
+        ->middleware('permission:articles.manage-assets');
  
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
@@ -103,6 +112,9 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
         Route::get('/contact-messages', [ContactController::class, 'getMessages']);
         Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);
+        Route::post('/contact-subjects', [ContactController::class, 'storeSubject']);
+        Route::put('/contact-subjects/{id}', [ContactController::class, 'updateSubject']);
+        Route::delete('/contact-subjects/{id}', [ContactController::class, 'deleteSubject']);
  
         // Newsletter Campaign Management (Admin only)
         Route::get('/newsletter/subscribers', [NewsletterController::class, 'listSubscribers'])->middleware('permission:newsletters.view-any');

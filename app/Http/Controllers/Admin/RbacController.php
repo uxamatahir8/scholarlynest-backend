@@ -110,9 +110,14 @@ class RbacController extends Controller
     /**
      * Get all system users along with their role.
      */
-    public function users(): JsonResponse
+    public function users(Request $request): JsonResponse
     {
-        $users = User::with('role')->get();
+        $loggedInUserId = $request->user()?->id;
+        $users = User::with('role')
+            ->when($loggedInUserId, function ($query) use ($loggedInUserId) {
+                return $query->where('id', '!=', $loggedInUserId);
+            })
+            ->get();
         return response()->json($users);
     }
 
@@ -154,6 +159,7 @@ class RbacController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users,email',
             'role_id' => 'required|exists:roles,id',
+            'university_name' => 'required|string|max:255',
         ]);
 
         $randomPassword = Str::random(32);
@@ -164,6 +170,7 @@ class RbacController extends Controller
             'password' => Hash::make($randomPassword),
             'email_verified_at' => now(),
             'role_id' => $request->role_id,
+            'university_name' => $request->university_name,
         ]);
 
         // Generate reset code/token for password creation

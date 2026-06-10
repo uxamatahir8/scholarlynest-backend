@@ -39,7 +39,10 @@ class DatabaseSeeder extends Seeder
                 'permission_role',
                 'roles',
                 'permissions',
-                'faqs'
+                'faqs',
+                'footer_pages',
+                'footer_categories',
+                'contact_subjects'
             ];
 
             foreach ($tables as $table) {
@@ -57,6 +60,12 @@ class DatabaseSeeder extends Seeder
             $superAdminRole = Role::create([
                 'name' => 'super_admin',
                 'display_name' => 'Super Admin',
+                'is_system' => true,
+            ]);
+
+            $authorRole = Role::create([
+                'name' => 'author',
+                'display_name' => 'Author',
                 'is_system' => true,
             ]);
 
@@ -80,6 +89,7 @@ class DatabaseSeeder extends Seeder
                 ['name' => 'articles.delete-any', 'module' => 'articles', 'description' => 'Delete any article'],
                 ['name' => 'articles.delete-own', 'module' => 'articles', 'description' => 'Delete own articles'],
                 ['name' => 'articles.approve', 'module' => 'articles', 'description' => 'Approve or reject articles'],
+                ['name' => 'articles.manage-assets', 'module' => 'articles', 'description' => 'Allow adding assets to articles'],
 
                 // Roles module
                 ['name' => 'roles.view-any', 'module' => 'roles', 'description' => 'View roles and permissions'],
@@ -107,7 +117,7 @@ class DatabaseSeeder extends Seeder
             ];
 
             foreach ($permissionsData as $p) {
-                Permission::create($p);
+                Permission::firstOrCreate(['name' => $p['name']], $p);
             }
 
             $allPermissions = Permission::all();
@@ -118,12 +128,24 @@ class DatabaseSeeder extends Seeder
             // Super Admin gets all permissions
             $superAdminRole->permissions()->sync($allPermissions->pluck('id'));
 
+            // Author gets limited permissions for own records and submitting articles
+            $authorPermissions = Permission::whereIn('name', [
+                'magazines.view-any',
+                'articles.view-own',
+                'articles.create',
+                'articles.edit-own',
+                'articles.delete-own',
+                'seo.articles',
+                'articles.manage-assets',
+            ])->get();
+            $authorRole->permissions()->sync($authorPermissions->pluck('id'));
+
             // ==========================================
             // 6. SEED DEFAULT USER ACCOUNTS
             // ==========================================
             $superAdminUser = User::create([
-                'name' => 'Dr. Evelyn Reed (Admin)',
-                'email' => 'admin@scholarlynest.com',
+                'name' => 'Super Admin',
+                'email' => 'info@scholarlynest.com',
                 'password' => Hash::make('admin12345'),
                 'email_verified_at' => now(),
                 'role_id' => $superAdminRole->id,
@@ -134,7 +156,7 @@ class DatabaseSeeder extends Seeder
             // ==========================================
             Setting::create([
                 'key' => 'default_registration_role',
-                'value' => 'super_admin',
+                'value' => 'author',
             ]);
 
             // ==========================================
@@ -144,6 +166,8 @@ class DatabaseSeeder extends Seeder
             $this->call(EditorialBoardSeeder::class);
             $this->call(MagazineSeeder::class);
             $this->call(FaqSeeder::class);
+            $this->call(FooterManagementSeeder::class);
+            $this->call(ContactSubjectSeeder::class);
 
             try {
                 if (DB::transactionLevel() > 0) {

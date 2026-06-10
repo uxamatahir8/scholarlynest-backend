@@ -221,6 +221,97 @@ class ContactController extends Controller
     }
 
     /**
+     * GET /api/contact-subjects
+     * Public endpoint to retrieve all contact subjects.
+     */
+    public function getSubjects(): JsonResponse
+    {
+        $subjects = \App\Models\ContactSubject::orderBy('sort_order', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+        return response()->json($subjects);
+    }
+
+    /**
+     * POST /api/admin/contact-subjects
+     * Create a new contact subject.
+     */
+    public function storeSubject(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        $request->validate([
+            'label' => 'required|string|max:255',
+            'value' => 'required|string|max:255|unique:contact_subjects,value',
+            'sort_order' => 'nullable|integer',
+        ]);
+
+        $subject = \App\Models\ContactSubject::create([
+            'label' => $request->input('label'),
+            'value' => $request->input('value'),
+            'sort_order' => $request->input('sort_order', 0),
+        ]);
+
+        return response()->json([
+            'message' => 'Contact subject created successfully.',
+            'subject' => $subject
+        ], 201);
+    }
+
+    /**
+     * PUT /api/admin/contact-subjects/{id}
+     * Update an existing contact subject.
+     */
+    public function updateSubject(Request $request, $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        $subject = \App\Models\ContactSubject::findOrFail($id);
+
+        $request->validate([
+            'label' => 'required|string|max:255',
+            'value' => 'required|string|max:255|unique:contact_subjects,value,' . $subject->id,
+            'sort_order' => 'nullable|integer',
+        ]);
+
+        $subject->update([
+            'label' => $request->input('label'),
+            'value' => $request->input('value'),
+            'sort_order' => $request->input('sort_order', 0),
+        ]);
+
+        return response()->json([
+            'message' => 'Contact subject updated successfully.',
+            'subject' => $subject
+        ]);
+    }
+
+    /**
+     * DELETE /api/admin/contact-subjects/{id}
+     * Delete a contact subject.
+     */
+    public function deleteSubject(Request $request, $id): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        $subject = \App\Models\ContactSubject::findOrFail($id);
+        $subject->delete();
+
+        return response()->json([
+            'message' => 'Contact subject deleted successfully.'
+        ]);
+    }
+
+    /**
      * Helper to write key-value pairs to the .env file.
      */
     protected function updateEnvKey(string $key, string $value): void

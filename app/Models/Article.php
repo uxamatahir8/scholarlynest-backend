@@ -20,6 +20,7 @@ class Article extends Model
         'abstract',
         'full_text',
         'pdf_path',
+        'featured_image',
         'status',
         'rejection_reason',
         'clicks',
@@ -72,5 +73,13 @@ class Article extends Model
     public function articleAuthors()
     {
         return $this->hasMany(ArticleAuthor::class);
+    }
+
+    /**
+     * Get the supplementary assets associated with this article.
+     */
+    public function assets()
+    {
+        return $this->hasMany(ArticleAsset::class);
     }
 }

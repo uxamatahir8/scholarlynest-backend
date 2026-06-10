@@ -54,6 +54,7 @@ class AuthController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
+            'university_name' => 'required|string|max:255',
             'password' => [
                 'required',
                 'string',
@@ -69,6 +70,7 @@ class AuthController extends Controller
             'name' => $request->name,
             'email' => $request->email,
             'password' => Hash::make($request->password),
+            'university_name' => $request->university_name,
             'verification_code' => $code,
             'verification_code_expires_at' => now()->addMinutes(15),
         ]);
@@ -629,6 +631,7 @@ class AuthController extends Controller
             'name' => $name,
             'email' => $email,
             'google_id' => $googleId,
+            'university_name' => null,
             'password' => null, // Password is null for social logins
             'email_verified_at' => now(), // Auto-verified via Google
         ]);
@@ -825,13 +828,15 @@ class AuthController extends Controller
         $user = $request->user();
 
         $request->validate([
-            'name' => 'required|string|max:255',
+            'name' => 'sometimes|required|string|max:255',
             'profile_image' => 'nullable|string|max:2048',
+            'university_name' => 'nullable|string|max:255',
         ]);
 
         $user->update([
-            'name' => $request->name,
-            'profile_image' => $request->profile_image,
+            'name' => $request->has('name') ? $request->name : $user->name,
+            'profile_image' => $request->has('profile_image') ? $request->profile_image : $user->profile_image,
+            'university_name' => $request->has('university_name') ? $request->university_name : $user->university_name,
         ]);
 
         return response()->json([

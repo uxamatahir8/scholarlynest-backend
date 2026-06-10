@@ -22,11 +22,15 @@ class ArticleController extends Controller
         $this->notificationService = $notificationService;
     }
 
-    public function show(string $slug): JsonResponse
+    public function show(string $idOrSlug): JsonResponse
     {
-        $article = Article::where('slug', $slug)
-            ->with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags', 'articleAuthors'])
-            ->first();
+        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags', 'articleAuthors', 'assets']);
+
+        if (is_numeric($idOrSlug)) {
+            $article = $query->find((int)$idOrSlug);
+        } else {
+            $article = $query->where('slug', $idOrSlug)->first();
+        }
 
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
@@ -91,6 +95,8 @@ class ArticleController extends Controller
         $articleData['seo_keywords'] = $article->seo_keywords ?: $article->tags->pluck('name')->implode(', ');
         $articleData['og_image'] = ($article->magazine && $article->magazine->cover_image) ? $article->magazine->cover_image : null;
 
+        $articleData['previous_article_id'] = $previousArticle?->id;
+        $articleData['next_article_id'] = $nextArticle?->id;
         $articleData['previous_article_slug'] = $previousArticle?->slug;
         $articleData['next_article_slug'] = $nextArticle?->slug;
         $articleData['previous_article_title'] = $previousArticle?->title;
@@ -99,6 +105,8 @@ class ArticleController extends Controller
         return response()->json([
             'article' => $articleData,
             'author_metrics' => $authorMetrics,
+            'previous_article_id' => $previousArticle?->id,
+            'next_article_id' => $nextArticle?->id,
             'previous_article_slug' => $previousArticle?->slug,
             'next_article_slug' => $nextArticle?->slug,
             'previous_article_title' => $previousArticle?->title,
@@ -115,7 +123,7 @@ class ArticleController extends Controller
         $limit = $request->integer('limit', 6);
         
         $articles = Article::where('status', 'approved')
-            ->with(['magazine:id,title,slug', 'user:id,name'])
+            ->with(['magazine:id,title,slug,cover_image', 'user:id,name'])
             ->latest()
             ->limit($limit)
             ->get();
@@ -196,6 +204,7 @@ class ArticleController extends Controller
             'abstract' => 'required|string',
             'full_text' => 'required|string',
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
+            'featured_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
             'tags' => 'nullable',
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
@@ -215,6 +224,7 @@ class ArticleController extends Controller
             'co_authors.*.email' => 'required|email|max:255',
             'co_authors.*.can_edit' => 'boolean',
             'co_authors.*.create_account' => 'boolean',
+            'co_authors.*.university_name' => 'nullable|string|max:255',
         ]);
 
         if ($coAuthorsValidator->fails()) {
@@ -240,7 +250,13 @@ class ArticleController extends Controller
             $pdfPath = 'storage/' . $path;
         }
 
-        $slug = Str::slug($validated['title']) . '-' . Str::random(6);
+        $featuredImagePath = null;
+        if ($request->hasFile('featured_image')) {
+            $path = $request->file('featured_image')->store('articles', 'public');
+            $featuredImagePath = 'storage/' . $path;
+        }
+
+        $slug = Str::slug($validated['title']);
 
         $articleData = [
             'magazine_id' => $validated['magazine_id'],
@@ -250,6 +266,7 @@ class ArticleController extends Controller
             'abstract' => $validated['abstract'],
             'full_text' => $validated['full_text'],
             'pdf_path' => $pdfPath,
+            'featured_image' => $featuredImagePath,
             'status' => 'pending',
         ];
 
@@ -291,6 +308,7 @@ class ArticleController extends Controller
                         'needs_password_reset' => true,
                         'email_verified_at' => now(),
                         'role_id' => $defaultRole?->id,
+                        'university_name' => $coAuthor['university_name'] ?? null,
                     ]);
 
                     $userId = $newUser->id;
@@ -304,11 +322,13 @@ class ArticleController extends Controller
                     'co_author_email' => $email,
                     'can_edit' => $canEdit,
                     'account_provisioned' => $accountProvisioned,
+                    'university_name' => $coAuthor['university_name'] ?? null,
                 ]);
 
                 $coAuthorItem = [
                     'name' => $name,
                     'email' => $email,
+                    'university_name' => $coAuthor['university_name'] ?? null,
                     'can_edit' => $canEdit,
                     'create_account' => $createAccount,
                     'user_id' => $userId,
@@ -344,7 +364,7 @@ class ArticleController extends Controller
         }
 
         $status = $request->query('status');
-        $query = Article::with(['magazine:id,title', 'user:id,name,email', 'tags', 'shareClicks']);
+        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email', 'tags', 'shareClicks']);
 
         // Scope to user's own articles if not an admin/editor
         if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor')) {
@@ -455,7 +475,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $article = Article::with(['tags', 'magazine', 'shareClicks', 'articleAuthors'])->find($id);
+        $article = Article::with(['tags', 'magazine', 'shareClicks', 'articleAuthors', 'assets'])->find($id);
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
@@ -495,6 +515,8 @@ class ArticleController extends Controller
             'abstract' => 'required|string',
             'full_text' => 'required|string',
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
+            'featured_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
+            'delete_featured_image' => 'nullable|string', // multipart forms present booleans as strings sometimes
             'status' => 'nullable|in:pending,approved,rejected',
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
@@ -514,6 +536,7 @@ class ArticleController extends Controller
             'co_authors.*.email' => 'required|email|max:255',
             'co_authors.*.can_edit' => 'boolean',
             'co_authors.*.create_account' => 'boolean',
+            'co_authors.*.university_name' => 'nullable|string|max:255',
         ]);
 
         if ($coAuthorsValidator->fails()) {
@@ -543,9 +566,26 @@ class ArticleController extends Controller
             $pdfPath = 'storage/' . $path;
         }
 
+        $featuredImagePath = $article->featured_image;
+        if ($request->input('delete_featured_image') === 'true' || $request->input('delete_featured_image') === '1') {
+            if ($featuredImagePath) {
+                $oldPath = str_replace('storage/', '', $featuredImagePath);
+                Storage::disk('public')->delete($oldPath);
+                $featuredImagePath = null;
+            }
+        }
+        if ($request->hasFile('featured_image')) {
+            if ($featuredImagePath) {
+                $oldPath = str_replace('storage/', '', $featuredImagePath);
+                Storage::disk('public')->delete($oldPath);
+            }
+            $path = $request->file('featured_image')->store('articles', 'public');
+            $featuredImagePath = 'storage/' . $path;
+        }
+
         $slug = $article->slug;
         if ($validated['title'] !== $article->title) {
-            $slug = Str::slug($validated['title']) . '-' . Str::random(6);
+            $slug = Str::slug($validated['title']);
         }
 
         // Restrict status edits to admins/editors only
@@ -567,6 +607,7 @@ class ArticleController extends Controller
             'abstract' => $validated['abstract'],
             'full_text' => $validated['full_text'],
             'pdf_path' => $pdfPath,
+            'featured_image' => $featuredImagePath,
             'status' => $status,
             'published_at' => $publishedAt,
         ];
@@ -612,6 +653,7 @@ class ArticleController extends Controller
                         'needs_password_reset' => true,
                         'email_verified_at' => now(),
                         'role_id' => $defaultRole?->id,
+                        'university_name' => $coAuthor['university_name'] ?? null,
                     ]);
 
                     $userId = $newUser->id;
@@ -625,11 +667,13 @@ class ArticleController extends Controller
                     'co_author_email' => $email,
                     'can_edit' => $canEdit,
                     'account_provisioned' => $accountProvisioned,
+                    'university_name' => $coAuthor['university_name'] ?? null,
                 ]);
 
                 $coAuthorItem = [
                     'name' => $name,
                     'email' => $email,
+                    'university_name' => $coAuthor['university_name'] ?? null,
                     'can_edit' => $canEdit,
                     'create_account' => $createAccount,
                     'user_id' => $userId,
@@ -730,7 +774,7 @@ class ArticleController extends Controller
         $totalImpressions = Article::sum('impressions');
 
         // Top articles by engagement
-        $topArticles = Article::with(['magazine:id,title', 'user:id,name'])
+        $topArticles = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name'])
             ->orderByRaw('(clicks + impressions) DESC')
             ->limit(5)
             ->get();

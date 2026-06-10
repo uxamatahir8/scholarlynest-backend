@@ -439,4 +439,131 @@ class MagazineTest extends TestCase
 
         $response->assertStatus(403);
     }
+
+    /**
+     * Test submitting an article with featured image.
+     */
+    public function test_authenticated_author_can_submit_article_with_featured_image(): void
+    {
+        Storage::fake('public');
+
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $user = User::factory()->create();
+        $user->assignRole('author');
+
+        Sanctum::actingAs($user);
+
+        $imageFile = \Illuminate\Http\UploadedFile::fake()->image('featured.png');
+
+        $response = $this->postJson('/api/articles', [
+            'magazine_id' => $magazine->id,
+            'title' => 'Quantum Logic Theory with Image',
+            'abstract' => 'Abstract synopsis details',
+            'full_text' => 'Full text content details',
+            'featured_image' => $imageFile,
+        ]);
+
+        $response->assertStatus(211);
+        
+        $article = Article::where('title', 'Quantum Logic Theory with Image')->first();
+        $this->assertNotNull($article);
+        $this->assertNotNull($article->featured_image);
+        $this->assertStringContainsString('storage/articles/', $article->featured_image);
+
+        // Check file exists in fake storage
+        $storedFilename = str_replace('storage/articles/', '', $article->featured_image);
+        Storage::disk('public')->assertExists('articles/' . $storedFilename);
+    }
+
+    /**
+     * Test updating an article's featured image.
+     */
+    public function test_author_can_update_article_featured_image(): void
+    {
+        Storage::fake('public');
+
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $user = User::factory()->create();
+        $user->assignRole('super_admin'); // use admin to allow updates easily without full policy verification
+
+        Sanctum::actingAs($user);
+
+        $article = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Original Title',
+            'slug' => 'original-title',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'status' => 'pending',
+            'featured_image' => 'storage/articles/old_image.png'
+        ]);
+
+        // Place a fake file
+        Storage::disk('public')->put('articles/old_image.png', 'fake old image content');
+
+        $newImageFile = \Illuminate\Http\UploadedFile::fake()->image('new_featured.png');
+
+        $response = $this->postJson("/api/admin/articles/{$article->id}", [
+            '_method' => 'PUT',
+            'magazine_id' => $magazine->id,
+            'title' => 'Original Title',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'featured_image' => $newImageFile,
+        ]);
+
+        $response->assertStatus(200);
+
+        $article->refresh();
+        $this->assertNotNull($article->featured_image);
+        $this->assertNotEquals('storage/articles/old_image.png', $article->featured_image);
+
+        // Old file deleted, new file exists
+        Storage::disk('public')->assertMissing('articles/old_image.png');
+        $newStoredFilename = str_replace('storage/articles/', '', $article->featured_image);
+        Storage::disk('public')->assertExists('articles/' . $newStoredFilename);
+    }
+
+    /**
+     * Test deleting an article's featured image.
+     */
+    public function test_author_can_delete_article_featured_image(): void
+    {
+        Storage::fake('public');
+
+        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
+        $user = User::factory()->create();
+        $user->assignRole('super_admin');
+
+        Sanctum::actingAs($user);
+
+        $article = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Original Title',
+            'slug' => 'original-title',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'status' => 'pending',
+            'featured_image' => 'storage/articles/old_image.png'
+        ]);
+
+        Storage::disk('public')->put('articles/old_image.png', 'fake old image content');
+
+        $response = $this->postJson("/api/admin/articles/{$article->id}", [
+            '_method' => 'PUT',
+            'magazine_id' => $magazine->id,
+            'title' => 'Original Title',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'delete_featured_image' => 'true',
+        ]);
+
+        $response->assertStatus(200);
+
+        $article->refresh();
+        $this->assertNull($article->featured_image);
+        Storage::disk('public')->assertMissing('articles/old_image.png');
+    }
 }

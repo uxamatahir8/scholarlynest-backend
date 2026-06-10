@@ -14,7 +14,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use App\Traits\Auditable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['name', 'email', 'password', 'google_id', 'verification_code', 'verification_code_expires_at', 'password_change_code', 'password_change_code_expires_at', 'two_factor_enabled', 'two_factor_code', 'two_factor_code_expires_at', 'email_verified_at', 'role_id', 'needs_password_reset', 'profile_image', 'pending_email', 'email_change_code', 'email_change_code_expires_at', 'new_email_verification_code', 'new_email_verification_code_expires_at', 'current_email_verified'])]
+#[Fillable(['name', 'email', 'password', 'google_id', 'verification_code', 'verification_code_expires_at', 'password_change_code', 'password_change_code_expires_at', 'two_factor_enabled', 'two_factor_code', 'two_factor_code_expires_at', 'email_verified_at', 'role_id', 'needs_password_reset', 'profile_image', 'university_name', 'pending_email', 'email_change_code', 'email_change_code_expires_at', 'new_email_verification_code', 'new_email_verification_code_expires_at', 'current_email_verified'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {

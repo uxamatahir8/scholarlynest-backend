@@ -16,6 +16,7 @@ class ArticleAuthor extends Model
         'co_author_email',
         'can_edit',
         'account_provisioned',
+        'university_name',
     ];
 
     protected $casts = [
