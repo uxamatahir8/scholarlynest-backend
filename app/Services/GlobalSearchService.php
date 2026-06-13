@@ -65,7 +65,7 @@ class GlobalSearchService
                     'id' => $article->id,
                     'title' => $article->title,
                     'type' => 'article',
-                    'target_url' => "/magazines/" . ($article->magazine ? $article->magazine->slug : 'unknown') . "/articles/{$article->slug}",
+                    'target_url' => "/articles/{$article->slug}",
                     'additional' => [
                         'abstract' => strip_tags($article->abstract),
                         'author' => $article->user ? $article->user->name : null,
