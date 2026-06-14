@@ -211,7 +211,7 @@ class MagazineTest extends TestCase
                 'slug' => "article-$i",
                 'abstract' => "Abstract $i",
                 'full_text' => "Full Text $i",
-                'status' => 'approved'
+                'status' => 'published'
             ]);
             $article->created_at = now()->addMinutes($i);
             $article->save();
@@ -252,7 +252,7 @@ class MagazineTest extends TestCase
             'slug' => 'article-one',
             'abstract' => 'Abstract 1',
             'full_text' => 'Full text 1',
-            'status' => 'approved',
+            'status' => 'published',
             'published_at' => \Carbon\Carbon::parse('2026-09-15 10:00:00'),
         ]);
 
@@ -263,7 +263,7 @@ class MagazineTest extends TestCase
             'slug' => 'article-two',
             'abstract' => 'Abstract 2',
             'full_text' => 'Full text 2',
-            'status' => 'approved',
+            'status' => 'published',
             'published_at' => \Carbon\Carbon::parse('2026-10-20 12:00:00'),
         ]);
 
@@ -310,7 +310,7 @@ class MagazineTest extends TestCase
             'slug' => 'first-article',
             'abstract' => 'Abstract 1',
             'full_text' => 'Full text 1',
-            'status' => 'approved',
+            'status' => 'published',
             'published_at' => \Carbon\Carbon::parse('2026-01-01 10:00:00'),
         ]);
 
@@ -321,7 +321,7 @@ class MagazineTest extends TestCase
             'slug' => 'second-article',
             'abstract' => 'Abstract 2',
             'full_text' => 'Full text 2',
-            'status' => 'approved',
+            'status' => 'published',
             'published_at' => \Carbon\Carbon::parse('2026-02-01 10:00:00'),
         ]);
 
@@ -332,7 +332,7 @@ class MagazineTest extends TestCase
             'slug' => 'third-article',
             'abstract' => 'Abstract 3',
             'full_text' => 'Full text 3',
-            'status' => 'approved',
+            'status' => 'published',
             'published_at' => \Carbon\Carbon::parse('2026-03-01 10:00:00'),
         ]);
 

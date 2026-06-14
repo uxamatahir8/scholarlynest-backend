@@ -45,4 +45,13 @@ class Magazine extends Model
     {
         return $this->hasMany(Tag::class);
     }
+
+    /**
+     * Get the editors associated with this magazine.
+     */
+    public function editors(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'magazine_user', 'magazine_id', 'user_id');
+    }
 }
+

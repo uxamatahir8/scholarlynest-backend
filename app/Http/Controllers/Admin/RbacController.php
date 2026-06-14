@@ -113,9 +113,16 @@ class RbacController extends Controller
     public function users(Request $request): JsonResponse
     {
         $loggedInUserId = $request->user()?->id;
-        $users = User::with('role')
+        $roleFilter = $request->query('role');
+        $users = User::with(['role', 'magazines'])
             ->when($loggedInUserId, function ($query) use ($loggedInUserId) {
                 return $query->where('id', '!=', $loggedInUserId);
+            })
+            ->when($roleFilter, function ($query) use ($roleFilter) {
+                return $query->whereHas('role', function ($q) use ($roleFilter) {
+                    $q->where('name', $roleFilter)
+                      ->orWhere('name', str_replace('_', '-', $roleFilter));
+                });
             })
             ->get();
         return response()->json($users);
@@ -160,18 +167,29 @@ class RbacController extends Controller
             'email' => 'required|string|email|max:255|unique:users,email',
             'role_id' => 'required|exists:roles,id',
             'university_name' => 'required|string|max:255',
+            'magazine_ids' => 'nullable|array',
+            'magazine_ids.*' => 'integer|exists:magazines,id',
         ]);
 
         $randomPassword = Str::random(32);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($randomPassword),
-            'email_verified_at' => now(),
-            'role_id' => $request->role_id,
-            'university_name' => $request->university_name,
-        ]);
+        $user = DB::transaction(function() use ($request, $randomPassword) {
+            $user = User::create([
+                'name' => $request->name,
+                'email' => $request->email,
+                'password' => Hash::make($randomPassword),
+                'email_verified_at' => now(),
+                'role_id' => $request->role_id,
+                'university_name' => $request->university_name,
+            ]);
+
+            $editorRole = Role::where('name', 'magazine_editor')->first();
+            if ($editorRole && intval($request->role_id) === $editorRole->id && $request->has('magazine_ids')) {
+                $user->magazines()->sync($request->magazine_ids);
+            }
+
+            return $user;
+        });
 
         // Generate reset code/token for password creation
         $code = strval(mt_rand(100000, 999999));
@@ -188,7 +206,58 @@ class RbacController extends Controller
 
         $this->sendWelcomeHtmlEmail($user->email, $user->name, $createPasswordLink);
 
-        return response()->json($user->load('role'), 201);
+        return response()->json($user->load(['role', 'magazines']), 201);
+    }
+
+    /**
+     * Update user details and sync magazines if magazine_editor role.
+     */
+    public function updateUser(Request $request, int $id): JsonResponse
+    {
+        $request->validate([
+            'name' => 'sometimes|required|string|max:255',
+            'email' => 'sometimes|required|string|email|max:255|unique:users,email,' . $id,
+            'role_id' => 'sometimes|required|exists:roles,id',
+            'university_name' => 'sometimes|required|string|max:255',
+            'magazine_ids' => 'nullable|array',
+            'magazine_ids.*' => 'integer|exists:magazines,id',
+        ]);
+
+        $user = User::findOrFail($id);
+        
+        // Prevent users from de-roling themselves from super_admin
+        if ($request->has('role_id') && $user->id === $request->user()->id && $user->role?->name === 'super_admin' && intval($request->role_id) !== $user->role_id) {
+            return response()->json([
+                'message' => 'You cannot remove your own super_admin role.'
+            ], 400);
+        }
+
+        DB::transaction(function () use ($request, $user) {
+            if ($request->has('name')) {
+                $user->name = $request->name;
+            }
+            if ($request->has('email')) {
+                $user->email = $request->email;
+            }
+            if ($request->has('role_id')) {
+                $user->role_id = $request->role_id;
+            }
+            if ($request->has('university_name')) {
+                $user->university_name = $request->university_name;
+            }
+            $user->save();
+
+            $editorRole = Role::where('name', 'magazine_editor')->first();
+            if ($editorRole && intval($user->role_id) === $editorRole->id) {
+                if ($request->has('magazine_ids')) {
+                    $user->magazines()->sync($request->input('magazine_ids'));
+                }
+            } else {
+                $user->magazines()->detach();
+            }
+        });
+
+        return response()->json($user->load(['role', 'magazines']));
     }
 
     /**

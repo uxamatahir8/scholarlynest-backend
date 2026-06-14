@@ -115,21 +115,28 @@ class MagazineBulkArticlesSeeder extends Seeder
                     // Compute chronological timestamps
                     $publishDate = $startDate->copy()->addSeconds((int)($i * $stepSeconds));
 
-                    // Status distribution: 80% Approved, 10% Pending, 10% Rejected
+                    // Status distribution: 70% Published, 10% Approved, 10% Submitted/Under Review/Resubmitted, 10% Rejections
                     $statusIndicator = $i % 10;
-                    if ($statusIndicator < 8) {
+                    if ($statusIndicator < 7) {
+                        $status = 'published';
+                        $rejectionReason = null;
+                        $publishedAt = $publishDate;
+                    } elseif ($statusIndicator === 7) {
                         $status = 'approved';
                         $rejectionReason = null;
                         $publishedAt = $publishDate;
                     } elseif ($statusIndicator === 8) {
-                        $status = 'pending';
+                        $status = ($i % 3 === 0) ? 'submitted' : (($i % 3 === 1) ? 'under_review' : 'resubmitted');
                         $rejectionReason = null;
                         $publishedAt = null;
                     } else {
-                        $status = 'rejected';
+                        $status = ($i % 2 === 0) ? 'minor_review_rejected' : 'fully_rejected';
                         $rejectionReason = $rejectionReasons[($i + $magazine->id) % count($rejectionReasons)];
                         $publishedAt = null;
                     }
+
+                    $publishedYear = ($status === 'published') ? (int)$publishDate->format('Y') : null;
+                    $publishedMonth = ($status === 'published') ? $publishDate->format('F') : null;
 
                     // Select Unsplash images
                     $img1 = $unsplashImages[($i) % count($unsplashImages)];
@@ -160,6 +167,8 @@ class MagazineBulkArticlesSeeder extends Seeder
                         'pdf_path' => null,
                         'status' => $status,
                         'rejection_reason' => $rejectionReason,
+                        'published_year' => $publishedYear,
+                        'published_month' => $publishedMonth,
                         'clicks' => rand(5, 50),
                         'impressions' => rand(60, 400),
                         'published_at' => $publishedAt,

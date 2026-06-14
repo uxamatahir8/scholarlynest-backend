@@ -36,8 +36,26 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // If the article is not approved, authorize the viewer via ArticlePolicy
-        if ($article->status === 'pending' || $article->status === 'rejected') {
+        // submitted -> under_review trigger on first administrative/editorial view
+        if ($article->status === 'submitted') {
+            $user = request()->user('sanctum');
+            if ($user) {
+                $isAdminOrEditor = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
+                if (!$isAdminOrEditor && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+                    $isAdminOrEditor = \DB::table('magazine_user')
+                        ->where('user_id', $user->id)
+                        ->where('magazine_id', $article->magazine_id)
+                        ->exists();
+                }
+                if ($isAdminOrEditor) {
+                    $article->status = 'under_review';
+                    $article->saveQuietly();
+                }
+            }
+        }
+
+        // If the article is not published, authorize the viewer via ArticlePolicy
+        if ($article->status !== 'published') {
             $user = request()->user('sanctum');
             if (!$user) {
                 // Hide the page entirely for unauthorized public viewers
@@ -53,7 +71,7 @@ class ArticleController extends Controller
 
         // Fetch author user metrics (total papers published)
         $authorApprovedCount = Article::where('user_id', $article->user_id)
-            ->where('status', 'approved')
+            ->where('status', 'published')
             ->count();
 
         // Map metrics payload
@@ -66,7 +84,7 @@ class ArticleController extends Controller
         $publishedAt = $article->published_at ?? $article->created_at;
 
         $previousArticle = Article::where('magazine_id', $article->magazine_id)
-            ->where('status', 'approved')
+            ->where('status', 'published')
             ->where(function($query) use ($publishedAt) {
                 $query->where('published_at', '<', $publishedAt)
                       ->orWhere(function($q) use ($publishedAt) {
@@ -78,7 +96,7 @@ class ArticleController extends Controller
             ->first();
 
         $nextArticle = Article::where('magazine_id', $article->magazine_id)
-            ->where('status', 'approved')
+            ->where('status', 'published')
             ->where(function($query) use ($publishedAt) {
                 $query->where('published_at', '>', $publishedAt)
                       ->orWhere(function($q) use ($publishedAt) {
@@ -116,13 +134,13 @@ class ArticleController extends Controller
 
     /**
      * GET /api/articles/latest
-     * Fetch a list of recently approved articles across all magazines.
+     * Fetch a list of recently published articles across all magazines.
      */
     public function latest(Request $request): JsonResponse
     {
         $limit = $request->integer('limit', 6);
         
-        $articles = Article::where('status', 'approved')
+        $articles = Article::where('status', 'published')
             ->with(['magazine:id,title,slug,cover_image', 'user:id,name'])
             ->latest()
             ->limit($limit)
@@ -366,9 +384,19 @@ class ArticleController extends Controller
         $status = $request->query('status');
         $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email', 'tags', 'shareClicks']);
 
-        // Scope to user's own articles if not an admin/editor
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor')) {
-            $query->where('user_id', $user->id);
+        // Scope to user's own articles if not an admin/editor, but bypass for magazine_editors
+        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
+        if (!$isEditorial) {
+            if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+                $magazineIds = \DB::table('magazine_user')
+                    ->where('user_id', $user->id)
+                    ->pluck('magazine_id')
+                    ->toArray();
+                
+                $query->whereIn('magazine_id', $magazineIds);
+            } else {
+                $query->where('user_id', $user->id);
+            }
         }
 
         if ($status) {
@@ -407,46 +435,71 @@ class ArticleController extends Controller
     public function review(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (
-            !$user->hasRole('super_admin') &&
-            !$user->hasRole('admin') &&
-            !$user->hasRole('editor') &&
-            !$user->hasPermission('articles.approve') &&
-            !$user->hasPermission('articles.auto-approve')
-        )) {
-            return response()->json(['message' => 'Forbidden. Admin/Editor/Approve privileges required.'], 403);
-        }
-
-        $validated = $request->validate([
-            'status' => 'required|in:approved,rejected',
-            'rejection_reason' => 'required_if:status,rejected|nullable|string',
-        ]);
+        
+        $isEditorial = $user && (
+            $user->hasRole('super_admin') ||
+            $user->hasRole('admin') ||
+            $user->hasRole('editor')
+        );
 
         $article = Article::with('user')->find($id);
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
+        $isMagazineEditor = $user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'));
+        if ($isMagazineEditor) {
+            // 1. Must be assigned to the magazine
+            $isAssigned = \DB::table('magazine_user')
+                ->where('user_id', $user->id)
+                ->where('magazine_id', $article->magazine_id)
+                ->exists();
+
+            if (!$isAssigned) {
+                return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
+            }
+
+            // 2. Cannot transition to 'published'
+            if ($request->input('status') === 'published') {
+                return response()->json(['message' => 'Forbidden. Magazine editors cannot publish articles directly.'], 403);
+            }
+        } elseif (!$isEditorial && !$user->hasPermission('articles.approve') && !$user->hasPermission('articles.auto-approve')) {
+            return response()->json(['message' => 'Forbidden. Editorial privileges required.'], 403);
+        }
+
+        $validated = $request->validate([
+            'status' => 'required|in:approved,published,minor_review_rejected,fully_rejected',
+            'rejection_reason' => 'required_if:status,minor_review_rejected,fully_rejected|nullable|string',
+            'published_year' => 'required_if:status,published|nullable|integer|min:2000|max:2026',
+            'published_month' => 'required_if:status,published|nullable|string|max:50',
+        ]);
+
         $oldStatus = $article->status;
         $article->status = $validated['status'];
-        if ($validated['status'] === 'rejected') {
+        
+        if (in_array($validated['status'], ['minor_review_rejected', 'fully_rejected'])) {
             $article->rejection_reason = $validated['rejection_reason'];
+            $article->published_year = null;
+            $article->published_month = null;
         } else {
             $article->rejection_reason = null;
-            if ($validated['status'] === 'approved' && !$article->published_at) {
+            if ($validated['status'] === 'published') {
+                $article->published_year = $validated['published_year'];
+                $article->published_month = $validated['published_month'];
+            }
+            if (!$article->published_at) {
                 $article->published_at = now();
             }
         }
 
-        // If approved and pdf_path is empty, compile and generate a clean dynamic PDF download
-        if ($validated['status'] === 'approved' && empty($article->pdf_path)) {
+        // If approved/published and pdf_path is empty, compile and generate a clean dynamic PDF download
+        if (in_array($validated['status'], ['approved', 'published']) && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
             } catch (\Exception $e) {
-                // Return descriptive message if PDF rendering engine fails
                 return response()->json([
-                    'message' => 'Article status approved, but dynamic PDF generation failed: ' . $e->getMessage(),
+                    'message' => 'Article status updated, but dynamic PDF generation failed: ' . $e->getMessage(),
                     'error' => $e->getTraceAsString()
                 ], 500);
             }
@@ -454,8 +507,16 @@ class ArticleController extends Controller
 
         $article->save();
 
-        if ($article->status === 'approved' && $oldStatus !== 'approved') {
+        // Send newsletter announcement when advanced to published
+        if ($article->status === 'published' && $oldStatus !== 'published') {
             $this->sendArticleNewsletter($article);
+        }
+
+        // Dispatch queued Laravel Mailable to author for rejections
+        if (in_array($article->status, ['minor_review_rejected', 'fully_rejected'])) {
+            \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
+                new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
+            );
         }
 
         return response()->json([
@@ -485,6 +546,21 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
+        // first-read trigger: transition 'submitted' to 'under_review' on admin/editor view
+        if ($article->status === 'submitted') {
+            $isAdminOrEditor = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
+            if (!$isAdminOrEditor && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+                $isAdminOrEditor = \DB::table('magazine_user')
+                    ->where('user_id', $user->id)
+                    ->where('magazine_id', $article->magazine_id)
+                    ->exists();
+            }
+            if ($isAdminOrEditor) {
+                $article->status = 'under_review';
+                $article->saveQuietly();
+            }
+        }
+
         return response()->json($article);
     }
 
@@ -504,8 +580,19 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
+        // Check if user has editorial privileges
+        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
+
         // Authorize via ArticlePolicy
         if ($user->cannot('update', $article)) {
+            if (!$isEditorial && in_array($article->status, ['resubmitted', 'under_review', 'published'])) {
+                return response()->json([
+                    'message' => 'The given data was invalid.',
+                    'errors' => [
+                        'status' => ["You cannot edit this article because it is currently {$article->status}."]
+                    ]
+                ], 422);
+            }
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -517,7 +604,7 @@ class ArticleController extends Controller
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
             'featured_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
             'delete_featured_image' => 'nullable|string', // multipart forms present booleans as strings sometimes
-            'status' => 'nullable|in:pending,approved,rejected',
+            'status' => 'nullable|in:submitted,under_review,approved,published,minor_review_rejected,fully_rejected,resubmitted',
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
@@ -588,15 +675,61 @@ class ArticleController extends Controller
             $slug = Str::slug($validated['title']);
         }
 
-        // Restrict status edits to admins/editors only
+        // Restrict status edits to admins/editors only or handle resubmission
         $oldStatus = $article->status;
         $status = $article->status;
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+
+        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor') || 
+            (($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) && 
+             \DB::table('magazine_user')->where('user_id', $user->id)->where('magazine_id', $article->magazine_id)->exists());
+
+        if (!$isEditorial) {
+            // Authors saving edits must reset the status to 'resubmitted', and only allowed if currently minor_review_rejected
+            if ($article->status !== 'minor_review_rejected') {
+                return response()->json([
+                    'message' => "Modifying this manuscript is locked. Current status: {$article->status}."
+                ], 422);
+            }
+            $status = 'resubmitted';
+        } else {
             $status = $validated['status'] ?? $article->status;
         }
 
+        $publishedYear = $article->published_year;
+        $publishedMonth = $article->published_month;
+        if ($status === 'published') {
+            $publishValidator = \Validator::make($request->all(), [
+                'published_year' => 'required|integer|min:2000|max:2026',
+                'published_month' => 'required|string|max:50',
+            ]);
+            if ($publishValidator->fails()) {
+                return response()->json([
+                    'message' => 'Publishing targeting metadata is required.',
+                    'errors' => $publishValidator->errors()
+                ], 422);
+            }
+            $publishedYear = $request->input('published_year');
+            $publishedMonth = $request->input('published_month');
+        }
+
+        $rejectionReason = $article->rejection_reason;
+        if (in_array($status, ['minor_review_rejected', 'fully_rejected'])) {
+            $rejectionReasonValidator = \Validator::make($request->all(), [
+                'rejection_reason' => 'required|string',
+            ]);
+            if ($rejectionReasonValidator->fails()) {
+                return response()->json([
+                    'message' => 'Rejection reason is required.',
+                    'errors' => $rejectionReasonValidator->errors()
+                ], 422);
+            }
+            $rejectionReason = $request->input('rejection_reason');
+        } else {
+            $rejectionReason = null;
+        }
+
         $publishedAt = $article->published_at;
-        if ($status === 'approved' && !$publishedAt) {
+        if (($status === 'approved' || $status === 'published') && !$publishedAt) {
             $publishedAt = now();
         }
 
@@ -610,6 +743,9 @@ class ArticleController extends Controller
             'featured_image' => $featuredImagePath,
             'status' => $status,
             'published_at' => $publishedAt,
+            'published_year' => $publishedYear,
+            'published_month' => $publishedMonth,
+            'rejection_reason' => $rejectionReason,
         ];
 
         if ($user->hasPermission('seo.articles')) {
@@ -689,8 +825,8 @@ class ArticleController extends Controller
         // Dispatch synchronized queued notifications
         event(new \App\Events\ArticleSubmitted($article, $coAuthorsData));
 
-        // If approved and pdf_path is empty, generate dynamic PDF
-        if ($article->status === 'approved' && empty($article->pdf_path)) {
+        // If approved/published and pdf_path is empty, generate dynamic PDF
+        if (in_array($article->status, ['approved', 'published']) && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -702,8 +838,16 @@ class ArticleController extends Controller
             }
         }
 
-        if ($article->status === 'approved' && $oldStatus !== 'approved') {
+        // Send newsletter announcement when advanced to published
+        if ($article->status === 'published' && $oldStatus !== 'published') {
             $this->sendArticleNewsletter($article);
+        }
+
+        // Dispatch queued Laravel Mailable to author for rejections
+        if (in_array($article->status, ['minor_review_rejected', 'fully_rejected']) && $article->status !== $oldStatus) {
+            \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
+                new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
+            );
         }
 
         return response()->json([
@@ -758,23 +902,48 @@ class ArticleController extends Controller
     public function adminStats(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor'))) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        $totalArticles = Article::count();
-        $pendingArticles = Article::where('status', 'pending')->count();
-        $approvedArticles = Article::where('status', 'approved')->count();
-        $rejectedArticles = Article::where('status', 'rejected')->count();
+        // If user is a magazine_editor, optionally query only their assigned magazines (or general if they have global permission)
+        $magazineIds = null;
+        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+            $magazineIds = \DB::table('magazine_user')
+                ->where('user_id', $user->id)
+                ->pluck('magazine_id')
+                ->toArray();
+        }
 
-        $totalMagazines = \App\Models\Magazine::count();
-        $totalUsers = \App\Models\User::count();
+        $query = Article::query();
+        if ($magazineIds !== null) {
+            $query->whereIn('magazine_id', $magazineIds);
+        }
 
-        $totalClicks = Article::sum('clicks');
-        $totalImpressions = Article::sum('impressions');
+        $totalArticles = (clone $query)->count();
+        $submittedArticles = (clone $query)->where('status', 'submitted')->count();
+        $underReviewArticles = (clone $query)->where('status', 'under_review')->count();
+        $approvedArticles = (clone $query)->where('status', 'approved')->count();
+        $publishedArticles = (clone $query)->where('status', 'published')->count();
+        $minorReviewRejectedArticles = (clone $query)->where('status', 'minor_review_rejected')->count();
+        $fullyRejectedArticles = (clone $query)->where('status', 'fully_rejected')->count();
+        $resubmittedArticles = (clone $query)->where('status', 'resubmitted')->count();
+
+        $magazinesQuery = \App\Models\Magazine::query();
+        if ($magazineIds !== null) {
+            $magazinesQuery->whereIn('id', $magazineIds);
+        }
+        $totalMagazines = $magazinesQuery->count();
+        $totalUsers = \App\Models\User::count(); // general users count remains system-wide
+
+        $totalClicks = (clone $query)->sum('clicks');
+        $totalImpressions = (clone $query)->sum('impressions');
 
         // Top articles by engagement
         $topArticles = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name'])
+            ->when($magazineIds !== null, function($q) use ($magazineIds) {
+                $q->whereIn('magazine_id', $magazineIds);
+            })
             ->orderByRaw('(clicks + impressions) DESC')
             ->limit(5)
             ->get();
@@ -782,9 +951,13 @@ class ArticleController extends Controller
         return response()->json([
             'articles_count' => [
                 'total' => $totalArticles,
-                'pending' => $pendingArticles,
+                'submitted' => $submittedArticles,
+                'under_review' => $underReviewArticles,
                 'approved' => $approvedArticles,
-                'rejected' => $rejectedArticles,
+                'published' => $publishedArticles,
+                'minor_review_rejected' => $minorReviewRejectedArticles,
+                'fully_rejected' => $fullyRejectedArticles,
+                'resubmitted' => $resubmittedArticles,
             ],
             'magazines_count' => $totalMagazines,
             'users_count' => $totalUsers,

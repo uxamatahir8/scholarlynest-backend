@@ -16,12 +16,12 @@ class ArticlePolicy
      */
     public function view(?User $user, Article $article): bool
     {
-        // Publicly approved articles can be viewed by anyone
-        if ($article->status === 'approved') {
+        // Publicly published articles can be viewed by anyone
+        if ($article->status === 'published') {
             return true;
         }
 
-        // Pending or rejected articles require authentication
+        // Non-published states require authentication
         if (!$user) {
             return false;
         }
@@ -29,6 +29,17 @@ class ArticlePolicy
         // Super admins, admins, and editors can view any article
         if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
             return true;
+        }
+
+        // Assigned magazine editors can view
+        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+            $isAssigned = DB::table('magazine_user')
+                ->where('user_id', $user->id)
+                ->where('magazine_id', $article->magazine_id)
+                ->exists();
+            if ($isAssigned) {
+                return true;
+            }
         }
 
         // Primary author can view
@@ -56,6 +67,18 @@ class ArticlePolicy
             return true;
         }
 
+        // Assigned magazine editors CANNOT edit (returns false unconditionally)
+        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+            return false;
+        }
+
+        // Authors (and editing co-authors) must be blocked from modifying their manuscript
+
+        // if status is not explicitly 'minor_review_rejected'
+        if ($article->status !== 'minor_review_rejected') {
+            return false;
+        }
+
         // Primary author can edit
         if ($article->user_id === $user->id) {
             return true;
@@ -68,4 +91,24 @@ class ArticlePolicy
             ->where('can_edit', true)
             ->exists();
     }
+
+    /**
+     * Determine whether the user can approve/reject the article.
+     */
+    public function approve(User $user, Article $article): bool
+    {
+        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+            return true;
+        }
+
+        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+            return DB::table('magazine_user')
+                ->where('user_id', $user->id)
+                ->where('magazine_id', $article->magazine_id)
+                ->exists();
+        }
+
+        return false;
+    }
 }
+

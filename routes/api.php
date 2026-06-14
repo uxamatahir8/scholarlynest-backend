@@ -56,8 +56,13 @@ Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShare
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf']);
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download']);
 
-Route::get('/public/magazines', function () {
-    $magazines = \App\Models\Magazine::orderBy('created_at', 'desc')->take(3)->get();
+Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
+    $query = \App\Models\Magazine::orderBy('created_at', 'desc');
+    if ($request->has('per_page') || $request->has('limit')) {
+        $limit = $request->integer('per_page') ?: $request->integer('limit');
+        $query->limit($limit);
+    }
+    $magazines = $query->get();
     return response()->json(['data' => $magazines]);
 });
 
@@ -122,6 +127,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
         Route::get('/stats', [ArticleController::class, 'adminStats']);
+        Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
         Route::get('/contact-messages', [ContactController::class, 'getMessages']);
         Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);
@@ -188,6 +194,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
             Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
             Route::post('/users', [RbacController::class, 'storeUser'])->middleware('permission:users.create');
             Route::patch('/users/{id}/role', [RbacController::class, 'updateUserRole'])->middleware('permission:users.manage');
+            Route::patch('/users/{id}', [RbacController::class, 'updateUser'])->middleware('permission:users.manage');
 
             // Default Registration Role Settings
             Route::get('/settings/registration-role', [RbacController::class, 'getRegistrationRole'])->middleware('permission:settings.view-any');

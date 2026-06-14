@@ -273,21 +273,31 @@ class MagazineSeeder extends Seeder
                 $title = $prefixes[$pIdx] . ' ' . $subjects[$sIdx] . ' ' . $contexts[$cIdx];
                 $slug = Str::slug($title);
 
-                // Distribute statuses: 45 Approved, 3 Pending, 2 Rejected
-                if ($i < 45) {
+                // Distribute statuses: 40 Published, 5 Approved, 2 Submitted, 1 Under Review, 1 Minor Review Rejected, 1 Fully Rejected
+                if ($i < 40) {
+                    $status = 'published';
+                } elseif ($i < 45) {
                     $status = 'approved';
-                } elseif ($i < 48) {
-                    $status = 'pending';
+                } elseif ($i < 47) {
+                    $status = 'submitted';
+                } elseif ($i === 47) {
+                    $status = 'under_review';
+                } elseif ($i === 48) {
+                    $status = 'minor_review_rejected';
                 } else {
-                    $status = 'rejected';
+                    $status = 'fully_rejected';
                 }
 
                 // Random dates within boundaries
                 $randomTimestamp = rand($startTimestamp, $endTimestamp);
-                $publishedAtDate = ($status === 'approved') ? date('Y-m-d H:i:s', $randomTimestamp) : null;
+                $publishedAtDate = (in_array($status, ['approved', 'published'])) ? date('Y-m-d H:i:s', $randomTimestamp) : null;
+                
+                $publishedYear = ($status === 'published') ? (int)date('Y', $randomTimestamp) : null;
+                $publishedMonth = ($status === 'published') ? date('F', $randomTimestamp) : null;
+
                 $createdAtDate = date('Y-m-d H:i:s', $randomTimestamp);
 
-                $pdfPath = ($status === 'approved' && $i % 3 === 0) ? 'storage/manuscripts/research_paper_' . ($m * 50 + $i) . '.pdf' : null;
+                $pdfPath = (in_array($status, ['approved', 'published']) && $i % 3 === 0) ? 'storage/manuscripts/research_paper_' . ($m * 50 + $i) . '.pdf' : null;
                 $featuredImage = ($i % 7 === 0) ? 'storage/articles/feature_image_' . ($m * 50 + $i) . '.jpg' : null;
 
                 $abstract = "<p>This research presents a detailed investigation regarding " . strtolower($subjects[$sIdx]) . " " . $contexts[$cIdx] . ". We demonstrate that optimization of these parameters yields a significant improvement in overall system telemetry.</p>";
@@ -316,8 +326,10 @@ class MagazineSeeder extends Seeder
                     'pdf_path' => $pdfPath,
                     'featured_image' => $featuredImage,
                     'status' => $status,
-                    'rejection_reason' => ($status === 'rejected') ? 'The submission violates basic telemetry guidelines and lacks peer-validated empirical data.' : null,
+                    'rejection_reason' => (in_array($status, ['minor_review_rejected', 'fully_rejected'])) ? 'The submission violates basic telemetry guidelines and lacks peer-validated empirical data.' : null,
                     'published_at' => $publishedAtDate,
+                    'published_year' => $publishedYear,
+                    'published_month' => $publishedMonth,
                     'created_at' => $createdAtDate,
                     'updated_at' => $createdAtDate,
                     'clicks' => $clicks,
@@ -327,8 +339,8 @@ class MagazineSeeder extends Seeder
                     'seo_keywords' => $seoKeywords,
                 ]);
 
-                // Seed co-authors for 30% of approved or pending articles
-                if (($status === 'approved' || $status === 'pending') && $i % 3 === 0) {
+                // Seed co-authors for 30% of approved, published, or under-review articles
+                if (in_array($status, ['approved', 'published', 'submitted', 'under_review', 'resubmitted']) && $i % 3 === 0) {
                     $numCoAuthors = rand(1, 2);
                     for ($c = 0; $c < $numCoAuthors; $c++) {
                         $coAuthorIndex = ($m * 50 + $i * 2 + $c) % count($coAuthorNames);

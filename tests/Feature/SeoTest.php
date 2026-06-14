@@ -315,7 +315,7 @@ class SeoTest extends TestCase
             'magazine_id' => $magazine->id,
             'abstract' => 'This is a long abstract describing our breakthroughs in deep learning networks.',
             'full_text' => 'Full text content here...',
-            'status' => 'approved',
+            'status' => 'published',
         ]);
 
         $response = $this->getJson("/api/articles/deep-learning-breakthroughs");

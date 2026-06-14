@@ -23,9 +23,16 @@ class MagazineController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Magazine::withCount(['articles' => function ($query) {
-            $query->where('status', 'approved');
+        $query = Magazine::with('editors')->withCount(['articles' => function ($query) {
+            $query->where('status', 'published');
         }]);
+
+        $user = $request->user('sanctum') ?: $request->user();
+        if ($user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+            $query->whereHas('editors', function($q) use ($user) {
+                $q->where('users.id', $user->id);
+            });
+        }
 
         if ($request->boolean('all', false)) {
             return response()->json($query->get());
@@ -42,7 +49,7 @@ class MagazineController extends Controller
     public function latest(Request $request): JsonResponse
     {
         $magazines = Magazine::withCount(['articles' => function ($query) {
-            $query->where('status', 'approved');
+            $query->where('status', 'published');
         }])
         ->latest()
         ->limit(10)
@@ -60,8 +67,16 @@ class MagazineController extends Controller
      */
     public function show(string $slug): JsonResponse
     {
-        $magazine = Magazine::where('slug', $slug)
-            ->with(['pages' => function ($query) {
+        $user = request()->user('sanctum');
+        if ($user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+            $query = Magazine::where('slug', $slug)->whereHas('editors', function($q) use ($user) {
+                $q->where('users.id', $user->id);
+            });
+        } else {
+            $query = Magazine::where('slug', $slug);
+        }
+
+        $magazine = $query->with(['pages' => function ($query) {
                 $query->orderBy('sort_order', 'asc');
             }])
             ->first();
@@ -71,14 +86,36 @@ class MagazineController extends Controller
         }
 
         $articles = $magazine->articles()
-            ->where('status', 'approved')
+            ->where('status', 'published')
             ->orderBy('published_at', 'desc')
             ->with('user:id,name,email')
             ->get();
 
         $groupedArticles = $articles->groupBy(function ($article) {
-            $date = $article->published_at ?? $article->created_at;
-            return \Carbon\Carbon::parse($date)->format('M Y');
+            $month = $article->published_month;
+            $year = $article->published_year;
+
+            if (!$month || !$year) {
+                $date = $article->published_at ?? $article->created_at;
+                if ($date) {
+                    $month = $date->format('M');
+                    $year = $date->format('Y');
+                } else {
+                    $month = 'Jan';
+                    $year = 2026;
+                }
+            }
+
+            // Standardize month to 3-letter abbreviation (e.g., 'September' -> 'Sep', 'Sep' -> 'Sep')
+            if (strlen($month) > 3) {
+                try {
+                    $month = \Carbon\Carbon::parse($month)->format('M');
+                } catch (\Exception $e) {
+                    $month = substr($month, 0, 3);
+                }
+            }
+
+            return "{$month} {$year}";
         });
 
         $magazineData = $magazine->toArray();
@@ -93,7 +130,7 @@ class MagazineController extends Controller
 
     /**
      * GET /api/magazines/{slug}/articles
-     * Public paginated feed of approved articles under a specific magazine.
+     * Public paginated feed of published articles under a specific magazine.
      */
     public function articles(string $slug): JsonResponse
     {
@@ -104,7 +141,7 @@ class MagazineController extends Controller
         }
 
         $articles = $magazine->articles()
-            ->where('status', 'approved')
+            ->where('status', 'published')
             ->with('user:id,name,email')
             ->orderBy('created_at', 'desc')
             ->paginate(10);
@@ -131,6 +168,9 @@ class MagazineController extends Controller
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
+            'editor_id' => 'nullable|integer|exists:users,id',
+            'editor_user_ids' => 'nullable|array',
+            'editor_user_ids.*' => 'integer|exists:users,id',
         ]);
 
         $coverImagePath = null;
@@ -158,6 +198,18 @@ class MagazineController extends Controller
         }
 
         $magazine = Magazine::create($magazineData);
+
+        // Sync editors
+        $editorUserIds = [];
+        if ($request->has('editor_user_ids')) {
+            $editorUserIds = (array) $request->input('editor_user_ids');
+        } elseif ($request->has('editor_id')) {
+            $editorId = $request->input('editor_id');
+            if (!empty($editorId)) {
+                $editorUserIds = [intval($editorId)];
+            }
+        }
+        $magazine->editors()->sync($editorUserIds);
 
         // Dispatch newsletter announcement to subscribers
         try {
@@ -203,7 +255,7 @@ class MagazineController extends Controller
 
         return response()->json([
             'message' => 'Magazine created successfully.',
-            'magazine' => $magazine
+            'magazine' => $magazine->load('editors')
         ], 211);
     }
 
@@ -305,9 +357,21 @@ class MagazineController extends Controller
 
         $magazine->update($updateData);
 
+        // Sync editors
+        $editorUserIds = [];
+        if ($request->has('editor_user_ids')) {
+            $editorUserIds = (array) $request->input('editor_user_ids');
+        } elseif ($request->has('editor_id')) {
+            $editorId = $request->input('editor_id');
+            if (!empty($editorId)) {
+                $editorUserIds = [intval($editorId)];
+            }
+        }
+        $magazine->editors()->sync($editorUserIds);
+
         return response()->json([
             'message' => 'Magazine updated successfully.',
-            'magazine' => $magazine
+            'magazine' => $magazine->load('editors')
         ]);
     }
 

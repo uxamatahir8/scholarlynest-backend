@@ -42,7 +42,8 @@ class DatabaseSeeder extends Seeder
                 'faqs',
                 'footer_pages',
                 'footer_categories',
-                'contact_subjects'
+                'contact_subjects',
+                'magazine_user'
             ];
 
             foreach ($tables as $table) {
@@ -69,6 +70,12 @@ class DatabaseSeeder extends Seeder
                 'is_system' => true,
             ]);
 
+            $magazineEditorRole = Role::create([
+                'name' => 'magazine_editor',
+                'display_name' => 'Magazine Editor',
+                'is_system' => true,
+            ]);
+            
             // ==========================================
             // 4. SEED GRANULAR PERMISSIONS
             // ==========================================
@@ -139,6 +146,17 @@ class DatabaseSeeder extends Seeder
                 'articles.manage-assets',
             ])->get();
             $authorRole->permissions()->sync($authorPermissions->pluck('id'));
+
+            // Magazine Editor gets permissions for managing articles and magazines they are assigned to
+            $magazineEditorPermissions = Permission::whereIn('name', [
+                'magazines.view-any',
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.approve',
+                'articles.manage-assets',
+                'seo.articles',
+            ])->get();
+            $magazineEditorRole->permissions()->sync($magazineEditorPermissions->pluck('id'));
 
             // ==========================================
             // 6. SEED DEFAULT USER ACCOUNTS

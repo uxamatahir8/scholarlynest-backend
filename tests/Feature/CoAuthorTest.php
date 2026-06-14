@@ -232,6 +232,7 @@ class CoAuthorTest extends TestCase
         $response->assertStatus(403);
 
         // 5. Co-author with edit rights can edit (update)
+        $article->update(['status' => 'minor_review_rejected']);
         Sanctum::actingAs($charlie);
         $response = $this->putJson('/api/admin/articles/' . $article->id, [
             'magazine_id' => $this->magazine->id,

@@ -172,4 +172,13 @@ class User extends Authenticatable
         // Load permissions relationship to check name
         return $role->permissions->contains('name', $permission);
     }
+
+    /**
+     * Get the magazines assigned to this editor.
+     */
+    public function magazines(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(Magazine::class, 'magazine_user', 'user_id', 'magazine_id');
+    }
 }
+

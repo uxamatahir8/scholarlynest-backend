@@ -102,7 +102,7 @@ class ArticleAssetTest extends TestCase
             'slug' => 'parallel-systems',
             'abstract' => 'This is the abstract.',
             'full_text' => 'This is the full text.',
-            'status' => 'pending',
+            'status' => 'minor_review_rejected',
         ]);
 
         // Fake public disk
