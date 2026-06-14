@@ -56,6 +56,19 @@ Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShare
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf']);
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download']);
 
+Route::get('/public/magazines', function () {
+    $magazines = \App\Models\Magazine::orderBy('created_at', 'desc')->take(3)->get();
+    return response()->json(['data' => $magazines]);
+});
+
+Route::get('/public/newsletters', function () {
+    $campaigns = \App\Models\NewsletterCampaign::select(['id', 'subject', 'created_at'])
+        ->orderBy('created_at', 'desc')
+        ->take(3)
+        ->get();
+    return response()->json(['data' => $campaigns]);
+});
+
 // Authentication (Strictly throttled to 10 requests per minute per IP)
 Route::middleware('throttle:10,1')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
@@ -182,3 +195,5 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         });
     });
 });
+
+
