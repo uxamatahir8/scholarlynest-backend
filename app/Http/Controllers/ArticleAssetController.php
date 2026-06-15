@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAsset;
 use Illuminate\Http\JsonResponse;
@@ -119,8 +120,8 @@ class ArticleAssetController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // If the article is not approved, authorize the viewer via ArticlePolicy
-        if ($article->status !== 'approved') {
+        // Accepted articles include legacy approved records during the status transition.
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::ACCEPTED) {
             $user = $request->user('sanctum');
             if (!$user || $user->cannot('view', $article)) {
                 return response()->json(['message' => 'This action is unauthorized.'], 403);

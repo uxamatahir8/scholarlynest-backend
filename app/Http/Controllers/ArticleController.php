@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Services\PdfGeneratorService;
@@ -37,7 +38,7 @@ class ArticleController extends Controller
         }
 
         // submitted -> under_review trigger on first administrative/editorial view
-        if ($article->status === 'submitted') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED) {
             $user = request()->user('sanctum');
             if ($user) {
                 $isAdminOrEditor = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
@@ -48,14 +49,14 @@ class ArticleController extends Controller
                         ->exists();
                 }
                 if ($isAdminOrEditor) {
-                    $article->status = 'under_review';
+                    $article->status = ArticleStatus::UNDER_REVIEW;
                     $article->saveQuietly();
                 }
             }
         }
 
         // If the article is not published, authorize the viewer via ArticlePolicy
-        if ($article->status !== 'published') {
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
             $user = request()->user('sanctum');
             if (!$user) {
                 // Hide the page entirely for unauthorized public viewers
@@ -285,7 +286,7 @@ class ArticleController extends Controller
             'full_text' => $validated['full_text'],
             'pdf_path' => $pdfPath,
             'featured_image' => $featuredImagePath,
-            'status' => 'pending',
+            'status' => ArticleStatus::SUBMITTED,
         ];
 
         if ($user->hasPermission('seo.articles')) {
@@ -393,7 +394,7 @@ class ArticleController extends Controller
         }
 
         if ($status) {
-            $query->where('status', $status);
+            $query->whereIn('status', ArticleStatus::queryValues($status));
         }
 
         if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
@@ -438,28 +439,52 @@ class ArticleController extends Controller
             if (!$this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor'])) {
                 return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
             }
-            if ($request->input('status') === 'published') {
+            if (ArticleStatus::normalize($request->input('status')) === ArticleStatus::PUBLISHED) {
                 return response()->json(['message' => 'Forbidden. Editors cannot publish articles directly.'], 403);
             }
         }
 
         $validated = $request->validate([
-            'status' => 'required|in:approved,published,minor_review_rejected,fully_rejected',
-            'rejection_reason' => 'required_if:status,minor_review_rejected,fully_rejected|nullable|string',
+            'status' => 'required|' . ArticleStatus::validationRuleWithLegacy([
+                'approved',
+                'published',
+                'minor_review_rejected',
+                'fully_rejected',
+                ArticleStatus::ACCEPTED,
+                ArticleStatus::REJECTED,
+                ArticleStatus::REVISION_REQUIRED,
+                ArticleStatus::MINOR_REVISION_REQUIRED,
+                ArticleStatus::MAJOR_REVISION_REQUIRED,
+            ]),
+            'rejection_reason' => 'nullable|string',
             'published_year' => 'required_if:status,published|nullable|integer|min:2000|max:2026',
             'published_month' => 'required_if:status,published|nullable|string|max:50',
         ]);
 
         $oldStatus = $article->status;
-        $article->status = $validated['status'];
+        $normalizedStatus = ArticleStatus::normalize($validated['status']);
+        if (!ArticleStatus::canTransition($oldStatus, $normalizedStatus)) {
+            return response()->json([
+                'message' => "Invalid status transition from {$oldStatus} to {$normalizedStatus}.",
+                'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$normalizedStatus}."]]
+            ], 422);
+        }
+
+        $article->status = $normalizedStatus;
         
-        if (in_array($validated['status'], ['minor_review_rejected', 'fully_rejected'])) {
+        if (ArticleStatus::isRevisionRequired($normalizedStatus) || ArticleStatus::isRejected($normalizedStatus)) {
+            if (empty($validated['rejection_reason'])) {
+                return response()->json([
+                    'message' => 'Rejection or revision reason is required.',
+                    'errors' => ['rejection_reason' => ['Rejection or revision reason is required.']]
+                ], 422);
+            }
             $article->rejection_reason = $validated['rejection_reason'];
             $article->published_year = null;
             $article->published_month = null;
         } else {
             $article->rejection_reason = null;
-            if ($validated['status'] === 'published') {
+            if ($normalizedStatus === ArticleStatus::PUBLISHED) {
                 $article->published_year = $validated['published_year'];
                 $article->published_month = $validated['published_month'];
             }
@@ -469,7 +494,7 @@ class ArticleController extends Controller
         }
 
         // If approved/published and pdf_path is empty, compile and generate a clean dynamic PDF download
-        if (in_array($validated['status'], ['approved', 'published']) && empty($article->pdf_path)) {
+        if (ArticleStatus::isAcceptedOrPublished($normalizedStatus) && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -484,12 +509,12 @@ class ArticleController extends Controller
         $article->save();
 
         // Send newsletter announcement when advanced to published
-        if ($article->status === 'published' && $oldStatus !== 'published') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::PUBLISHED) {
             $this->sendArticleNewsletter($article);
         }
 
         // Dispatch queued Laravel Mailable to author for rejections
-        if (in_array($article->status, ['minor_review_rejected', 'fully_rejected'])) {
+        if (ArticleStatus::isRevisionRequired($article->status) || ArticleStatus::isRejected($article->status)) {
             \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
                 new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
             );
@@ -534,11 +559,11 @@ class ArticleController extends Controller
         }
 
         // first-read trigger: transition 'submitted' to 'under_review' on admin/editor view
-        if ($article->status === 'submitted') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED) {
             $isAdminOrEditor = $this->hasGlobalArticleAccess($user)
                 || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
             if ($isAdminOrEditor) {
-                $article->status = 'under_review';
+                $article->status = ArticleStatus::UNDER_REVIEW;
                 $article->saveQuietly();
             }
         }
@@ -568,7 +593,7 @@ class ArticleController extends Controller
 
         // Authorize via ArticlePolicy
         if ($user->cannot('update', $article)) {
-            if (!$isEditorial && in_array($article->status, ['resubmitted', 'under_review', 'published'])) {
+            if (!$isEditorial && !ArticleStatus::authorCanEdit($article->status)) {
                 return response()->json([
                     'message' => 'The given data was invalid.',
                     'errors' => [
@@ -587,7 +612,7 @@ class ArticleController extends Controller
             'pdf_file' => 'nullable|file|mimes:pdf|max:10240', // max 10MB
             'featured_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
             'delete_featured_image' => 'nullable|string', // multipart forms present booleans as strings sometimes
-            'status' => 'nullable|in:submitted,under_review,approved,published,minor_review_rejected,fully_rejected,resubmitted',
+            'status' => 'nullable|' . ArticleStatus::validationRuleWithLegacy(),
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
@@ -666,20 +691,28 @@ class ArticleController extends Controller
             || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
 
         if (!$isEditorial) {
-            // Authors saving edits must reset the status to 'resubmitted', and only allowed if currently minor_review_rejected
-            if ($article->status !== 'minor_review_rejected') {
+            // Authors saving allowed revisions resubmit the manuscript for editorial review.
+            if (!ArticleStatus::authorCanEdit($article->status)) {
                 return response()->json([
                     'message' => "Modifying this manuscript is locked. Current status: {$article->status}."
                 ], 422);
             }
-            $status = 'resubmitted';
+            $status = ArticleStatus::normalize($article->status) === ArticleStatus::DRAFT
+                ? ArticleStatus::DRAFT
+                : ArticleStatus::RESUBMITTED;
         } else {
-            $status = $validated['status'] ?? $article->status;
+            $status = ArticleStatus::normalize($validated['status'] ?? $article->status);
+            if (!ArticleStatus::canTransition($oldStatus, $status)) {
+                return response()->json([
+                    'message' => "Invalid status transition from {$oldStatus} to {$status}.",
+                    'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$status}."]]
+                ], 422);
+            }
         }
 
         $publishedYear = $article->published_year;
         $publishedMonth = $article->published_month;
-        if ($status === 'published') {
+        if ($status === ArticleStatus::PUBLISHED) {
             $publishValidator = \Validator::make($request->all(), [
                 'published_year' => 'required|integer|min:2000|max:2026',
                 'published_month' => 'required|string|max:50',
@@ -695,7 +728,7 @@ class ArticleController extends Controller
         }
 
         $rejectionReason = $article->rejection_reason;
-        if (in_array($status, ['minor_review_rejected', 'fully_rejected'])) {
+        if (ArticleStatus::isRevisionRequired($status) || ArticleStatus::isRejected($status)) {
             $rejectionReasonValidator = \Validator::make($request->all(), [
                 'rejection_reason' => 'required|string',
             ]);
@@ -711,7 +744,7 @@ class ArticleController extends Controller
         }
 
         $publishedAt = $article->published_at;
-        if (($status === 'approved' || $status === 'published') && !$publishedAt) {
+        if (ArticleStatus::isAcceptedOrPublished($status) && !$publishedAt) {
             $publishedAt = now();
         }
 
@@ -808,7 +841,7 @@ class ArticleController extends Controller
         event(new \App\Events\ArticleSubmitted($article, $coAuthorsData));
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
-        if (in_array($article->status, ['approved', 'published']) && empty($article->pdf_path)) {
+        if (ArticleStatus::isAcceptedOrPublished($article->status) && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -821,12 +854,12 @@ class ArticleController extends Controller
         }
 
         // Send newsletter announcement when advanced to published
-        if ($article->status === 'published' && $oldStatus !== 'published') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::PUBLISHED) {
             $this->sendArticleNewsletter($article);
         }
 
         // Dispatch queued Laravel Mailable to author for rejections
-        if (in_array($article->status, ['minor_review_rejected', 'fully_rejected']) && $article->status !== $oldStatus) {
+        if ((ArticleStatus::isRevisionRequired($article->status) || ArticleStatus::isRejected($article->status)) && ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
             \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
                 new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
             );
@@ -899,13 +932,17 @@ class ArticleController extends Controller
         }
 
         $totalArticles = (clone $query)->count();
-        $submittedArticles = (clone $query)->where('status', 'submitted')->count();
-        $underReviewArticles = (clone $query)->where('status', 'under_review')->count();
-        $approvedArticles = (clone $query)->whereIn('status', ['approved', 'accepted'])->count();
-        $publishedArticles = (clone $query)->where('status', 'published')->count();
-        $minorReviewRejectedArticles = (clone $query)->whereIn('status', ['minor_review_rejected', 'revision_required', 'minor_revision_required', 'major_revision_required'])->count();
-        $fullyRejectedArticles = (clone $query)->whereIn('status', ['fully_rejected', 'rejected'])->count();
-        $resubmittedArticles = (clone $query)->where('status', 'resubmitted')->count();
+        $submittedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::SUBMITTED))->count();
+        $underReviewArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::UNDER_REVIEW))->count();
+        $approvedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::ACCEPTED))->count();
+        $publishedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::PUBLISHED))->count();
+        $minorReviewRejectedArticles = (clone $query)->whereIn('status', array_values(array_unique(array_merge(
+            ArticleStatus::queryValues(ArticleStatus::REVISION_REQUIRED),
+            ArticleStatus::queryValues(ArticleStatus::MINOR_REVISION_REQUIRED),
+            ArticleStatus::queryValues(ArticleStatus::MAJOR_REVISION_REQUIRED)
+        ))))->count();
+        $fullyRejectedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::REJECTED))->count();
+        $resubmittedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::RESUBMITTED))->count();
 
         $magazinesQuery = \App\Models\Magazine::query();
         if ($magazineIds !== null) {
@@ -930,11 +967,15 @@ class ArticleController extends Controller
             'articles_count' => [
                 'total' => $totalArticles,
                 'submitted' => $submittedArticles,
+                'pending' => $submittedArticles,
                 'under_review' => $underReviewArticles,
                 'approved' => $approvedArticles,
+                'accepted' => $approvedArticles,
                 'published' => $publishedArticles,
                 'minor_review_rejected' => $minorReviewRejectedArticles,
+                'revision_required' => $minorReviewRejectedArticles,
                 'fully_rejected' => $fullyRejectedArticles,
+                'rejected' => $fullyRejectedArticles,
                 'resubmitted' => $resubmittedArticles,
             ],
             'magazines_count' => $totalMagazines,

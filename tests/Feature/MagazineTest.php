@@ -123,7 +123,7 @@ class MagazineTest extends TestCase
         $response->assertStatus(211)
                  ->assertJsonFragment([
                       'title' => 'Quantum Logic Theory',
-                      'status' => 'pending'
+                      'status' => 'submitted'
                   ]);
 
         $this->assertDatabaseHas('articles', [
@@ -161,7 +161,7 @@ class MagazineTest extends TestCase
         ]);
 
         $response->assertStatus(200)
-                 ->assertJsonPath('article.status', 'approved');
+                 ->assertJsonPath('article.status', 'accepted');
 
         // Check if a PDF path was generated on the database record
         $article->refresh();
@@ -405,7 +405,7 @@ class MagazineTest extends TestCase
         ]);
 
         $response->assertStatus(200)
-                 ->assertJsonPath('article.status', 'approved');
+                 ->assertJsonPath('article.status', 'accepted');
 
         $article->refresh();
         $this->assertNotNull($article->pdf_path);

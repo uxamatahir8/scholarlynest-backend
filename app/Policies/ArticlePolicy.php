@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Constants\ArticleStatus;
 use App\Models\User;
 use App\Models\Article;
 use Illuminate\Auth\Access\HandlesAuthorization;
@@ -17,7 +18,7 @@ class ArticlePolicy
     public function view(?User $user, Article $article): bool
     {
         // Publicly published articles can be viewed by anyone
-        if ($article->status === 'published') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED) {
             return true;
         }
 
@@ -65,10 +66,8 @@ class ArticlePolicy
             return true;
         }
 
-        // Authors (and editing co-authors) must be blocked from modifying their manuscript
-
-        // if status is not explicitly 'minor_review_rejected'
-        if ($article->status !== 'minor_review_rejected') {
+        // Authors and editing co-authors can only modify drafts or requested revisions.
+        if (!ArticleStatus::authorCanEdit($article->status)) {
             return false;
         }
 

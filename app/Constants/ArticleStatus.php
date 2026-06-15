@@ -53,10 +53,10 @@ final class ArticleStatus
 
     public const TRANSITIONS = [
         self::DRAFT => [self::SUBMITTED, self::WITHDRAWN],
-        self::SUBMITTED => [self::UNDER_REVIEW, self::REJECTED, self::WITHDRAWN],
-        self::UNDER_REVIEW => [self::ASSIGNED_TO_SUB_EDITOR, self::REVIEWER_ASSIGNED, self::ACCEPTED, self::REJECTED],
-        self::ASSIGNED_TO_SUB_EDITOR => [self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
-        self::REVIEWER_ASSIGNED => [self::REVIEW_IN_PROGRESS, self::REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
+        self::SUBMITTED => [self::UNDER_REVIEW, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED, self::WITHDRAWN],
+        self::UNDER_REVIEW => [self::ASSIGNED_TO_SUB_EDITOR, self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED],
+        self::ASSIGNED_TO_SUB_EDITOR => [self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
+        self::REVIEWER_ASSIGNED => [self::REVIEW_IN_PROGRESS, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVIEW_IN_PROGRESS => [self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVISION_REQUIRED => [self::RESUBMITTED, self::WITHDRAWN],
         self::MINOR_REVISION_REQUIRED => [self::RESUBMITTED, self::WITHDRAWN],
@@ -101,7 +101,14 @@ final class ArticleStatus
 
     public static function canTransition(string $from, string $to): bool
     {
-        return in_array($to, self::TRANSITIONS[self::normalize($from)] ?? [], true);
+        $from = self::normalize($from);
+        $to = self::normalize($to);
+
+        if ($from === $to) {
+            return true;
+        }
+
+        return in_array($to, self::TRANSITIONS[$from] ?? [], true);
     }
 
     public static function authorCanEdit(string $status): bool
@@ -117,5 +124,45 @@ final class ArticleStatus
     public static function validationRule(): string
     {
         return 'in:' . implode(',', self::ALL);
+    }
+
+    public static function validationRuleWithLegacy(array $only = []): string
+    {
+        $statuses = $only ?: array_merge(self::ALL, array_keys(self::LEGACY_MAP));
+
+        return 'in:' . implode(',', array_unique($statuses));
+    }
+
+    public static function queryValues(string $status): array
+    {
+        $normalized = self::normalize($status);
+        $values = [$normalized];
+
+        foreach (self::LEGACY_MAP as $legacy => $mapped) {
+            if ($mapped === $normalized) {
+                $values[] = $legacy;
+            }
+        }
+
+        return array_values(array_unique($values));
+    }
+
+    public static function isRevisionRequired(string $status): bool
+    {
+        return in_array(self::normalize($status), [
+            self::REVISION_REQUIRED,
+            self::MINOR_REVISION_REQUIRED,
+            self::MAJOR_REVISION_REQUIRED,
+        ], true);
+    }
+
+    public static function isRejected(string $status): bool
+    {
+        return self::normalize($status) === self::REJECTED;
+    }
+
+    public static function isAcceptedOrPublished(string $status): bool
+    {
+        return in_array(self::normalize($status), [self::ACCEPTED, self::PUBLISHED], true);
     }
 }
