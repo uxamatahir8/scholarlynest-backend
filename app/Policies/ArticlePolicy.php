@@ -26,20 +26,14 @@ class ArticlePolicy
             return false;
         }
 
-        // Super admins, admins, and editors can view any article
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        // Super admins and legacy admins can view any article.
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        // Assigned magazine editors can view
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            $isAssigned = DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->where('magazine_id', $article->magazine_id)
-                ->exists();
-            if ($isAssigned) {
-                return true;
-            }
+        // Editors and legacy magazine editors can view assigned magazines.
+        if ($this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor'])) {
+            return true;
         }
 
         // Primary author can view
@@ -62,14 +56,13 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
-        // Super admins, admins, and editors can edit any article
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        // Super admins and legacy admins can edit any article.
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        // Assigned magazine editors CANNOT edit (returns false unconditionally)
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            return false;
+        if ($this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor'])) {
+            return true;
         }
 
         // Authors (and editing co-authors) must be blocked from modifying their manuscript
@@ -97,18 +90,29 @@ class ArticlePolicy
      */
     public function approve(User $user, Article $article): bool
     {
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            return DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->where('magazine_id', $article->magazine_id)
-                ->exists();
-        }
+        return $this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor']);
+    }
 
-        return false;
+    private function isAssignedMagazineRole(User $user, Article $article, array $roles): bool
+    {
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where('magazine_id', $article->magazine_id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->exists();
     }
 }
-

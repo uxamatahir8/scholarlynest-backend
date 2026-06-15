@@ -178,7 +178,8 @@ class User extends Authenticatable
      */
     public function magazines(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
-        return $this->belongsToMany(Magazine::class, 'magazine_user', 'user_id', 'magazine_id');
+        return $this->belongsToMany(Magazine::class, 'magazine_user', 'user_id', 'magazine_id')
+            ->withPivot(['role', 'assigned_by'])
+            ->withTimestamps();
     }
 }
-

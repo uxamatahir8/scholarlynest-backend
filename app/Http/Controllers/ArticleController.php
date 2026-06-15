@@ -384,19 +384,12 @@ class ArticleController extends Controller
         $status = $request->query('status');
         $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email', 'tags', 'shareClicks']);
 
-        // Scope to user's own articles if not an admin/editor, but bypass for magazine_editors
-        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
-        if (!$isEditorial) {
-            if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-                $magazineIds = \DB::table('magazine_user')
-                    ->where('user_id', $user->id)
-                    ->pluck('magazine_id')
-                    ->toArray();
-                
-                $query->whereIn('magazine_id', $magazineIds);
-            } else {
-                $query->where('user_id', $user->id);
-            }
+        if ($this->hasGlobalArticleAccess($user)) {
+            // Super admins and legacy admins retain global visibility.
+        } elseif ($this->usesMagazineArticleScope($user)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']));
+        } else {
+            $query->where('user_id', $user->id);
         }
 
         if ($status) {
@@ -436,35 +429,18 @@ class ArticleController extends Controller
     {
         $user = $request->user();
         
-        $isEditorial = $user && (
-            $user->hasRole('super_admin') ||
-            $user->hasRole('admin') ||
-            $user->hasRole('editor')
-        );
-
         $article = Article::with('user')->find($id);
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        $isMagazineEditor = $user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'));
-        if ($isMagazineEditor) {
-            // 1. Must be assigned to the magazine
-            $isAssigned = \DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->where('magazine_id', $article->magazine_id)
-                ->exists();
-
-            if (!$isAssigned) {
+        if (!$this->hasGlobalArticleAccess($user) && !$user->hasPermission('articles.auto-approve')) {
+            if (!$this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor'])) {
                 return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
             }
-
-            // 2. Cannot transition to 'published'
             if ($request->input('status') === 'published') {
-                return response()->json(['message' => 'Forbidden. Magazine editors cannot publish articles directly.'], 403);
+                return response()->json(['message' => 'Forbidden. Editors cannot publish articles directly.'], 403);
             }
-        } elseif (!$isEditorial && !$user->hasPermission('articles.approve') && !$user->hasPermission('articles.auto-approve')) {
-            return response()->json(['message' => 'Forbidden. Editorial privileges required.'], 403);
         }
 
         $validated = $request->validate([
@@ -536,7 +512,18 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $article = Article::with(['tags', 'magazine', 'shareClicks', 'articleAuthors', 'assets'])->find($id);
+        $article = Article::with([
+            'tags',
+            'magazine',
+            'issue',
+            'shareClicks',
+            'articleAuthors',
+            'assets',
+            'subEditorAssignments.subEditor:id,name,email',
+            'reviewerAssignments.reviewer:id,name,email',
+            'editorialDecisions.decider:id,name,email',
+            'productionAssignments.user:id,name,email',
+        ])->find($id);
         if (!$article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
@@ -548,13 +535,8 @@ class ArticleController extends Controller
 
         // first-read trigger: transition 'submitted' to 'under_review' on admin/editor view
         if ($article->status === 'submitted') {
-            $isAdminOrEditor = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
-            if (!$isAdminOrEditor && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
-                $isAdminOrEditor = \DB::table('magazine_user')
-                    ->where('user_id', $user->id)
-                    ->where('magazine_id', $article->magazine_id)
-                    ->exists();
-            }
+            $isAdminOrEditor = $this->hasGlobalArticleAccess($user)
+                || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
             if ($isAdminOrEditor) {
                 $article->status = 'under_review';
                 $article->saveQuietly();
@@ -581,7 +563,8 @@ class ArticleController extends Controller
         }
 
         // Check if user has editorial privileges
-        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
+        $isEditorial = $this->hasGlobalArticleAccess($user)
+            || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
 
         // Authorize via ArticlePolicy
         if ($user->cannot('update', $article)) {
@@ -679,9 +662,8 @@ class ArticleController extends Controller
         $oldStatus = $article->status;
         $status = $article->status;
 
-        $isEditorial = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor') || 
-            (($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) && 
-             \DB::table('magazine_user')->where('user_id', $user->id)->where('magazine_id', $article->magazine_id)->exists());
+        $isEditorial = $this->hasGlobalArticleAccess($user)
+            || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
 
         if (!$isEditorial) {
             // Authors saving edits must reset the status to 'resubmitted', and only allowed if currently minor_review_rejected
@@ -902,17 +884,13 @@ class ArticleController extends Controller
     public function adminStats(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor'))) {
+        if (!$user || (!$this->hasGlobalArticleAccess($user) && !$this->usesMagazineArticleScope($user))) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        // If user is a magazine_editor, optionally query only their assigned magazines (or general if they have global permission)
         $magazineIds = null;
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
-            $magazineIds = \DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->pluck('magazine_id')
-                ->toArray();
+        if (!$this->hasGlobalArticleAccess($user)) {
+            $magazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']);
         }
 
         $query = Article::query();
@@ -923,10 +901,10 @@ class ArticleController extends Controller
         $totalArticles = (clone $query)->count();
         $submittedArticles = (clone $query)->where('status', 'submitted')->count();
         $underReviewArticles = (clone $query)->where('status', 'under_review')->count();
-        $approvedArticles = (clone $query)->where('status', 'approved')->count();
+        $approvedArticles = (clone $query)->whereIn('status', ['approved', 'accepted'])->count();
         $publishedArticles = (clone $query)->where('status', 'published')->count();
-        $minorReviewRejectedArticles = (clone $query)->where('status', 'minor_review_rejected')->count();
-        $fullyRejectedArticles = (clone $query)->where('status', 'fully_rejected')->count();
+        $minorReviewRejectedArticles = (clone $query)->whereIn('status', ['minor_review_rejected', 'revision_required', 'minor_revision_required', 'major_revision_required'])->count();
+        $fullyRejectedArticles = (clone $query)->whereIn('status', ['fully_rejected', 'rejected'])->count();
         $resubmittedArticles = (clone $query)->where('status', 'resubmitted')->count();
 
         $magazinesQuery = \App\Models\Magazine::query();
@@ -1082,5 +1060,58 @@ class ArticleController extends Controller
             'message' => 'Article SEO metadata updated successfully.',
             'article' => $article,
         ]);
+    }
+
+    private function hasGlobalArticleAccess($user): bool
+    {
+        return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function usesMagazineArticleScope($user): bool
+    {
+        return $user && (
+            $user->hasRole('editor')
+            || $user->hasRole('publisher')
+            || $user->hasRole('magazine_editor')
+            || $user->hasRole('magazine-editor')
+        );
+    }
+
+    private function assignedMagazineIds($user, array $roles): array
+    {
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return \DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->pluck('magazine_id')
+            ->toArray();
+    }
+
+    private function isAssignedToArticleMagazine($user, Article $article, array $roles): bool
+    {
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return \DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where('magazine_id', $article->magazine_id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->exists();
     }
 }

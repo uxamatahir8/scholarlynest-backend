@@ -38,6 +38,11 @@ class Magazine extends Model
         return $this->hasMany(Article::class);
     }
 
+    public function issues(): HasMany
+    {
+        return $this->hasMany(MagazineIssue::class);
+    }
+
     /**
      * Get the tags associated with this magazine.
      */
@@ -51,7 +56,8 @@ class Magazine extends Model
      */
     public function editors(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
-        return $this->belongsToMany(User::class, 'magazine_user', 'magazine_id', 'user_id');
+        return $this->belongsToMany(User::class, 'magazine_user', 'magazine_id', 'user_id')
+            ->withPivot(['role', 'assigned_by'])
+            ->withTimestamps();
     }
 }
-

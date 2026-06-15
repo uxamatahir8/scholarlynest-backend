@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Constants\SystemRoles;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -58,23 +59,24 @@ class DatabaseSeeder extends Seeder
             // ==========================================
             // 3. SEED ROLES
             // ==========================================
-            $superAdminRole = Role::create([
-                'name' => 'super_admin',
-                'display_name' => 'Super Admin',
-                'is_system' => true,
-            ]);
+            $roles = collect(SystemRoles::DEFINITIONS)
+                ->mapWithKeys(fn (array $definition, string $name) => [
+                    $name => Role::create([
+                        'name' => $name,
+                        'display_name' => $definition['display_name'],
+                        'description' => $definition['description'],
+                        'is_system' => true,
+                    ]),
+                ]);
 
-            $authorRole = Role::create([
-                'name' => 'author',
-                'display_name' => 'Author',
-                'is_system' => true,
-            ]);
-
-            $magazineEditorRole = Role::create([
-                'name' => 'magazine_editor',
-                'display_name' => 'Magazine Editor',
-                'is_system' => true,
-            ]);
+            $superAdminRole = $roles->get('super_admin');
+            $authorRole = $roles->get('author');
+            $editorRole = $roles->get('editor');
+            $subEditorRole = $roles->get('sub_editor');
+            $reviewerRole = $roles->get('reviewer');
+            $publisherRole = $roles->get('publisher');
+            $copyEditorRole = $roles->get('copy_editor');
+            $proofreaderRole = $roles->get('proofreader');
             
             // ==========================================
             // 4. SEED GRANULAR PERMISSIONS
@@ -147,8 +149,8 @@ class DatabaseSeeder extends Seeder
             ])->get();
             $authorRole->permissions()->sync($authorPermissions->pluck('id'));
 
-            // Magazine Editor gets permissions for managing articles and magazines they are assigned to
-            $magazineEditorPermissions = Permission::whereIn('name', [
+            // Editor gets permissions for managing articles in assigned magazines.
+            $editorPermissions = Permission::whereIn('name', [
                 'magazines.view-any',
                 'articles.view-own',
                 'articles.edit-own',
@@ -156,7 +158,40 @@ class DatabaseSeeder extends Seeder
                 'articles.manage-assets',
                 'seo.articles',
             ])->get();
-            $magazineEditorRole->permissions()->sync($magazineEditorPermissions->pluck('id'));
+            $editorRole->permissions()->sync($editorPermissions->pluck('id'));
+
+            $subEditorRole->permissions()->sync(Permission::whereIn('name', [
+                'magazines.view-own',
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.manage-assets',
+            ])->pluck('id'));
+
+            $reviewerRole->permissions()->sync(Permission::whereIn('name', [
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.manage-assets',
+            ])->pluck('id'));
+
+            $publisherRole->permissions()->sync(Permission::whereIn('name', [
+                'magazines.view-own',
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.approve',
+                'seo.articles',
+            ])->pluck('id'));
+
+            $copyEditorRole->permissions()->sync(Permission::whereIn('name', [
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.manage-assets',
+            ])->pluck('id'));
+
+            $proofreaderRole->permissions()->sync(Permission::whereIn('name', [
+                'articles.view-own',
+                'articles.edit-own',
+                'articles.manage-assets',
+            ])->pluck('id'));
 
             // ==========================================
             // 6. SEED DEFAULT USER ACCOUNTS

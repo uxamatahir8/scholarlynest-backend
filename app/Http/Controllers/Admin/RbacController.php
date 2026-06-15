@@ -49,15 +49,50 @@ class RbacController extends Controller
         $request->validate([
             'name' => 'required|string|unique:roles,name|max:255',
             'display_name' => 'required|string|max:255',
+            'description' => 'nullable|string',
         ]);
 
         $role = Role::create([
             'name' => strtolower(Str::slug($request->name)),
             'display_name' => $request->display_name,
+            'description' => $request->description,
             'is_system' => false,
         ]);
 
         return response()->json($role->load('permissions'), 201);
+    }
+
+    /**
+     * Update a custom role. System roles keep their names, labels, and descriptions locked.
+     */
+    public function updateRole(Request $request, int $id): JsonResponse
+    {
+        $role = Role::findOrFail($id);
+
+        if ($role->is_system) {
+            return response()->json([
+                'message' => 'System roles cannot be renamed or edited.'
+            ], 400);
+        }
+
+        $request->validate([
+            'name' => 'sometimes|required|string|max:255|unique:roles,name,' . $role->id,
+            'display_name' => 'sometimes|required|string|max:255',
+            'description' => 'nullable|string',
+        ]);
+
+        if ($request->has('name')) {
+            $role->name = strtolower(Str::slug($request->name));
+        }
+        if ($request->has('display_name')) {
+            $role->display_name = $request->display_name;
+        }
+        if ($request->has('description')) {
+            $role->description = $request->description;
+        }
+        $role->save();
+
+        return response()->json($role->load('permissions'));
     }
 
     /**
@@ -101,6 +136,13 @@ class RbacController extends Controller
         ]);
 
         $role = Role::findOrFail($id);
+
+        if ($role->is_system) {
+            return response()->json([
+                'message' => 'System role permissions cannot be changed.'
+            ], 400);
+        }
+
         $permissionIds = Permission::whereIn('name', $request->permissions)->pluck('id');
         $role->permissions()->sync($permissionIds);
 
@@ -183,9 +225,13 @@ class RbacController extends Controller
                 'university_name' => $request->university_name,
             ]);
 
-            $editorRole = Role::where('name', 'magazine_editor')->first();
-            if ($editorRole && intval($request->role_id) === $editorRole->id && $request->has('magazine_ids')) {
-                $user->magazines()->sync($request->magazine_ids);
+            $assignedRole = Role::find($request->role_id);
+            if ($assignedRole && $this->roleUsesMagazineAssignments($assignedRole->name) && $request->has('magazine_ids')) {
+                $user->magazines()->sync($this->magazineSyncPayload(
+                    $request->input('magazine_ids', []),
+                    $assignedRole->name,
+                    $request->user()?->id
+                ));
             }
 
             return $user;
@@ -247,10 +293,14 @@ class RbacController extends Controller
             }
             $user->save();
 
-            $editorRole = Role::where('name', 'magazine_editor')->first();
-            if ($editorRole && intval($user->role_id) === $editorRole->id) {
+            $assignedRole = $user->role;
+            if ($assignedRole && $this->roleUsesMagazineAssignments($assignedRole->name)) {
                 if ($request->has('magazine_ids')) {
-                    $user->magazines()->sync($request->input('magazine_ids'));
+                    $user->magazines()->sync($this->magazineSyncPayload(
+                        $request->input('magazine_ids', []),
+                        $assignedRole->name,
+                        $request->user()?->id
+                    ));
                 }
             } else {
                 $user->magazines()->detach();
@@ -324,5 +374,33 @@ class RbacController extends Controller
             'high',
             $userId
         );
+    }
+
+    private function roleUsesMagazineAssignments(string $roleName): bool
+    {
+        return in_array(str_replace('-', '_', $roleName), [
+            'editor',
+            'sub_editor',
+            'reviewer',
+            'publisher',
+            'magazine_editor',
+        ], true);
+    }
+
+    private function magazineSyncPayload(array $magazineIds, string $roleName, ?int $assignedBy): array
+    {
+        $normalizedRole = str_replace('-', '_', $roleName);
+        if ($normalizedRole === 'magazine_editor') {
+            $normalizedRole = 'editor';
+        }
+
+        return collect($magazineIds)
+            ->mapWithKeys(fn ($magazineId) => [
+                $magazineId => [
+                    'role' => $normalizedRole,
+                    'assigned_by' => $assignedBy,
+                ],
+            ])
+            ->all();
     }
 }

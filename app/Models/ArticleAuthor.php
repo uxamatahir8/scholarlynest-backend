@@ -14,6 +14,12 @@ class ArticleAuthor extends Model
         'user_id',
         'co_author_name',
         'co_author_email',
+        'affiliation',
+        'department',
+        'country',
+        'orcid',
+        'is_owner',
+        'is_corresponding',
         'can_edit',
         'account_provisioned',
         'university_name',
@@ -22,6 +28,8 @@ class ArticleAuthor extends Model
     protected $casts = [
         'can_edit' => 'boolean',
         'account_provisioned' => 'boolean',
+        'is_owner' => 'boolean',
+        'is_corresponding' => 'boolean',
     ];
 
     /**

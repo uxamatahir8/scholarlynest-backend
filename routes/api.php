@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\Admin\RbacController;
+use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\MediaController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
@@ -180,6 +181,20 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::put('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');
         Route::patch('/articles/{id}/review', [ArticleController::class, 'review'])->middleware('permission:articles.approve');
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
+        Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
+        Route::post('/articles/{id}/screen', [ArticleWorkflowController::class, 'screen'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/assign-sub-editor', [ArticleWorkflowController::class, 'assignSubEditor'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.approve');
+        Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);
+        Route::post('/reviewer-assignments/{id}/reopen', [ArticleWorkflowController::class, 'reopenReviewer'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/production-assignments', [ArticleWorkflowController::class, 'assignProduction'])->middleware('permission:articles.approve');
+        Route::post('/production-assignments/{id}/complete', [ArticleWorkflowController::class, 'completeProduction']);
+        Route::get('/issues', [ArticleWorkflowController::class, 'issues'])->middleware('permission:articles.view-own');
+        Route::post('/issues', [ArticleWorkflowController::class, 'storeIssue'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/publish', [ArticleWorkflowController::class, 'publish'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/post-publication-actions', [ArticleWorkflowController::class, 'postPublication'])->middleware('permission:articles.approve');
+        Route::get('/articles/{id}/audit-logs', [ArticleWorkflowController::class, 'auditLogs'])->middleware('permission:articles.view-own');
         Route::patch('/magazines/{slug}/seo', [MagazineController::class, 'updateSeo']);
         Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
  
@@ -187,6 +202,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::prefix('rbac')->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');
+            Route::put('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
             Route::delete('/roles/{id}', [RbacController::class, 'deleteRole'])->middleware('permission:roles.manage');
             Route::get('/permissions', [RbacController::class, 'permissions'])->middleware('permission:roles.view-any');
             Route::post('/roles/{id}/permissions', [RbacController::class, 'syncRolePermissions'])->middleware('permission:roles.manage');
@@ -202,5 +218,3 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         });
     });
 });
-
-
