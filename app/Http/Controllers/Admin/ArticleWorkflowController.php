@@ -13,6 +13,7 @@ use App\Http\Requests\ProductionAssignmentRequest;
 use App\Http\Requests\PublishArticleRequest;
 use App\Http\Requests\ScreenArticleRequest;
 use App\Http\Requests\SubmitReviewRequest;
+use App\Http\Requests\SubmitSubEditorRecommendationRequest;
 use App\Models\Article;
 use App\Models\ArticleAuditLog;
 use App\Models\EditorialDecision;
@@ -21,6 +22,7 @@ use App\Models\PostPublicationAction;
 use App\Models\ProductionAssignment;
 use App\Models\ReviewerAssignment;
 use App\Models\SubEditorAssignment;
+use App\Models\User;
 use App\Services\PdfGeneratorService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -49,6 +51,40 @@ class ArticleWorkflowController extends Controller
                 'auditLogs.actor:id,name,email',
             ]),
         ]);
+    }
+
+    public function assignees(Request $request): JsonResponse
+    {
+        $request->validate([
+            'role' => 'required|in:editor,sub_editor,reviewer,publisher,copy_editor,proofreader',
+            'magazine_id' => 'nullable|exists:magazines,id',
+        ]);
+
+        $user = $request->user();
+        $role = $request->query('role');
+        $magazineId = $request->integer('magazine_id') ?: null;
+
+        if (!$this->isGlobal($user) && $magazineId && !$this->isAssignedToMagazine($user, $magazineId, ['editor', 'sub_editor', 'publisher'])) {
+            return response()->json(['message' => 'Forbidden. Magazine assignment required.'], 403);
+        }
+
+        $users = User::query()
+            ->with('role:id,name,display_name')
+            ->whereHas('role', fn ($query) => $query->where('name', $role))
+            ->when($magazineId && in_array($role, ['editor', 'sub_editor', 'reviewer', 'publisher'], true), function ($query) use ($magazineId, $role) {
+                $query->whereHas('magazines', function ($magazineQuery) use ($magazineId, $role) {
+                    $magazineQuery->where('magazines.id', $magazineId)
+                        ->where(function ($pivotQuery) use ($role) {
+                            $pivotQuery->where('magazine_user.role', $role)
+                                ->orWhereNull('magazine_user.role');
+                        });
+                });
+            })
+            ->select(['id', 'name', 'email', 'role_id'])
+            ->orderBy('name')
+            ->get();
+
+        return response()->json(['data' => $users]);
     }
 
     public function screen(ScreenArticleRequest $request, int $articleId): JsonResponse
@@ -150,6 +186,68 @@ class ArticleWorkflowController extends Controller
             'assignment' => $assignment->load('reviewer:id,name,email'),
             'article' => $article->fresh(),
         ], 201);
+    }
+
+    public function submitSubEditorRecommendation(SubmitSubEditorRecommendationRequest $request, int $assignmentId): JsonResponse
+    {
+        $assignment = SubEditorAssignment::with('article')->findOrFail($assignmentId);
+        $user = $request->user();
+
+        if (!$this->isGlobal($user) && (int) $assignment->sub_editor_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden. Sub editor assignment required.'], 403);
+        }
+
+        $oldStatus = $assignment->article->status;
+
+        DB::transaction(function () use ($request, $assignment, $oldStatus) {
+            $assignment->update([
+                'status' => 'completed',
+                'recommendation' => $request->recommendation,
+                'comments' => trim(($request->comments ?? '') . "\n\nInternal notes:\n" . ($request->internal_notes ?? '')),
+                'completed_at' => now(),
+            ]);
+
+            $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
+            $this->audit($assignment->article, $request->user()->id, 'sub_editor.recommendation_submitted', $oldStatus, ArticleStatus::REVIEW_IN_PROGRESS, [
+                'sub_editor_assignment_id' => $assignment->id,
+                'recommendation' => $request->recommendation,
+            ]);
+        });
+
+        return response()->json([
+            'message' => 'Sub editor recommendation submitted.',
+            'assignment' => $assignment->fresh(),
+        ]);
+    }
+
+    public function acceptReviewerAssignment(Request $request, int $assignmentId): JsonResponse
+    {
+        $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
+        $user = $request->user();
+
+        if (!$this->isGlobal($user) && (int) $assignment->reviewer_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden. Reviewer assignment required.'], 403);
+        }
+
+        $oldStatus = $assignment->article->status;
+
+        DB::transaction(function () use ($request, $assignment, $oldStatus) {
+            $assignment->update([
+                'status' => 'accepted',
+                'accepted_at' => now(),
+            ]);
+
+            $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
+            $this->audit($assignment->article, $request->user()->id, 'review.accepted', $oldStatus, ArticleStatus::REVIEW_IN_PROGRESS, [
+                'reviewer_assignment_id' => $assignment->id,
+            ]);
+        });
+
+        return response()->json([
+            'message' => 'Reviewer assignment accepted.',
+            'assignment' => $assignment->fresh(),
+            'article' => $assignment->article->fresh(),
+        ]);
     }
 
     public function submitReview(SubmitReviewRequest $request, int $assignmentId): JsonResponse

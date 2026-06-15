@@ -114,6 +114,31 @@ class ArticleWorkflowTest extends TestCase
             ->assertJsonPath('article.status', ArticleStatus::ACCEPTED);
     }
 
+    public function test_sub_editor_recommendation_and_reviewer_acceptance(): void
+    {
+        Sanctum::actingAs($this->editor);
+        $subEditorAssignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-sub-editor", [
+            'sub_editor_id' => $this->subEditor->id,
+        ])->json('assignment.id');
+
+        $reviewerAssignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->json('assignment.id');
+
+        Sanctum::actingAs($this->subEditor);
+        $this->postJson("/api/admin/sub-editor-assignments/{$subEditorAssignmentId}/submit-recommendation", [
+            'recommendation' => 'minor_revision',
+            'comments' => 'Needs a clearer methods section.',
+            'internal_notes' => 'Useful but needs polish.',
+        ])->assertStatus(200)
+            ->assertJsonPath('assignment.status', 'completed');
+
+        Sanctum::actingAs($this->reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$reviewerAssignmentId}/accept")
+            ->assertStatus(200)
+            ->assertJsonPath('assignment.status', 'accepted');
+    }
+
     public function test_publisher_issue_creation_and_article_publication(): void
     {
         Sanctum::actingAs($this->admin);
