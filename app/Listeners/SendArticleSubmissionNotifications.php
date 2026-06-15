@@ -38,7 +38,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
             $bodyLines = [
                 'We are pleased to confirm that your manuscript titled "' . $article->title . '" has been successfully submitted to ScholarlyNest.',
                 'Submission Reference Token: <strong>' . $trackingToken . '</strong>',
-                'Your manuscript is currently in "pending" status and will proceed through the editorial and peer-review workflows. You can monitor the progress of your submission directly from your Author Dashboard.',
+                'Your manuscript is currently in "submitted" status and will proceed through the editorial and peer-review workflows. You can monitor the progress of your submission directly from your Author Dashboard.',
                 'Thank you for publishing your research with ScholarlyNest.'
             ];
             $action = [

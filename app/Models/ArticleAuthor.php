@@ -18,8 +18,10 @@ class ArticleAuthor extends Model
         'department',
         'country',
         'orcid',
+        'author_order',
         'is_owner',
         'is_corresponding',
+        'contribution_statement',
         'can_edit',
         'account_provisioned',
         'university_name',
@@ -30,6 +32,7 @@ class ArticleAuthor extends Model
         'account_provisioned' => 'boolean',
         'is_owner' => 'boolean',
         'is_corresponding' => 'boolean',
+        'author_order' => 'integer',
     ];
 
     /**
