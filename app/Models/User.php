@@ -147,7 +147,6 @@ class User extends Authenticatable
                     'articles.create',
                     'articles.view-own',
                     'articles.edit-own',
-                    'articles.delete-own',
                     'magazines.view-any',
                     'magazines.view-own'
                 ]);
@@ -160,7 +159,6 @@ class User extends Authenticatable
                     'articles.view-own',
                     'articles.create',
                     'articles.edit-own',
-                    'articles.delete-own',
                     'articles.approve'
                 ]);
             }

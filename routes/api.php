@@ -119,13 +119,13 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
  
     // Media polymorphic uploads
     Route::post('/media', [MediaController::class, 'store']);
-    Route::delete('/media/{id}', [MediaController::class, 'destroy']);
+    Route::delete('/media/{id}', [MediaController::class, 'destroy'])->middleware('super-admin-delete');
 
     // Article assets
     Route::post('/articles/{id}/assets', [\App\Http\Controllers\ArticleAssetController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
     Route::delete('/articles/assets/{asset_id}', [\App\Http\Controllers\ArticleAssetController::class, 'destroy'])
-        ->middleware('permission:articles.manage-assets');
+        ->middleware(['super-admin-delete', 'permission:articles.manage-assets']);
     Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
  
@@ -138,7 +138,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);
         Route::post('/contact-subjects', [ContactController::class, 'storeSubject']);
         Route::put('/contact-subjects/{id}', [ContactController::class, 'updateSubject']);
-        Route::delete('/contact-subjects/{id}', [ContactController::class, 'deleteSubject']);
+        Route::delete('/contact-subjects/{id}', [ContactController::class, 'deleteSubject'])->middleware('super-admin-delete');
  
         // Newsletter Campaign Management (Admin only)
         Route::get('/newsletter/subscribers', [NewsletterController::class, 'listSubscribers'])->middleware('permission:newsletters.view-any');
@@ -152,32 +152,32 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/faqs', [FaqController::class, 'adminIndex'])->middleware('permission:settings.manage');
         Route::post('/faqs', [FaqController::class, 'store'])->middleware('permission:settings.manage');
         Route::put('/faqs/{id}', [FaqController::class, 'update'])->middleware('permission:settings.manage');
-        Route::delete('/faqs/{id}', [FaqController::class, 'destroy'])->middleware('permission:settings.manage');
+        Route::delete('/faqs/{id}', [FaqController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:settings.manage']);
 
         // Footer CMS Categories Management
         Route::get('/footer/categories', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'index'])->middleware('permission:footer.manage');
         Route::post('/footer/categories', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'store'])->middleware('permission:footer.manage');
         Route::put('/footer/categories/{id}', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'update'])->middleware('permission:footer.manage');
-        Route::delete('/footer/categories/{id}', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'destroy'])->middleware('permission:footer.manage');
+        Route::delete('/footer/categories/{id}', [\App\Http\Controllers\Admin\FooterCategoryController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:footer.manage']);
 
         // Footer CMS Pages Management
         Route::get('/footer/pages', [\App\Http\Controllers\Admin\FooterPageController::class, 'index'])->middleware('permission:footer.manage');
         Route::post('/footer/pages', [\App\Http\Controllers\Admin\FooterPageController::class, 'store'])->middleware('permission:footer.manage');
         Route::put('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'update'])->middleware('permission:footer.manage');
-        Route::delete('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'destroy'])->middleware('permission:footer.manage');
+        Route::delete('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:footer.manage']);
  
         // Magazines & Custom Pages (Restricted to Admin / Super Admin)
         Route::post('/magazines', [MagazineController::class, 'store'])->middleware('permission:magazines.create');
         Route::put('/magazines/{id}', [MagazineController::class, 'update'])->middleware('permission:magazines.edit');
-        Route::delete('/magazines/{id}', [MagazineController::class, 'destroy'])->middleware('permission:magazines.delete');
+        Route::delete('/magazines/{id}', [MagazineController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:magazines.delete']);
         Route::post('/magazines/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.edit');
         Route::put('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.edit');
-        Route::delete('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware('permission:magazines.edit');
+        Route::delete('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.edit']);
  
         // Tags Management
         Route::post('/tags', [TagController::class, 'store']);
         Route::put('/tags/{id}', [TagController::class, 'update']);
-        Route::delete('/tags/{id}', [TagController::class, 'destroy']);
+        Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('super-admin-delete');
  
         // Article Review & Update Endpoints
         Route::get('/articles', [ArticleController::class, 'adminList'])->middleware('permission:articles.view-own');
@@ -221,7 +221,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');
             Route::put('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
-            Route::delete('/roles/{id}', [RbacController::class, 'deleteRole'])->middleware('permission:roles.manage');
+            Route::delete('/roles/{id}', [RbacController::class, 'deleteRole'])->middleware(['super-admin-delete', 'permission:roles.manage']);
             Route::get('/permissions', [RbacController::class, 'permissions'])->middleware('permission:roles.view-any');
             Route::post('/roles/{id}/permissions', [RbacController::class, 'syncRolePermissions'])->middleware('permission:roles.manage');
             

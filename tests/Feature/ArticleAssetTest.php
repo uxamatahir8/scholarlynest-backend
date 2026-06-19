@@ -193,9 +193,9 @@ class ArticleAssetTest extends TestCase
     }
 
     /**
-     * Test author can delete supplementary assets.
+     * Test only Super Admin can delete supplementary assets.
      */
-    public function test_author_can_delete_article_assets(): void
+    public function test_only_super_admin_can_delete_article_assets(): void
     {
         Sanctum::actingAs($this->author);
 
@@ -212,12 +212,29 @@ class ArticleAssetTest extends TestCase
 
         Storage::disk('public')->assertExists($path);
 
-        $response = $this->deleteJson("/api/articles/assets/{$asset->id}");
+        $this->deleteJson("/api/articles/assets/{$asset->id}")->assertForbidden();
+        $this->assertDatabaseHas('article_assets', ['id' => $asset->id]);
+        Storage::disk('public')->assertExists($path);
 
-        $response->assertStatus(200)
-                 ->assertJsonFragment([
-                     'message' => 'Asset deleted successfully.'
-                 ]);
+        $superRole = Role::create([
+            'name' => 'super_admin',
+            'display_name' => 'Super Admin',
+            'is_system' => true,
+        ]);
+        $superRole->permissions()->sync(Permission::pluck('id'));
+        $superAdmin = User::create([
+            'name' => 'Super Admin',
+            'email' => 'super@test.com',
+            'password' => Hash::make('password123'),
+            'role_id' => $superRole->id,
+            'email_verified_at' => now(),
+        ]);
+
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/articles/assets/{$asset->id}")
+            ->assertOk()
+            ->assertJsonFragment(['message' => 'Asset deleted successfully.']);
 
         $this->assertDatabaseMissing('article_assets', ['id' => $asset->id]);
         Storage::disk('public')->assertMissing($path);

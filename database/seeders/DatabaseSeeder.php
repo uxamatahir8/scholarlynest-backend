@@ -143,7 +143,6 @@ class DatabaseSeeder extends Seeder
                 'articles.view-own',
                 'articles.create',
                 'articles.edit-own',
-                'articles.delete-own',
                 'seo.articles',
                 'articles.manage-assets',
             ])->get();
@@ -152,8 +151,8 @@ class DatabaseSeeder extends Seeder
             // Editor gets permissions for managing articles in assigned magazines.
             $editorPermissions = Permission::whereIn('name', [
                 'magazines.view-any',
+                'magazines.edit',
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.approve',
                 'articles.manage-assets',
                 'seo.articles',
@@ -163,33 +162,28 @@ class DatabaseSeeder extends Seeder
             $subEditorRole->permissions()->sync(Permission::whereIn('name', [
                 'magazines.view-own',
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.manage-assets',
             ])->pluck('id'));
 
             $reviewerRole->permissions()->sync(Permission::whereIn('name', [
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.manage-assets',
             ])->pluck('id'));
 
             $publisherRole->permissions()->sync(Permission::whereIn('name', [
                 'magazines.view-own',
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.approve',
                 'seo.articles',
             ])->pluck('id'));
 
             $copyEditorRole->permissions()->sync(Permission::whereIn('name', [
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.manage-assets',
             ])->pluck('id'));
 
             $proofreaderRole->permissions()->sync(Permission::whereIn('name', [
                 'articles.view-own',
-                'articles.edit-own',
                 'articles.manage-assets',
             ])->pluck('id'));
 

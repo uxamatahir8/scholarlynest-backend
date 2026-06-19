@@ -143,7 +143,12 @@ class RbacController extends Controller
             ], 400);
         }
 
-        $permissionIds = Permission::whereIn('name', $request->permissions)->pluck('id');
+        $requestedPermissions = collect($request->permissions)
+            ->reject(fn (string $permission) => str_contains($permission, '.delete'))
+            ->values()
+            ->all();
+
+        $permissionIds = Permission::whereIn('name', $requestedPermissions)->pluck('id');
         $role->permissions()->sync($permissionIds);
 
         return response()->json($role->load('permissions'));

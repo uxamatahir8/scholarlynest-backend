@@ -14,6 +14,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'permission' => \App\Http\Middleware\AuthorizePermission::class,
+            'super-admin-delete' => \App\Http\Middleware\RequireSuperAdminForDeletes::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

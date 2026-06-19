@@ -62,9 +62,8 @@ class ArticlePolicy
             return true;
         }
 
-        if ($this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor'])) {
-            return true;
-        }
+        // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
+        // Normal article content edits stay limited to authors during editable statuses.
 
         // Authors and editing co-authors can only modify drafts or requested revisions.
         if (!ArticleStatus::authorCanEdit($article->status)) {

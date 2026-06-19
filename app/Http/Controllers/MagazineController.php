@@ -266,13 +266,17 @@ class MagazineController extends Controller
     public function storePage(Request $request, int $magazineId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
+            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
+        }
+
+        if ($user->hasRole('editor') && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'magazine_editor'])) {
+            return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
         $validated = $request->validate([
@@ -296,6 +300,9 @@ class MagazineController extends Controller
             'slug' => $slug,
             'content' => $validated['content'],
             'sort_order' => $validated['sort_order'] ?? 0,
+            'created_by' => $user->id,
+            'created_by_role' => $user->role?->name,
+            'is_editor_created' => $user->hasRole('editor'),
         ]);
 
         return response()->json([
@@ -382,8 +389,8 @@ class MagazineController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can delete records.'], 403);
         }
 
         $magazine = Magazine::find($id);
@@ -408,8 +415,8 @@ class MagazineController extends Controller
     public function updatePage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
+            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
@@ -420,6 +427,14 @@ class MagazineController extends Controller
         $page = $magazine->pages()->find($pageId);
         if (!$page) {
             return response()->json(['message' => 'Page not found.'], 404);
+        }
+
+        if ($user->hasRole('editor') && (
+            !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'magazine_editor'])
+            || (int) $page->created_by !== (int) $user->id
+            || !$page->is_editor_created
+        )) {
+            return response()->json(['message' => 'Forbidden. Editors can edit only their own pages for assigned magazines.'], 403);
         }
 
         $validated = $request->validate([
@@ -443,8 +458,8 @@ class MagazineController extends Controller
     public function destroyPage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can delete records.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
@@ -462,6 +477,25 @@ class MagazineController extends Controller
         return response()->json([
             'message' => 'Magazine page deleted successfully.'
         ]);
+    }
+
+    private function isAssignedMagazineRole($user, int $magazineId, array $roles): bool
+    {
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return \DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where('magazine_id', $magazineId)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->exists();
     }
 
     /**

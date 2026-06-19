@@ -11,7 +11,9 @@ class StoreArticleRequest extends FormRequest
 
     public function authorize(): bool
     {
-        return (bool) $this->user();
+        $user = $this->user();
+
+        return (bool) $user && ($user->hasRole('author') || $user->hasRole('super_admin'));
     }
 
     protected function prepareForValidation(): void
