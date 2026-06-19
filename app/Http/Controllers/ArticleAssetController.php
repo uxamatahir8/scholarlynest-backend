@@ -127,8 +127,8 @@ class ArticleAssetController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // Accepted articles include legacy approved records during the status transition.
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::ACCEPTED) {
+        // Accepted and published articles bypass private access controls.
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::ACCEPTED && ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
             $user = $request->user('sanctum');
             if (!$user || $user->cannot('view', $article)) {
                 return response()->json(['message' => 'This action is unauthorized.'], 403);

@@ -268,6 +268,33 @@ class ArticleAssetTest extends TestCase
     }
 
     /**
+     * Test public user can download assets for published articles.
+     */
+    public function test_public_user_can_download_assets_for_published_articles(): void
+    {
+        // Publish the article
+        $this->article->update(['status' => 'published']);
+
+        // Create a fake file in disk
+        $path = Storage::disk('public')->putFile('assets', UploadedFile::fake()->create('supplement.pdf'));
+
+        $asset = ArticleAsset::create([
+            'article_id' => $this->article->id,
+            'file_path' => 'storage/' . $path,
+            'original_filename' => 'supplement.pdf',
+            'file_size' => 4567,
+            'mime_type' => 'application/pdf',
+        ]);
+
+        $response = $this->get("/api/articles/assets/{$asset->id}/download");
+
+        $response->assertStatus(200)
+                 ->assertHeader('Content-Type', 'application/pdf')
+                 ->assertHeader('Content-Disposition', 'attachment; filename="supplement.pdf"')
+                 ->assertHeader('X-Content-Type-Options', 'nosniff');
+    }
+
+    /**
      * Test public user cannot download assets for unapproved articles.
      */
     public function test_public_user_cannot_download_assets_for_unapproved_articles(): void
