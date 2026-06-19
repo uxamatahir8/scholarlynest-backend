@@ -66,6 +66,7 @@ class ArticleAssetController extends Controller
         ]);
 
         app(ArticleFileController::class)->storeUploadedFile($article, $file, ArticleFile::SUPPLEMENTARY, $user->id, [
+            'article_version_id' => $article->versions()->latest('version_number')->value('id'),
             'source_asset_id' => $asset->id,
             'metadata' => ['compatibility_bridge' => 'article_assets'],
         ]);

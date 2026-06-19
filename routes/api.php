@@ -186,6 +186,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/articles/{id}/review', [ArticleController::class, 'review'])->middleware('permission:articles.approve');
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');

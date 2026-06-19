@@ -178,6 +178,8 @@ trait ValidatesArticleSubmission
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
+            'revision_response' => 'nullable|string|max:10000',
+            'change_summary' => 'nullable|string|max:10000',
         ];
     }
 

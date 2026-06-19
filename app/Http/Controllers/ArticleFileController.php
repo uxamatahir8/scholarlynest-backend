@@ -87,6 +87,7 @@ class ArticleFileController extends Controller
         return [
             'id' => $file->id,
             'article_id' => $file->article_id,
+            'article_version_id' => $file->article_version_id,
             'file_type' => $file->file_type,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,

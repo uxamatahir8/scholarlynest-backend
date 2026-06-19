@@ -10,8 +10,10 @@ use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\ArticleFile;
 use App\Services\PdfGeneratorService;
 use App\Services\NotificationService;
+use App\Services\ArticleVersionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -21,11 +23,13 @@ class ArticleController extends Controller
 {
     protected PdfGeneratorService $pdfService;
     protected NotificationService $notificationService;
+    protected ArticleVersionService $versionService;
 
-    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService)
+    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService)
     {
         $this->pdfService = $pdfService;
         $this->notificationService = $notificationService;
+        $this->versionService = $versionService;
     }
 
     public function show(string $idOrSlug): JsonResponse
@@ -227,12 +231,6 @@ class ArticleController extends Controller
         $authorResolution = $this->resolveArticleAuthors($authors, $user, $user->hasRole('super_admin'));
         $articleOwner = $authorResolution['owner'] ?? $user;
 
-        $pdfPath = null;
-        if ($request->hasFile('pdf_file')) {
-            $path = $request->file('pdf_file')->store('manuscripts', 'public');
-            $pdfPath = 'storage/' . $path;
-        }
-
         $featuredImagePath = null;
         if ($request->hasFile('featured_image')) {
             $path = $request->file('featured_image')->store('articles', 'public');
@@ -245,7 +243,7 @@ class ArticleController extends Controller
             'user_id' => $articleOwner->id,
             'title' => $validated['title'],
             'slug' => $slug,
-            'pdf_path' => $pdfPath,
+            'pdf_path' => null,
             'featured_image' => $featuredImagePath,
             'status' => ArticleStatus::SUBMITTED,
         ]);
@@ -263,6 +261,22 @@ class ArticleController extends Controller
 
             return $article;
         });
+
+        $linkedFileIds = [];
+        if ($request->hasFile('pdf_file')) {
+            $manuscriptFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('pdf_file'), ArticleFile::MANUSCRIPT, $user->id);
+            $article->update(['pdf_path' => $manuscriptFile->file_path]);
+            $linkedFileIds[] = $manuscriptFile->id;
+        }
+
+        $this->versionService->createSnapshot(
+            $article->fresh(['articleAuthors', 'tags', 'files']),
+            $user,
+            'Initial Submission',
+            'Initial manuscript submission.',
+            null,
+            $linkedFileIds
+        );
 
         // Dispatch synchronized queued notifications
         event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
@@ -412,6 +426,14 @@ class ArticleController extends Controller
 
         if (ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $article->status);
+            if (ArticleStatus::normalize($article->status) === ArticleStatus::ACCEPTED) {
+                $this->versionService->createSnapshot(
+                    $article->fresh(['articleAuthors', 'tags', 'files']),
+                    $user,
+                    'Accepted Manuscript',
+                    $article->rejection_reason
+                );
+            }
         }
 
         // Send newsletter announcement when advanced to published
@@ -516,14 +538,6 @@ class ArticleController extends Controller
         $articleOwner = $authorResolution['owner'] ?? $article->user ?? $user;
 
         $pdfPath = $article->pdf_path;
-        if ($request->hasFile('pdf_file')) {
-            if ($pdfPath) {
-                $oldPath = str_replace('storage/', '', $pdfPath);
-                Storage::disk('public')->delete($oldPath);
-            }
-            $path = $request->file('pdf_file')->store('manuscripts', 'public');
-            $pdfPath = 'storage/' . $path;
-        }
 
         $featuredImagePath = $article->featured_image;
         if ($request->input('delete_featured_image') === 'true' || $request->input('delete_featured_image') === '1') {
@@ -637,8 +651,43 @@ class ArticleController extends Controller
             $this->persistArticleAuthors($article, $authorResolution['authors']);
         });
 
+        $linkedFileIds = [];
+        if ($request->hasFile('pdf_file')) {
+            $manuscriptFile = app(ArticleFileController::class)->storeUploadedFile($article->fresh(), $request->file('pdf_file'), ArticleFile::MANUSCRIPT, $user->id);
+            $article->update(['pdf_path' => $manuscriptFile->file_path]);
+            $pdfPath = $manuscriptFile->file_path;
+            $linkedFileIds[] = $manuscriptFile->id;
+        }
+
         if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
+        }
+
+        if (ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $user,
+                'Revised Manuscript',
+                $request->input('change_summary'),
+                $request->input('revision_response'),
+                $linkedFileIds
+            );
+        } elseif (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $user,
+                'Accepted Manuscript',
+                $request->input('change_summary')
+            );
+        } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $user,
+                'Initial Submission',
+                $request->input('change_summary') ?: 'Draft submitted for review.',
+                null,
+                $linkedFileIds
+            );
         }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF

@@ -27,6 +27,7 @@ use App\Models\ReviewerAssignment;
 use App\Models\SubEditorAssignment;
 use App\Models\User;
 use App\Services\PdfGeneratorService;
+use App\Services\ArticleVersionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -35,7 +36,7 @@ use Illuminate\Support\Facades\DB;
 
 class ArticleWorkflowController extends Controller
 {
-    public function __construct(private PdfGeneratorService $pdfService)
+    public function __construct(private PdfGeneratorService $pdfService, private ArticleVersionService $versionService)
     {
     }
 
@@ -52,11 +53,24 @@ class ArticleWorkflowController extends Controller
             'productionAssignments.user:id,name,email',
             'postPublicationActions.performer:id,name,email',
             'auditLogs.actor:id,name,email',
+            'versions.creator:id,name,email',
+            'versions.files.uploader:id,name,email',
         ]);
 
         return response()->json([
             'article' => $article,
             'files' => app(ArticleFileController::class)->filterVisibleFiles($request->user(), $article->files),
+            'versions' => $this->serializedVersions($article, $request->user()),
+        ]);
+    }
+
+    public function versions(Request $request, int $articleId): JsonResponse
+    {
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
+        $article->load(['versions.creator:id,name,email', 'versions.files.uploader:id,name,email']);
+
+        return response()->json([
+            'data' => $this->serializedVersions($article, $request->user()),
         ]);
     }
 
@@ -467,6 +481,15 @@ class ArticleWorkflowController extends Controller
             'to_status' => $decisionStatus,
         ]));
 
+        if ($decisionStatus === ArticleStatus::ACCEPTED) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $request->user(),
+                'Accepted Manuscript',
+                $request->comments_for_author
+            );
+        }
+
         return response()->json([
             'message' => 'Editorial decision recorded.',
             'decision' => $decision,
@@ -640,6 +663,17 @@ class ArticleWorkflowController extends Controller
             'to_status' => ArticleStatus::PUBLISHED,
         ]));
 
+        if ($storedFile) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $request->user(),
+                'Published Manuscript',
+                'Publication-ready manuscript snapshot.',
+                null,
+                [$storedFile->id]
+            );
+        }
+
         return response()->json([
             'message' => 'Article published.',
             'article' => $article->fresh(),
@@ -715,6 +749,34 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
+        if (!$requireAssignedRole && $this->isArticleAuthorRecord($user, $article)) {
+            return $article;
+        }
+
+        if (in_array('sub_editor', $roles, true) && $this->hasSubEditorAssignment($user, $article)) {
+            return $article;
+        }
+
+        if (in_array('reviewer', $roles, true) && $this->hasReviewerAssignment($user, $article)) {
+            return $article;
+        }
+
+        if ((in_array('copy_editor', $roles, true) || in_array('proofreader', $roles, true)) && $this->hasProductionAssignment($user, $article)) {
+            return $article;
+        }
+
+        if (in_array('publisher', $roles, true)
+            && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])
+            && in_array(ArticleStatus::normalize($article->status), [
+                ArticleStatus::ACCEPTED,
+                ArticleStatus::COPY_EDITING,
+                ArticleStatus::PROOFREADING,
+                ArticleStatus::READY_FOR_PUBLICATION,
+                ArticleStatus::PUBLISHED,
+            ], true)) {
+            return $article;
+        }
+
         if ($this->isAssignedToMagazine($user, $article->magazine_id, $roles)) {
             return $article;
         }
@@ -734,7 +796,18 @@ class ArticleWorkflowController extends Controller
             'article.productionAssignments.user:id,name,email',
             'article.postPublicationActions.performer:id,name,email',
             'article.auditLogs.actor:id,name,email',
+            'article.versions.creator:id,name,email',
+            'article.versions.files.uploader:id,name,email',
         ];
+    }
+
+    private function serializedVersions(Article $article, $user): array
+    {
+        return $article->versions
+            ->sortByDesc('version_number')
+            ->map(fn ($version) => $this->versionService->serializeVersion($version, $user))
+            ->values()
+            ->all();
     }
 
     private function assignmentPayload(SubEditorAssignment|ReviewerAssignment $assignment, $user): array
@@ -743,6 +816,7 @@ class ArticleWorkflowController extends Controller
         $articleData = $article->toArray();
         $visibleFiles = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files);
         $articleData['files'] = $visibleFiles;
+        $articleData['versions'] = $this->serializedVersions($article, $user);
 
         $assignmentData = $assignment->toArray();
         $assignmentData['article'] = $articleData;
@@ -775,6 +849,41 @@ class ArticleWorkflowController extends Controller
                 $query->whereIn('role', $normalizedRoles)
                     ->orWhereNull('role');
             })
+            ->exists();
+    }
+
+    private function isArticleAuthorRecord($user, Article $article): bool
+    {
+        return DB::table('article_author')
+            ->where('article_id', $article->id)
+            ->where(function ($query) use ($user) {
+                $query->where('user_id', $user->id)
+                    ->orWhere('co_author_email', $user->email);
+            })
+            ->exists();
+    }
+
+    private function hasSubEditorAssignment($user, Article $article): bool
+    {
+        return DB::table('sub_editor_assignments')
+            ->where('article_id', $article->id)
+            ->where('sub_editor_id', $user->id)
+            ->exists();
+    }
+
+    private function hasReviewerAssignment($user, Article $article): bool
+    {
+        return DB::table('reviewer_assignments')
+            ->where('article_id', $article->id)
+            ->where('reviewer_id', $user->id)
+            ->exists();
+    }
+
+    private function hasProductionAssignment($user, Article $article): bool
+    {
+        return DB::table('production_assignments')
+            ->where('article_id', $article->id)
+            ->where('user_id', $user->id)
             ->exists();
     }
 

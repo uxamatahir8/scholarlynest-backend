@@ -12,13 +12,17 @@ class ArticleVersion extends Model
         'article_id',
         'created_by',
         'version_number',
+        'label',
         'status_snapshot',
         'metadata_snapshot',
+        'file_snapshot',
         'change_summary',
+        'author_response',
     ];
 
     protected $casts = [
         'metadata_snapshot' => 'array',
+        'file_snapshot' => 'array',
     ];
 
     public function article(): BelongsTo
