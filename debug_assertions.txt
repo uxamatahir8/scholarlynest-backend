@@ -1,0 +1,34 @@
+Test Started
+Seeder run completed
+Asserting 12 magazines
+Asserting 6600 articles
+Asserting users count
+Asserting all 18 statuses
+Checking status: draft
+Checking status: submitted
+Checking status: under_review
+Checking status: assigned_to_sub_editor
+Checking status: reviewer_assigned
+Checking status: review_in_progress
+Checking status: revision_required
+Checking status: minor_revision_required
+Checking status: major_revision_required
+Checking status: resubmitted
+Checking status: accepted
+Checking status: rejected
+Checking status: copy_editing
+Checking status: proofreading
+Checking status: ready_for_publication
+Checking status: published
+Checking status: withdrawn
+Checking status: archived
+Asserting magazine_user count
+Asserting sub_editor_assignments
+Asserting reviewer_assignments
+Asserting production_assignments
+Asserting published article metadata
+Asserting article_versions
+Asserting editor assigned magazines
+Asserting date range
+First article: 2015-01-23, Last article: 2026-06-19
+Test finished successfully

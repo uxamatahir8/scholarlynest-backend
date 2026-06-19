@@ -308,6 +308,33 @@ class ArticleController extends Controller
                 ->whereIn('status', $this->publisherVisibleStatuses());
         } elseif ($this->usesMagazineArticleScope($user)) {
             $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'magazine_editor']));
+        } elseif ($user->hasRole('sub_editor')) {
+            $query->where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)
+                  ->orWhereIn('id', function ($subQ) use ($user) {
+                      $subQ->select('article_id')
+                          ->from('sub_editor_assignments')
+                          ->where('sub_editor_id', $user->id);
+                  });
+            });
+        } elseif ($user->hasRole('reviewer')) {
+            $query->where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)
+                  ->orWhereIn('id', function ($subQ) use ($user) {
+                      $subQ->select('article_id')
+                          ->from('reviewer_assignments')
+                          ->where('reviewer_id', $user->id);
+                  });
+            });
+        } elseif ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+            $query->where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)
+                  ->orWhereIn('id', function ($subQ) use ($user) {
+                      $subQ->select('article_id')
+                          ->from('production_assignments')
+                          ->where('user_id', $user->id);
+                  });
+            });
         } else {
             $query->where('user_id', $user->id);
         }

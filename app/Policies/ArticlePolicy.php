@@ -42,6 +42,39 @@ class ArticlePolicy
             return true;
         }
 
+        // Sub Editor assignment
+        if ($user->hasRole('sub_editor')) {
+            $isAssignedSubEditor = DB::table('sub_editor_assignments')
+                ->where('article_id', $article->id)
+                ->where('sub_editor_id', $user->id)
+                ->exists();
+            if ($isAssignedSubEditor) {
+                return true;
+            }
+        }
+
+        // Reviewer assignment
+        if ($user->hasRole('reviewer')) {
+            $isAssignedReviewer = DB::table('reviewer_assignments')
+                ->where('article_id', $article->id)
+                ->where('reviewer_id', $user->id)
+                ->exists();
+            if ($isAssignedReviewer) {
+                return true;
+            }
+        }
+
+        // Production assignment
+        if ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+            $isAssignedProduction = DB::table('production_assignments')
+                ->where('article_id', $article->id)
+                ->where('user_id', $user->id)
+                ->exists();
+            if ($isAssignedProduction) {
+                return true;
+            }
+        }
+
         // Co-authors linked by user_id or email can view
         return DB::table('article_author')
             ->where('article_id', $article->id)

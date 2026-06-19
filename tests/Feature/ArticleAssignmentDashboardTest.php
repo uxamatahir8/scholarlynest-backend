@@ -172,4 +172,33 @@ class ArticleAssignmentDashboardTest extends TestCase
             ->assertOk()
             ->assertJsonCount(2, 'data');
     }
+
+    public function test_sub_editor_can_only_see_assigned_articles(): void
+    {
+        SubEditorAssignment::create([
+            'article_id' => $this->article->id,
+            'sub_editor_id' => $this->subEditor->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+            'due_date' => now()->addDays(3),
+        ]);
+
+        Sanctum::actingAs($this->subEditor);
+
+        // 1. Can view their assigned article
+        $this->getJson("/api/admin/articles/{$this->article->id}")
+            ->assertOk();
+
+        // 2. Cannot view the other article
+        $this->getJson("/api/admin/articles/{$this->otherArticle->id}")
+            ->assertForbidden();
+
+        // 3. Main article list only returns the assigned article
+        $response = $this->getJson('/api/admin/articles')
+            ->assertOk();
+            
+        $data = $response->json('data');
+        $this->assertCount(1, $data);
+        $this->assertEquals($this->article->id, $data[0]['id']);
+    }
 }

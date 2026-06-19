@@ -101,7 +101,14 @@ class ArticleWorkflowController extends Controller
         $users = User::query()
             ->with('role:id,name,display_name')
             ->whereHas('role', fn ($query) => $query->where('name', $role))
-            ->when($magazineId && in_array($role, ['editor', 'sub_editor', 'reviewer', 'publisher'], true), function ($query) use ($magazineId, $role) {
+            ->when($role === 'sub_editor' && !$this->isGlobal($user) && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')), function ($query) use ($user) {
+                $query->whereIn('users.id', function ($subQuery) use ($user) {
+                    $subQuery->select('sub_editor_id')
+                        ->from('editor_sub_editor')
+                        ->where('editor_id', $user->id);
+                });
+            })
+            ->when($magazineId && in_array($role, ['editor', 'publisher'], true), function ($query) use ($magazineId, $role) {
                 $query->whereHas('magazines', function ($magazineQuery) use ($magazineId, $role) {
                     $magazineQuery->where('magazines.id', $magazineId)
                         ->where(function ($pivotQuery) use ($role) {
@@ -125,17 +132,33 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Sub editor role required.'], 403);
         }
 
-        $assignments = SubEditorAssignment::query()
+        $query = SubEditorAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($query) => $query->where('sub_editor_id', $user->id))
+            ->when(!$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $user->id))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
-            ->latest()
-            ->get();
+            ->latest();
 
+        if ($this->isGlobal($user)) {
+            $perPage = max(5, min(50, $request->integer('per_page', 15)));
+            $paginator = $query->paginate($perPage);
+            return response()->json([
+                'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+            ]);
+        }
+
+        $assignments = $query->get();
         return response()->json([
-            'data' => $assignments->map(fn (SubEditorAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+            'data'         => $assignments->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user)),
+            'current_page' => 1,
+            'last_page'    => 1,
+            'total'        => $assignments->count(),
+            'per_page'     => $assignments->count(),
         ]);
     }
 
@@ -147,17 +170,33 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Reviewer role required.'], 403);
         }
 
-        $assignments = ReviewerAssignment::query()
+        $query = ReviewerAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($query) => $query->where('reviewer_id', $user->id))
+            ->when(!$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $user->id))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
-            ->latest()
-            ->get();
+            ->latest();
 
+        if ($this->isGlobal($user)) {
+            $perPage = max(5, min(50, $request->integer('per_page', 15)));
+            $paginator = $query->paginate($perPage);
+            return response()->json([
+                'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+            ]);
+        }
+
+        $assignments = $query->get();
         return response()->json([
-            'data' => $assignments->map(fn (ReviewerAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+            'data'         => $assignments->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user)),
+            'current_page' => 1,
+            'last_page'    => 1,
+            'total'        => $assignments->count(),
+            'per_page'     => $assignments->count(),
         ]);
     }
 
@@ -181,18 +220,34 @@ class ArticleWorkflowController extends Controller
             }
         }
 
-        $assignments = ProductionAssignment::query()
+        $query = ProductionAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($query) => $query->where('user_id', $user->id))
-            ->when($allowedRole, fn ($query) => $query->where('role', $allowedRole))
+            ->when(!$this->isGlobal($user), fn ($q) => $q->where('user_id', $user->id))
+            ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
-            ->latest()
-            ->get();
+            ->latest();
 
+        if ($this->isGlobal($user)) {
+            $perPage = max(5, min(50, $request->integer('per_page', 15)));
+            $paginator = $query->paginate($perPage);
+            return response()->json([
+                'data'         => collect($paginator->items())->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+            ]);
+        }
+
+        $assignments = $query->get();
         return response()->json([
-            'data' => $assignments->map(fn (ProductionAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+            'data'         => $assignments->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user)),
+            'current_page' => 1,
+            'last_page'    => 1,
+            'total'        => $assignments->count(),
+            'per_page'     => $assignments->count(),
         ]);
     }
 

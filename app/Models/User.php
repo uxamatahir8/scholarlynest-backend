@@ -180,4 +180,24 @@ class User extends Authenticatable
             ->withPivot(['role', 'assigned_by'])
             ->withTimestamps();
     }
+
+    /**
+     * Get the sub editors assigned to this editor.
+     */
+    public function assignedSubEditors(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'editor_sub_editor', 'editor_id', 'sub_editor_id')
+            ->withPivot('created_by')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the editors this sub editor is assigned to.
+     */
+    public function assignedEditors(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'editor_sub_editor', 'sub_editor_id', 'editor_id')
+            ->withPivot('created_by')
+            ->withTimestamps();
+    }
 }

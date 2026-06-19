@@ -3,6 +3,8 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\Admin\RbacController;
 use App\Http\Controllers\Admin\ArticleWorkflowController;
+use App\Http\Controllers\Admin\EditorSubEditorController;
+use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\MediaController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
@@ -13,6 +15,10 @@ use App\Http\Controllers\ContactController;
 use App\Http\Controllers\NewsletterController;
 use App\Http\Controllers\FaqController;
 use App\Http\Controllers\GlobalSearchController;
+use App\Http\Controllers\Admin\ArticleTypeController;
+use App\Http\Controllers\Admin\ArticleCategoryController;
+use App\Http\Controllers\Admin\SubjectAreaController;
+use App\Http\Controllers\Admin\LanguageController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -116,6 +122,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     // Article submissions
     Route::post('/articles', [ArticleController::class, 'store'])->middleware('permission:articles.create');
     Route::get('/tags', [TagController::class, 'index']);
+    
+    // Article classifications (lists for dropdown selects in form)
+    Route::get('/article-types', [ArticleTypeController::class, 'index']);
+    Route::get('/article-categories', [ArticleCategoryController::class, 'index']);
+    Route::get('/subject-areas', [SubjectAreaController::class, 'index']);
+    Route::get('/languages', [LanguageController::class, 'index']);
  
     // Media polymorphic uploads
     Route::post('/media', [MediaController::class, 'store']);
@@ -131,6 +143,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
  
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
+        // Dynamic Classifications CRUD (Settings Submenu)
+        Route::apiResource('article-types', ArticleTypeController::class)->except(['index']);
+        Route::apiResource('article-categories', ArticleCategoryController::class)->except(['index']);
+        Route::apiResource('subject-areas', SubjectAreaController::class)->except(['index']);
+        Route::apiResource('languages', LanguageController::class)->except(['index']);
+
         Route::get('/stats', [ArticleController::class, 'adminStats']);
         Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
@@ -194,6 +212,14 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-production-assignments', [ArticleWorkflowController::class, 'myProductionAssignments'])->middleware('permission:articles.view-own');
         Route::get('/publisher-dashboard', [ArticleWorkflowController::class, 'publisherDashboard'])->middleware('permission:articles.view-own');
+        
+        // Recruiter-scoped Sub Editors
+        Route::get('/editor/sub-editors', [EditorSubEditorController::class, 'index'])->middleware('permission:articles.view-own');
+        Route::post('/editor/sub-editors', [EditorSubEditorController::class, 'store'])->middleware('permission:articles.view-own');
+        Route::post('/editor/sub-editors/{subEditorId}/unassign', [EditorSubEditorController::class, 'unassign'])->middleware('permission:articles.view-own');
+
+        // Scoped Panel Search
+        Route::get('/search', [SearchController::class, 'search'])->middleware('permission:articles.view-own');
         Route::post('/articles/{id}/screen', [ArticleWorkflowController::class, 'screen'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-sub-editor', [ArticleWorkflowController::class, 'assignSubEditor'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.approve');
