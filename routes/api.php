@@ -190,6 +190,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');
+        Route::get('/my-production-assignments', [ArticleWorkflowController::class, 'myProductionAssignments'])->middleware('permission:articles.view-own');
+        Route::get('/publisher-dashboard', [ArticleWorkflowController::class, 'publisherDashboard'])->middleware('permission:articles.view-own');
         Route::post('/articles/{id}/screen', [ArticleWorkflowController::class, 'screen'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-sub-editor', [ArticleWorkflowController::class, 'assignSubEditor'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.approve');

@@ -159,6 +159,100 @@ class ArticleWorkflowController extends Controller
         ]);
     }
 
+    public function myProductionAssignments(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $role = $request->query('role');
+
+        if ($role && !in_array($role, ['copy_editor', 'proofreader'], true)) {
+            return response()->json(['message' => 'Invalid production role.'], 422);
+        }
+
+        $allowedRole = $role ?: null;
+        if (!$this->isGlobal($user)) {
+            if (!$user->hasRole('copy_editor') && !$user->hasRole('proofreader')) {
+                return response()->json(['message' => 'Forbidden. Production role required.'], 403);
+            }
+            $allowedRole = $user->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
+            if ($role && $role !== $allowedRole) {
+                return response()->json(['message' => 'Forbidden. Production role required.'], 403);
+            }
+        }
+
+        $assignments = ProductionAssignment::query()
+            ->with($this->assignmentRelations())
+            ->when(!$this->isGlobal($user), fn ($query) => $query->where('user_id', $user->id))
+            ->when($allowedRole, fn ($query) => $query->where('role', $allowedRole))
+            ->orderByRaw('completed_at IS NOT NULL')
+            ->orderByRaw('due_date IS NULL')
+            ->orderBy('due_date')
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'data' => $assignments->map(fn (ProductionAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+        ]);
+    }
+
+    public function publisherDashboard(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$this->isGlobal($user) && !$user->hasRole('publisher')) {
+            return response()->json(['message' => 'Forbidden. Publisher role required.'], 403);
+        }
+
+        $magazineIds = $this->isGlobal($user) ? null : $this->assignedMagazineIds($user, ['publisher']);
+
+        $magazines = Magazine::query()
+            ->select(['id', 'title', 'slug'])
+            ->when($magazineIds !== null, fn ($query) => $query->whereIn('id', $magazineIds))
+            ->orderBy('title')
+            ->get();
+
+        $articleBase = Article::with(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title,issue_month,issue_year', 'articleAuthors'])
+            ->when($magazineIds !== null, fn ($query) => $query->whereIn('magazine_id', $magazineIds));
+
+        $readyArticles = (clone $articleBase)
+            ->whereIn('status', [ArticleStatus::ACCEPTED, ArticleStatus::READY_FOR_PUBLICATION])
+            ->latest('updated_at')
+            ->limit(20)
+            ->get()
+            ->map(fn (Article $article) => $this->publicationArticlePayload($article))
+            ->values();
+
+        $publishedArticles = (clone $articleBase)
+            ->where('status', ArticleStatus::PUBLISHED)
+            ->latest('published_at')
+            ->limit(20)
+            ->get()
+            ->map(fn (Article $article) => $this->publicationArticlePayload($article))
+            ->values();
+
+        $issues = MagazineIssue::with('magazine:id,title,slug')
+            ->withCount('articles')
+            ->when($magazineIds !== null, fn ($query) => $query->whereIn('magazine_id', $magazineIds))
+            ->latest()
+            ->limit(20)
+            ->get()
+            ->map(fn (MagazineIssue $issue) => $this->issuePayload($issue))
+            ->values();
+
+        return response()->json([
+            'magazines' => $magazines,
+            'ready_articles' => $readyArticles,
+            'published_articles' => $publishedArticles,
+            'eligible_articles' => $readyArticles,
+            'issues' => $issues,
+            'counts' => [
+                'magazines' => $magazines->count(),
+                'ready_articles' => $readyArticles->count(),
+                'published_articles' => $publishedArticles->count(),
+                'issues' => $issues->count(),
+            ],
+        ]);
+    }
+
     public function screen(ScreenArticleRequest $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
@@ -1072,7 +1166,7 @@ class ArticleWorkflowController extends Controller
             ->all();
     }
 
-    private function assignmentPayload(SubEditorAssignment|ReviewerAssignment $assignment, $user): array
+    private function assignmentPayload(SubEditorAssignment|ReviewerAssignment|ProductionAssignment $assignment, $user): array
     {
         $article = $assignment->article;
         $articleData = $article->toArray();
