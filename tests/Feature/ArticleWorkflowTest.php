@@ -20,6 +20,7 @@ class ArticleWorkflowTest extends TestCase
     private User $editor;
     private User $subEditor;
     private User $reviewer;
+    private User $author;
     private Magazine $magazine;
     private Article $article;
 
@@ -43,12 +44,13 @@ class ArticleWorkflowTest extends TestCase
         $editorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
         $subEditorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
         $reviewerRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.edit-own'])->pluck('id'));
+        $authorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.edit-own'])->pluck('id'));
 
         $this->admin = User::factory()->create(['role_id' => $superAdminRole->id]);
         $this->editor = User::factory()->create(['role_id' => $editorRole->id]);
         $this->subEditor = User::factory()->create(['role_id' => $subEditorRole->id]);
         $this->reviewer = User::factory()->create(['role_id' => $reviewerRole->id]);
-        $author = User::factory()->create(['role_id' => $authorRole->id]);
+        $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
             'title' => 'Workflow Journal',
@@ -62,7 +64,7 @@ class ArticleWorkflowTest extends TestCase
 
         $this->article = Article::create([
             'magazine_id' => $this->magazine->id,
-            'user_id' => $author->id,
+            'user_id' => $this->author->id,
             'title' => 'Workflow Article',
             'slug' => 'workflow-article',
             'abstract' => 'Abstract',
@@ -137,6 +139,34 @@ class ArticleWorkflowTest extends TestCase
         $this->postJson("/api/admin/reviewer-assignments/{$reviewerAssignmentId}/accept")
             ->assertStatus(200)
             ->assertJsonPath('assignment.status', 'accepted');
+    }
+
+    public function test_workflow_context_hides_confidential_notes_and_audit_logs_from_author(): void
+    {
+        Sanctum::actingAs($this->editor);
+        $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->json('assignment.id');
+
+        Sanctum::actingAs($this->reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 5],
+            'recommendation' => 'minor_revision',
+            'comments_for_author' => 'Please clarify the methods.',
+            'confidential_comments' => 'Confidential editor-only concern.',
+        ])->assertStatus(200);
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.audit_logs', [])
+            ->assertJsonMissing(['confidential_comments' => 'Confidential editor-only concern.']);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['confidential_comments' => 'Confidential editor-only concern.'])
+            ->assertJsonPath('article.audit_logs.0.article_id', $this->article->id);
     }
 
     public function test_publisher_issue_creation_and_article_publication(): void

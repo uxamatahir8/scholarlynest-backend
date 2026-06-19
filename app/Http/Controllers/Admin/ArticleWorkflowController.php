@@ -64,10 +64,12 @@ class ArticleWorkflowController extends Controller
             'versions.files.uploader:id,name,email',
         ]);
 
+        $articlePayload = $this->workflowArticlePayload($article, $request->user());
+
         return response()->json([
-            'article' => $article,
-            'files' => app(ArticleFileController::class)->filterVisibleFiles($request->user(), $article->files),
-            'versions' => $this->serializedVersions($article, $request->user()),
+            'article' => $articlePayload,
+            'files' => $articlePayload['files'] ?? [],
+            'versions' => $articlePayload['versions'] ?? [],
         ]);
     }
 
@@ -1166,13 +1168,84 @@ class ArticleWorkflowController extends Controller
             ->all();
     }
 
+    private function workflowArticlePayload(Article $article, $user): array
+    {
+        $data = $article->toArray();
+        $data['files'] = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files);
+        $data['versions'] = $this->serializedVersions($article, $user);
+
+        $canViewEditorial = $this->canViewEditorialInternals($user, $article);
+        $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
+        $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
+        $canViewProduction = $canViewPublication || $this->hasProductionAssignment($user, $article);
+
+        $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
+            ? ($data['audit_logs'] ?? [])
+            : [];
+
+        $data['sub_editor_assignments'] = collect($data['sub_editor_assignments'] ?? [])
+            ->filter(function (array $assignment) use ($user, $canViewEditorial) {
+                return $canViewEditorial || (int) ($assignment['sub_editor_id'] ?? 0) === (int) ($user?->id ?? 0);
+            })
+            ->values()
+            ->all();
+
+        $data['reviewer_assignments'] = collect($data['reviewer_assignments'] ?? [])
+            ->filter(function (array $assignment) use ($user, $canViewReviewWorkflow) {
+                return $canViewReviewWorkflow || (int) ($assignment['reviewer_id'] ?? 0) === (int) ($user?->id ?? 0);
+            })
+            ->map(function (array $assignment) use ($user, $canViewEditorial) {
+                $isOwnReviewer = (int) ($assignment['reviewer_id'] ?? 0) === (int) ($user?->id ?? 0);
+                if (!$canViewEditorial && !$isOwnReviewer) {
+                    unset($assignment['confidential_comments']);
+                }
+                if (!$canViewEditorial && !$isOwnReviewer) {
+                    unset($assignment['reviewer']);
+                }
+                return $assignment;
+            })
+            ->values()
+            ->all();
+
+        $data['editorial_decisions'] = collect($data['editorial_decisions'] ?? [])
+            ->map(function (array $decision) use ($canViewEditorial) {
+                if (!$canViewEditorial) {
+                    unset($decision['internal_notes']);
+                }
+                return $decision;
+            })
+            ->values()
+            ->all();
+
+        $data['production_assignments'] = collect($data['production_assignments'] ?? [])
+            ->filter(function (array $assignment) use ($user, $canViewProduction) {
+                return $canViewProduction || (int) ($assignment['user_id'] ?? 0) === (int) ($user?->id ?? 0);
+            })
+            ->values()
+            ->all();
+
+        if (!$canViewPublication && !$this->hasProductionAssignment($user, $article) && !$this->isArticleAuthorRecord($user, $article) && (int) $article->user_id !== (int) ($user?->id ?? 0)) {
+            $data['post_publication_actions'] = [];
+        }
+
+        return $data;
+    }
+
+    private function canViewAuditLogs($user, Article $article): bool
+    {
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+    }
+
+    private function canViewEditorialInternals($user, Article $article): bool
+    {
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+    }
+
     private function assignmentPayload(SubEditorAssignment|ReviewerAssignment|ProductionAssignment $assignment, $user): array
     {
         $article = $assignment->article;
-        $articleData = $article->toArray();
-        $visibleFiles = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files);
-        $articleData['files'] = $visibleFiles;
-        $articleData['versions'] = $this->serializedVersions($article, $user);
+        $articleData = $this->workflowArticlePayload($article, $user);
+        $visibleFiles = $articleData['files'] ?? [];
 
         $assignmentData = $assignment->toArray();
         $assignmentData['article'] = $articleData;
