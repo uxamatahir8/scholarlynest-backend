@@ -141,6 +141,12 @@ class ArticleAssetTest extends TestCase
             'mime_type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         ]);
 
+        $this->assertDatabaseHas('article_files', [
+            'article_id' => $this->article->id,
+            'file_type' => 'supplementary',
+            'original_name' => 'dataset.xlsx',
+        ]);
+
         $asset = ArticleAsset::first();
         $relativePath = str_replace('storage/', '', $asset->file_path);
         Storage::disk('public')->assertExists($relativePath);

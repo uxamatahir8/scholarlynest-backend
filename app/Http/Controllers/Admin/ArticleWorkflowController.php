@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Constants\ArticleStatus;
+use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AssignReviewerRequest;
 use App\Http\Requests\AssignSubEditorRequest;
@@ -16,6 +17,7 @@ use App\Http\Requests\SubmitReviewRequest;
 use App\Http\Requests\SubmitSubEditorRecommendationRequest;
 use App\Models\Article;
 use App\Models\ArticleAuditLog;
+use App\Models\ArticleFile;
 use App\Models\EditorialDecision;
 use App\Models\MagazineIssue;
 use App\Models\PostPublicationAction;
@@ -27,6 +29,7 @@ use App\Services\PdfGeneratorService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 
 class ArticleWorkflowController extends Controller
@@ -39,17 +42,20 @@ class ArticleWorkflowController extends Controller
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
 
+        $article->load([
+            'issue',
+            'files.uploader:id,name,email',
+            'subEditorAssignments.subEditor:id,name,email',
+            'reviewerAssignments.reviewer:id,name,email',
+            'editorialDecisions.decider:id,name,email',
+            'productionAssignments.user:id,name,email',
+            'postPublicationActions.performer:id,name,email',
+            'auditLogs.actor:id,name,email',
+        ]);
+
         return response()->json([
-            'article' => $article->load([
-                'issue',
-                'files',
-                'subEditorAssignments.subEditor:id,name,email',
-                'reviewerAssignments.reviewer:id,name,email',
-                'editorialDecisions.decider:id,name,email',
-                'productionAssignments.user:id,name,email',
-                'postPublicationActions.performer:id,name,email',
-                'auditLogs.actor:id,name,email',
-            ]),
+            'article' => $article,
+            'files' => app(ArticleFileController::class)->filterVisibleFiles($request->user(), $article->files),
         ]);
     }
 
@@ -92,16 +98,22 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
-        DB::transaction(function () use ($request, $article, $oldStatus) {
+        $storedFile = null;
+
+        DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
             $nextStatus = $request->decision === 'reject'
                 ? ArticleStatus::REJECTED
                 : ArticleStatus::UNDER_REVIEW;
+
+            if ($request->hasFile('plagiarism_report')) {
+                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('plagiarism_report'), ArticleFile::PLAGIARISM_REPORT, $request->user()->id);
+            }
 
             $article->update([
                 'status' => $nextStatus,
                 'plagiarism_status' => $request->plagiarism_status,
                 'plagiarism_score' => $request->plagiarism_score,
-                'plagiarism_report_path' => $request->plagiarism_report_path,
+                'plagiarism_report_path' => $storedFile?->file_path ?? $request->plagiarism_report_path,
                 'screened_at' => now(),
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
@@ -113,6 +125,7 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Article screening recorded.',
             'article' => $article->fresh(),
+            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -199,7 +212,16 @@ class ArticleWorkflowController extends Controller
 
         $oldStatus = $assignment->article->status;
 
-        DB::transaction(function () use ($request, $assignment, $oldStatus) {
+        $storedFile = null;
+
+        DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
+            if ($request->hasFile('annotated_manuscript')) {
+                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('annotated_manuscript'), ArticleFile::ANNOTATED_MANUSCRIPT, $request->user()->id, [
+                    'assignment_type' => 'sub_editor_assignment',
+                    'assignment_id' => $assignment->id,
+                ]);
+            }
+
             $assignment->update([
                 'status' => 'completed',
                 'recommendation' => $request->recommendation,
@@ -217,6 +239,7 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Sub editor recommendation submitted.',
             'assignment' => $assignment->fresh(),
+            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -261,7 +284,16 @@ class ArticleWorkflowController extends Controller
 
         $oldStatus = $assignment->article->status;
 
-        DB::transaction(function () use ($request, $assignment, $oldStatus) {
+        $storedFile = null;
+
+        DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
+            if ($request->hasFile('reviewed_manuscript')) {
+                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('reviewed_manuscript'), ArticleFile::REVIEWED_MANUSCRIPT, $request->user()->id, [
+                    'assignment_type' => 'reviewer_assignment',
+                    'assignment_id' => $assignment->id,
+                ]);
+            }
+
             $assignment->update([
                 'status' => 'completed',
                 'scorecard' => $request->scorecard,
@@ -281,6 +313,7 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Review submitted.',
             'assignment' => $assignment->fresh(),
+            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -381,6 +414,10 @@ class ArticleWorkflowController extends Controller
 
     public function completeProduction(Request $request, int $assignmentId): JsonResponse
     {
+        $request->validate([
+            'production_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+        ]);
+
         $assignment = ProductionAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -388,7 +425,22 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Production assignment required.'], 403);
         }
 
+        $storedFile = null;
         $oldStatus = $assignment->article->status;
+
+        if ($request->hasFile('production_file')) {
+            $storedFile = app(ArticleFileController::class)->storeUploadedFile(
+                $assignment->article,
+                $request->file('production_file'),
+                $assignment->role === 'proofreader' ? ArticleFile::PROOF_FILE : ArticleFile::COPY_EDITED_FILE,
+                $user->id,
+                [
+                    'assignment_type' => 'production_assignment',
+                    'assignment_id' => $assignment->id,
+                ]
+            );
+        }
+
         $assignment->update([
             'status' => 'completed',
             'completed_at' => now(),
@@ -403,6 +455,7 @@ class ArticleWorkflowController extends Controller
             'message' => 'Production assignment completed.',
             'assignment' => $assignment->fresh(),
             'article' => $assignment->article->fresh(),
+            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -433,10 +486,20 @@ class ArticleWorkflowController extends Controller
 
     public function publish(PublishArticleRequest $request, int $articleId): JsonResponse
     {
+        $request->validate([
+            'publication_pdf' => 'nullable|file|mimes:pdf|max:25600',
+        ]);
+
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);
         $oldStatus = $article->status;
+        $storedFile = null;
 
-        DB::transaction(function () use ($request, $article, $oldStatus) {
+        DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
+            if ($request->hasFile('publication_pdf')) {
+                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('publication_pdf'), ArticleFile::PUBLICATION_PDF, $request->user()->id);
+                $article->pdf_path = $storedFile->file_path;
+            }
+
             $article->update([
                 'status' => ArticleStatus::PUBLISHED,
                 'magazine_issue_id' => $request->magazine_issue_id,
@@ -459,6 +522,7 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Article published.',
             'article' => $article->fresh(),
+            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -560,7 +624,24 @@ class ArticleWorkflowController extends Controller
             'event' => $event,
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
-            'payload' => $payload,
+            'payload' => $this->sanitizeAuditPayload($payload),
         ]);
+    }
+
+    private function sanitizeAuditPayload(array $payload): array
+    {
+        return collect($payload)
+            ->map(function ($value) {
+                if ($value instanceof UploadedFile) {
+                    return [
+                        'original_name' => $value->getClientOriginalName(),
+                        'mime_type' => $value->getMimeType(),
+                        'size' => $value->getSize(),
+                    ];
+                }
+
+                return $value;
+            })
+            ->all();
     }
 }

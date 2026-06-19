@@ -18,6 +18,7 @@ class SubmitReviewRequest extends FormRequest
             'recommendation' => 'required|in:accept,minor_revision,major_revision,reject',
             'comments_for_author' => 'nullable|string',
             'confidential_comments' => 'nullable|string',
+            'reviewed_manuscript' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
         ];
     }
 }

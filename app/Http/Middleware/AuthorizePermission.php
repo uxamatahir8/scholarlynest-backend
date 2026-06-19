@@ -170,6 +170,24 @@ class AuthorizePermission
                     if ($resource->user_id === $user->id) {
                         return $next($request);
                     }
+                    $isMagazineAssigned = \DB::table('magazine_user')
+                        ->where('user_id', $user->id)
+                        ->where('magazine_id', $resource->magazine_id)
+                        ->where(function ($query) {
+                            $query->whereIn('role', [
+                                'editor',
+                                'magazine_editor',
+                                'sub_editor',
+                                'reviewer',
+                                'publisher',
+                                'copy_editor',
+                                'proofreader',
+                            ])->orWhereNull('role');
+                        })
+                        ->exists();
+                    if ($isMagazineAssigned) {
+                        return $next($request);
+                    }
                     $isCoAuthorEditor = \DB::table('article_author')
                         ->where('article_id', $resource->id)
                         ->where('user_id', $user->id)

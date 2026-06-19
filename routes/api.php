@@ -7,6 +7,7 @@ use App\Http\Controllers\MediaController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
 use App\Http\Controllers\ArticleController;
+use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\TagController;
 use App\Http\Controllers\ContactController;
 use App\Http\Controllers\NewsletterController;
@@ -56,6 +57,7 @@ Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf']);
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download']);
+Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download']);
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
     $query = \App\Models\Magazine::orderBy('created_at', 'desc');
@@ -123,6 +125,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('/articles/{id}/assets', [\App\Http\Controllers\ArticleAssetController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
     Route::delete('/articles/assets/{asset_id}', [\App\Http\Controllers\ArticleAssetController::class, 'destroy'])
+        ->middleware('permission:articles.manage-assets');
+    Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
  
     // Admin Dashboard

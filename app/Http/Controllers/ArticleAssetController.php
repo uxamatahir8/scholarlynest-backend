@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Constants\ArticleStatus;
+use App\Models\ArticleFile;
 use App\Models\Article;
 use App\Models\ArticleAsset;
 use Illuminate\Http\JsonResponse;
@@ -62,6 +63,11 @@ class ArticleAssetController extends Controller
             'original_filename' => $safeOriginalName,
             'file_size' => $fileSize,
             'mime_type' => $mimeType,
+        ]);
+
+        app(ArticleFileController::class)->storeUploadedFile($article, $file, ArticleFile::SUPPLEMENTARY, $user->id, [
+            'source_asset_id' => $asset->id,
+            'metadata' => ['compatibility_bridge' => 'article_assets'],
         ]);
 
         return response()->json([

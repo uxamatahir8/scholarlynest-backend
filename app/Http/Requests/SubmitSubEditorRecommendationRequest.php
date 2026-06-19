@@ -17,6 +17,7 @@ class SubmitSubEditorRecommendationRequest extends FormRequest
             'recommendation' => 'required|in:accept,minor_revision,major_revision,reject',
             'comments' => 'nullable|string',
             'internal_notes' => 'nullable|string',
+            'annotated_manuscript' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
         ];
     }
 }
