@@ -303,8 +303,11 @@ class ArticleController extends Controller
 
         if ($this->hasGlobalArticleAccess($user)) {
             // Super admins and legacy admins retain global visibility.
+        } elseif ($this->usesPublisherArticleScope($user)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['publisher']))
+                ->whereIn('status', $this->publisherVisibleStatuses());
         } elseif ($this->usesMagazineArticleScope($user)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']));
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'magazine_editor']));
         } else {
             $query->where('user_id', $user->id);
         }
@@ -894,13 +897,20 @@ class ArticleController extends Controller
         }
 
         $magazineIds = null;
+        $publisherScoped = false;
         if (!$this->hasGlobalArticleAccess($user)) {
-            $magazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']);
+            $publisherScoped = $this->usesPublisherArticleScope($user);
+            $magazineIds = $publisherScoped
+                ? $this->assignedMagazineIds($user, ['publisher'])
+                : $this->assignedMagazineIds($user, ['editor', 'magazine_editor']);
         }
 
         $query = Article::query();
         if ($magazineIds !== null) {
             $query->whereIn('magazine_id', $magazineIds);
+        }
+        if ($publisherScoped) {
+            $query->whereIn('status', $this->publisherVisibleStatuses());
         }
 
         $totalArticles = (clone $query)->count();
@@ -930,6 +940,9 @@ class ArticleController extends Controller
         $topArticles = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name'])
             ->when($magazineIds !== null, function($q) use ($magazineIds) {
                 $q->whereIn('magazine_id', $magazineIds);
+            })
+            ->when($publisherScoped, function ($q) {
+                $q->whereIn('status', $this->publisherVisibleStatuses());
             })
             ->orderByRaw('(clicks + impressions) DESC')
             ->limit(5)
@@ -1082,12 +1095,32 @@ class ArticleController extends Controller
 
     private function usesMagazineArticleScope($user): bool
     {
+        return $user && ($this->usesEditorialArticleScope($user) || $this->usesPublisherArticleScope($user));
+    }
+
+    private function usesEditorialArticleScope($user): bool
+    {
         return $user && (
             $user->hasRole('editor')
-            || $user->hasRole('publisher')
             || $user->hasRole('magazine_editor')
             || $user->hasRole('magazine-editor')
         );
+    }
+
+    private function usesPublisherArticleScope($user): bool
+    {
+        return $user && $user->hasRole('publisher') && !$this->usesEditorialArticleScope($user);
+    }
+
+    private function publisherVisibleStatuses(): array
+    {
+        return array_values(array_unique(array_merge(
+            ArticleStatus::queryValues(ArticleStatus::ACCEPTED),
+            ArticleStatus::queryValues(ArticleStatus::COPY_EDITING),
+            ArticleStatus::queryValues(ArticleStatus::PROOFREADING),
+            ArticleStatus::queryValues(ArticleStatus::READY_FOR_PUBLICATION),
+            ArticleStatus::queryValues(ArticleStatus::PUBLISHED)
+        )));
     }
 
     private function assignedMagazineIds($user, array $roles): array

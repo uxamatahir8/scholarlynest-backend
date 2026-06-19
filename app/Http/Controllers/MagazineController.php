@@ -62,6 +62,72 @@ class MagazineController extends Controller
     }
 
     /**
+     * GET /api/admin/magazines
+     * Authenticated management list scoped to the user's assigned magazines.
+     */
+    public function adminIndex(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $query = Magazine::with('editors')->withCount(['articles' => function ($query) {
+            $query->where('status', 'published');
+        }]);
+
+        if (!$this->hasGlobalMagazineAccess($user)) {
+            $assignedMagazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']);
+            if (empty($assignedMagazineIds)) {
+                return response()->json(['message' => 'Forbidden. Magazine assignment required.'], 403);
+            }
+            $query->whereIn('id', $assignedMagazineIds);
+        }
+
+        if ($request->boolean('all', false)) {
+            return response()->json($query->orderBy('title')->get());
+        }
+
+        return response()->json($query->orderByDesc('created_at')->paginate($request->integer('per_page', 8)));
+    }
+
+    /**
+     * GET /api/admin/magazines/{slug}
+     * Authenticated management detail scoped to assigned magazines and page ownership.
+     */
+    public function adminShow(Request $request, string $slug): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $magazine = Magazine::where('slug', $slug)
+            ->with(['editors', 'pages' => function ($query) {
+                $query->orderBy('sort_order', 'asc');
+            }])
+            ->first();
+
+        if (!$magazine) {
+            return response()->json(['message' => 'Magazine not found.'], 404);
+        }
+
+        if (!$this->hasGlobalMagazineAccess($user) && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'publisher', 'magazine_editor'])) {
+            return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
+        }
+
+        if ($this->isEditorOnly($user)) {
+            $magazine->setRelation('pages', $magazine->pages
+                ->filter(fn (MagazinePage $page) => (int) $page->created_by === (int) $user->id && (bool) $page->is_editor_created)
+                ->values());
+        } elseif (!$this->hasGlobalMagazineAccess($user) && $user->hasRole('publisher')) {
+            $magazine->setRelation('pages', collect());
+        }
+
+        return response()->json($magazine);
+    }
+
+    /**
      * GET /api/magazines/{slug}
      * Returns the magazine shell along with sorted magazine_pages.
      */
@@ -477,6 +543,43 @@ class MagazineController extends Controller
         return response()->json([
             'message' => 'Magazine page deleted successfully.'
         ]);
+    }
+
+    private function hasGlobalMagazineAccess($user): bool
+    {
+        return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function isEditorOnly($user): bool
+    {
+        return $user
+            && !$this->hasGlobalMagazineAccess($user)
+            && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'));
+    }
+
+    private function assignedMagazineIds($user, array $roles): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return \DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->pluck('magazine_id')
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function isAssignedMagazineRole($user, int $magazineId, array $roles): bool

@@ -167,6 +167,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::delete('/footer/pages/{id}', [\App\Http\Controllers\Admin\FooterPageController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:footer.manage']);
  
         // Magazines & Custom Pages (Restricted to Admin / Super Admin)
+        Route::get('/magazines', [MagazineController::class, 'adminIndex'])->middleware('permission:magazines.view-own');
+        Route::get('/magazines/{slug}', [MagazineController::class, 'adminShow'])->middleware('permission:magazines.view-own');
         Route::post('/magazines', [MagazineController::class, 'store'])->middleware('permission:magazines.create');
         Route::put('/magazines/{id}', [MagazineController::class, 'update'])->middleware('permission:magazines.edit');
         Route::delete('/magazines/{id}', [MagazineController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:magazines.delete']);

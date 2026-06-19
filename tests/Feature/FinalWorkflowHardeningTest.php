@@ -5,6 +5,11 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Constants\SystemRoles;
 use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\MagazineIssue;
+use App\Models\ProductionAssignment;
+use App\Models\ReviewerAssignment;
+use App\Models\SubEditorAssignment;
 use App\Models\Magazine;
 use App\Models\MagazinePage;
 use App\Models\Permission;
@@ -293,6 +298,210 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->assertFalse($customRole->permissions->contains('name', 'magazines.delete'));
     }
 
+    public function test_direct_article_and_workflow_fetches_are_scoped_to_allowed_records(): void
+    {
+        $author = $this->user('author');
+        $otherAuthor = $this->user('author');
+        $ownedArticle = $this->article($author, ArticleStatus::DRAFT);
+        $otherArticle = $this->article($otherAuthor, ArticleStatus::SUBMITTED);
+
+        Sanctum::actingAs($author);
+        $this->getJson("/api/admin/articles/{$ownedArticle->id}")->assertOk();
+        $this->getJson("/api/admin/articles/{$otherArticle->id}")->assertForbidden();
+
+        $editor = $this->user('editor');
+        $editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+        $unassignedMagazineArticle = $this->articleForMagazine($otherAuthor, $this->otherMagazine, ArticleStatus::SUBMITTED);
+
+        Sanctum::actingAs($editor);
+        $this->getJson("/api/admin/articles/{$unassignedMagazineArticle->id}")->assertForbidden();
+
+        $subEditor = $this->user('sub_editor');
+        Sanctum::actingAs($subEditor);
+        $this->getJson("/api/admin/articles/{$ownedArticle->id}/workflow")->assertForbidden();
+
+        $reviewer = $this->user('reviewer');
+        $confidentialFile = ArticleFile::create([
+            'article_id' => $ownedArticle->id,
+            'uploaded_by' => $editor->id,
+            'file_type' => ArticleFile::REVIEWED_MANUSCRIPT,
+            'visibility' => 'reviewer_editor',
+            'file_path' => 'storage/article-files/test/reviewed.pdf',
+            'original_name' => 'reviewed.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 128,
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->getJson("/api/articles/files/{$confidentialFile->id}/download")->assertForbidden();
+    }
+
+    public function test_editor_admin_magazine_reads_are_assigned_and_page_owner_scoped(): void
+    {
+        $editor = $this->user('editor');
+        $otherEditor = $this->user('editor');
+        $editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+        $otherEditor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+
+        $ownPage = MagazinePage::create([
+            'magazine_id' => $this->magazine->id,
+            'title' => 'Own Editorial Page',
+            'slug' => 'own-editorial-page',
+            'content' => 'Own body',
+            'created_by' => $editor->id,
+            'created_by_role' => 'editor',
+            'is_editor_created' => true,
+        ]);
+        $otherPage = MagazinePage::create([
+            'magazine_id' => $this->magazine->id,
+            'title' => 'Other Editorial Page',
+            'slug' => 'other-editorial-page',
+            'content' => 'Other body',
+            'created_by' => $otherEditor->id,
+            'created_by_role' => 'editor',
+            'is_editor_created' => true,
+        ]);
+        $superPage = MagazinePage::create([
+            'magazine_id' => $this->magazine->id,
+            'title' => 'Super Page',
+            'slug' => 'super-page-visible-to-admin-only',
+            'content' => 'Super body',
+            'created_by' => $this->user('super_admin')->id,
+            'created_by_role' => 'super_admin',
+            'is_editor_created' => false,
+        ]);
+
+        Sanctum::actingAs($editor);
+
+        $this->getJson('/api/admin/magazines?per_page=25')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $this->magazine->id);
+
+        $this->getJson("/api/admin/magazines/{$this->otherMagazine->slug}")->assertForbidden();
+
+        $response = $this->getJson("/api/admin/magazines/{$this->magazine->slug}")
+            ->assertOk()
+            ->json();
+
+        $pageIds = collect($response['pages'])->pluck('id')->all();
+        $this->assertContains($ownPage->id, $pageIds);
+        $this->assertNotContains($otherPage->id, $pageIds);
+        $this->assertNotContains($superPage->id, $pageIds);
+    }
+
+    public function test_publisher_article_issue_and_query_access_is_publication_scoped(): void
+    {
+        $publisher = $this->user('publisher');
+        $publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
+
+        $accepted = $this->article($this->user('author'), ArticleStatus::ACCEPTED);
+        $ready = $this->article($this->user('author'), ArticleStatus::READY_FOR_PUBLICATION);
+        $submitted = $this->article($this->user('author'), ArticleStatus::SUBMITTED);
+        $otherAccepted = $this->articleForMagazine($this->user('author'), $this->otherMagazine, ArticleStatus::ACCEPTED);
+        $otherIssue = MagazineIssue::create([
+            'magazine_id' => $this->otherMagazine->id,
+            'volume_number' => '1',
+            'issue_number' => '1',
+            'issue_year' => 2026,
+            'status' => 'draft',
+            'is_published' => false,
+        ]);
+
+        Sanctum::actingAs($publisher);
+
+        $articleIds = collect($this->getJson('/api/admin/articles?per_page=25')->assertOk()->json('data'))->pluck('id')->all();
+        $this->assertContains($accepted->id, $articleIds);
+        $this->assertContains($ready->id, $articleIds);
+        $this->assertNotContains($submitted->id, $articleIds);
+        $this->assertNotContains($otherAccepted->id, $articleIds);
+
+        $this->getJson('/api/admin/articles?status=submitted&per_page=25')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson("/api/admin/articles?magazine_id={$this->otherMagazine->id}&per_page=25")
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson("/api/admin/issues/{$otherIssue->id}")->assertForbidden();
+        $this->getJson("/api/admin/issues/eligible-articles?magazine_id={$this->otherMagazine->id}")->assertForbidden();
+    }
+
+    public function test_assignment_dashboards_return_only_current_users_assigned_records(): void
+    {
+        $editor = $this->user('editor');
+        $article = $this->article($this->user('author'), ArticleStatus::UNDER_REVIEW);
+        $otherArticle = $this->article($this->user('author'), ArticleStatus::UNDER_REVIEW);
+
+        $subEditor = $this->user('sub_editor');
+        $otherSubEditor = $this->user('sub_editor');
+        $ownSubAssignment = SubEditorAssignment::create([
+            'article_id' => $article->id,
+            'sub_editor_id' => $subEditor->id,
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $otherArticle->id,
+            'sub_editor_id' => $otherSubEditor->id,
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+
+        Sanctum::actingAs($subEditor);
+        $this->getJson('/api/admin/my-sub-editor-assignments')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $ownSubAssignment->id);
+
+        $reviewer = $this->user('reviewer');
+        $otherReviewer = $this->user('reviewer');
+        $ownReviewAssignment = ReviewerAssignment::create([
+            'article_id' => $article->id,
+            'reviewer_id' => $reviewer->id,
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+        ReviewerAssignment::create([
+            'article_id' => $otherArticle->id,
+            'reviewer_id' => $otherReviewer->id,
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->getJson('/api/admin/my-reviewer-assignments')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $ownReviewAssignment->id);
+
+        $copyEditor = $this->user('copy_editor');
+        $proofreader = $this->user('proofreader');
+        $ownProductionAssignment = ProductionAssignment::create([
+            'article_id' => $article->id,
+            'user_id' => $copyEditor->id,
+            'role' => 'copy_editor',
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+        ProductionAssignment::create([
+            'article_id' => $otherArticle->id,
+            'user_id' => $proofreader->id,
+            'role' => 'proofreader',
+            'assigned_by' => $editor->id,
+            'status' => 'assigned',
+        ]);
+
+        Sanctum::actingAs($copyEditor);
+        $this->getJson('/api/admin/my-production-assignments?role=copy_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $ownProductionAssignment->id);
+        $this->getJson('/api/admin/my-production-assignments?role=proofreader')
+            ->assertForbidden();
+    }
+
     private function user(string $roleName): User
     {
         return User::factory()->create(['role_id' => $this->roles[$roleName]->id]);
@@ -300,8 +509,13 @@ class FinalWorkflowHardeningTest extends TestCase
 
     private function article(User $author, string $status): Article
     {
+        return $this->articleForMagazine($author, $this->magazine, $status);
+    }
+
+    private function articleForMagazine(User $author, Magazine $magazine, string $status): Article
+    {
         return Article::create([
-            'magazine_id' => $this->magazine->id,
+            'magazine_id' => $magazine->id,
             'user_id' => $author->id,
             'title' => 'Hardening Article ' . $status . ' ' . uniqid(),
             'slug' => 'hardening-article-' . Str::slug($status) . '-' . uniqid(),
