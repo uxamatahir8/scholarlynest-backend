@@ -12,8 +12,12 @@ class MagazineIssue extends Model
         'magazine_id',
         'volume_number',
         'issue_number',
+        'issue_month',
+        'issue_year',
         'special_title',
         'description',
+        'cover_image',
+        'status',
         'is_published',
         'published_at',
     ];

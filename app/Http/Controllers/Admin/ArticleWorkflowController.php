@@ -20,6 +20,7 @@ use App\Models\Article;
 use App\Models\ArticleAuditLog;
 use App\Models\ArticleFile;
 use App\Models\EditorialDecision;
+use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\PostPublicationAction;
 use App\Models\ProductionAssignment;
@@ -28,15 +29,21 @@ use App\Models\SubEditorAssignment;
 use App\Models\User;
 use App\Services\PdfGeneratorService;
 use App\Services\ArticleVersionService;
+use App\Services\CitationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class ArticleWorkflowController extends Controller
 {
-    public function __construct(private PdfGeneratorService $pdfService, private ArticleVersionService $versionService)
+    public function __construct(
+        private PdfGeneratorService $pdfService,
+        private ArticleVersionService $versionService,
+        private CitationService $citationService
+    )
     {
     }
 
@@ -600,7 +607,13 @@ class ArticleWorkflowController extends Controller
 
     public function issues(Request $request): JsonResponse
     {
-        $query = MagazineIssue::with('magazine:id,title,slug')->orderByDesc('created_at');
+        $query = MagazineIssue::with('magazine:id,title,slug')
+            ->withCount('articles')
+            ->orderByDesc('created_at');
+
+        if (!$this->isGlobal($request->user())) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+        }
 
         if ($request->filled('magazine_id')) {
             $query->where('magazine_id', $request->integer('magazine_id'));
@@ -609,18 +622,140 @@ class ArticleWorkflowController extends Controller
         return response()->json($query->paginate($request->integer('per_page', 25)));
     }
 
+    public function issueMagazines(Request $request): JsonResponse
+    {
+        $query = Magazine::query()->select(['id', 'title', 'slug'])->orderBy('title');
+
+        if (!$this->isGlobal($request->user())) {
+            $query->whereIn('id', $this->assignedMagazineIds($request->user(), ['publisher']));
+        }
+
+        return response()->json(['data' => $query->get()]);
+    }
+
+    public function showIssue(Request $request, int $issueId): JsonResponse
+    {
+        $issue = MagazineIssue::with([
+            'magazine:id,title,slug',
+            'articles' => fn ($query) => $query->with('user:id,name,email')->orderBy('page_start')->orderBy('title'),
+        ])->withCount('articles')->findOrFail($issueId);
+
+        if (!$this->canManageIssue($request->user(), $issue)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        }
+
+        return response()->json(['issue' => $this->issuePayload($issue)]);
+    }
+
     public function storeIssue(MagazineIssueRequest $request): JsonResponse
     {
         if (!$this->isGlobal($request->user()) && !$this->isAssignedToMagazine($request->user(), $request->magazine_id, ['publisher'])) {
             return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
         }
 
-        $issue = MagazineIssue::create($request->validated());
+        $issue = MagazineIssue::create($this->issueData($request));
 
         return response()->json([
             'message' => 'Magazine issue created.',
-            'issue' => $issue->load('magazine:id,title,slug'),
+            'issue' => $this->issuePayload($issue->load('magazine:id,title,slug')->loadCount('articles')),
         ], 201);
+    }
+
+    public function updateIssue(MagazineIssueRequest $request, int $issueId): JsonResponse
+    {
+        $issue = MagazineIssue::findOrFail($issueId);
+
+        if (!$this->canManageIssue($request->user(), $issue)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        }
+
+        if ((int) $issue->magazine_id !== (int) $request->integer('magazine_id')
+            && !$this->isGlobal($request->user())
+            && !$this->isAssignedToMagazine($request->user(), $request->integer('magazine_id'), ['publisher'])) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for target magazine.'], 403);
+        }
+
+        $issue->update($this->issueData($request, $issue));
+
+        return response()->json([
+            'message' => 'Magazine issue updated.',
+            'issue' => $this->issuePayload($issue->fresh(['magazine:id,title,slug'])->loadCount('articles')),
+        ]);
+    }
+
+    public function publishIssue(Request $request, int $issueId): JsonResponse
+    {
+        $issue = MagazineIssue::findOrFail($issueId);
+
+        if (!$this->canManageIssue($request->user(), $issue)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        }
+
+        $issue->update([
+            'status' => 'published',
+            'is_published' => true,
+            'published_at' => $issue->published_at ?: now(),
+        ]);
+
+        return response()->json([
+            'message' => 'Magazine issue published.',
+            'issue' => $this->issuePayload($issue->fresh(['magazine:id,title,slug'])->loadCount('articles')),
+        ]);
+    }
+
+    public function unpublishIssue(Request $request, int $issueId): JsonResponse
+    {
+        $issue = MagazineIssue::findOrFail($issueId);
+
+        if (!$this->canManageIssue($request->user(), $issue)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        }
+
+        $issue->update([
+            'status' => 'unpublished',
+            'is_published' => false,
+            'published_at' => null,
+        ]);
+
+        return response()->json([
+            'message' => 'Magazine issue unpublished.',
+            'issue' => $this->issuePayload($issue->fresh(['magazine:id,title,slug'])->loadCount('articles')),
+        ]);
+    }
+
+    public function eligibleIssueArticles(Request $request): JsonResponse
+    {
+        $request->validate([
+            'magazine_id' => 'nullable|exists:magazines,id',
+            'issue_id' => 'nullable|exists:magazine_issues,id',
+        ]);
+
+        $magazineId = $request->integer('magazine_id') ?: null;
+        if ($request->filled('issue_id')) {
+            $issue = MagazineIssue::findOrFail($request->integer('issue_id'));
+            if (!$this->canManageIssue($request->user(), $issue)) {
+                return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+            }
+            $magazineId = $issue->magazine_id;
+        } elseif (!$this->isGlobal($request->user()) && $magazineId && !$this->isAssignedToMagazine($request->user(), $magazineId, ['publisher'])) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        }
+
+        $query = Article::with(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title'])
+            ->whereIn('status', [
+                ArticleStatus::ACCEPTED,
+                ArticleStatus::READY_FOR_PUBLICATION,
+                ArticleStatus::PUBLISHED,
+            ])
+            ->orderByDesc('updated_at');
+
+        if ($magazineId) {
+            $query->where('magazine_id', $magazineId);
+        } elseif (!$this->isGlobal($request->user())) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+        }
+
+        return response()->json(['data' => $query->limit(100)->get()->map(fn (Article $article) => $this->publicationArticlePayload($article))->values()]);
     }
 
     public function publish(PublishArticleRequest $request, int $articleId): JsonResponse
@@ -632,6 +767,19 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);
         $oldStatus = $article->status;
         $storedFile = null;
+        $issue = $request->magazine_issue_id ? MagazineIssue::findOrFail($request->magazine_issue_id) : null;
+
+        if (!in_array(ArticleStatus::normalize($article->status), [ArticleStatus::ACCEPTED, ArticleStatus::READY_FOR_PUBLICATION, ArticleStatus::PUBLISHED], true)) {
+            return response()->json(['message' => 'Only accepted or ready-for-publication articles can be published.'], 422);
+        }
+
+        if ($issue && (int) $issue->magazine_id !== (int) $article->magazine_id) {
+            return response()->json(['message' => 'The selected issue does not belong to this article magazine.'], 422);
+        }
+
+        if ($issue && !$this->canManageIssue($request->user(), $issue)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for selected issue.'], 403);
+        }
 
         DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
             if ($request->hasFile('publication_pdf')) {
@@ -676,7 +824,11 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Article published.',
-            'article' => $article->fresh(),
+            'article' => $this->publicationArticlePayload($article->fresh(['magazine', 'issue', 'articleAuthors'])),
+            'citation' => [
+                'format' => 'APA',
+                'text' => $this->citationService->apa($article->fresh(['magazine', 'issue', 'articleAuthors'])),
+            ],
             'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
@@ -734,6 +886,116 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'data' => $article->auditLogs()->with('actor:id,name,email')->latest()->paginate($request->integer('per_page', 25)),
         ]);
+    }
+
+    private function issueData(MagazineIssueRequest $request, ?MagazineIssue $existing = null): array
+    {
+        $validated = $request->validated();
+        $status = $validated['status'] ?? ($request->boolean('is_published') ? 'published' : ($existing?->status ?? 'draft'));
+        $isPublished = $status === 'published' || (bool) ($validated['is_published'] ?? false);
+        $coverImage = $existing?->cover_image;
+
+        if ($request->hasFile('cover_image')) {
+            if ($coverImage) {
+                Storage::disk('public')->delete(str_replace('storage/', '', $coverImage));
+            }
+            $coverImage = 'storage/' . $request->file('cover_image')->store('magazine-issues', 'public');
+        }
+
+        return [
+            'magazine_id' => $validated['magazine_id'],
+            'volume_number' => $validated['volume_number'],
+            'issue_number' => $validated['issue_number'],
+            'issue_month' => $validated['issue_month'] ?? null,
+            'issue_year' => $validated['issue_year'] ?? null,
+            'special_title' => $validated['special_title'] ?? null,
+            'description' => $validated['description'] ?? null,
+            'cover_image' => $coverImage,
+            'status' => $isPublished ? 'published' : $status,
+            'is_published' => $isPublished,
+            'published_at' => $isPublished ? ($validated['published_at'] ?? $existing?->published_at ?? now()) : null,
+        ];
+    }
+
+    private function issuePayload(MagazineIssue $issue): array
+    {
+        $issue->loadMissing('magazine:id,title,slug');
+
+        return [
+            'id' => $issue->id,
+            'magazine_id' => $issue->magazine_id,
+            'magazine' => $issue->magazine,
+            'volume_number' => $issue->volume_number,
+            'issue_number' => $issue->issue_number,
+            'issue_month' => $issue->issue_month,
+            'issue_year' => $issue->issue_year,
+            'special_title' => $issue->special_title,
+            'description' => $issue->description,
+            'cover_image' => $issue->cover_image,
+            'status' => $issue->status ?: ($issue->is_published ? 'published' : 'draft'),
+            'is_published' => $issue->is_published,
+            'published_at' => $issue->published_at,
+            'articles_count' => $issue->articles_count ?? $issue->articles()->count(),
+            'articles' => $issue->relationLoaded('articles')
+                ? $issue->articles->map(fn (Article $article) => $this->publicationArticlePayload($article))->values()
+                : null,
+            'created_at' => $issue->created_at,
+            'updated_at' => $issue->updated_at,
+        ];
+    }
+
+    private function publicationArticlePayload(Article $article): array
+    {
+        $article->loadMissing(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title,issue_month,issue_year', 'articleAuthors']);
+
+        $data = $article->toArray();
+        $data['article_url'] = $this->articleUrl($article);
+        $data['pdf_url'] = $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null;
+        $data['citation'] = [
+            'format' => 'APA',
+            'text' => $this->citationService->apa($article),
+        ];
+
+        return $data;
+    }
+
+    private function articleUrl(Article $article): string
+    {
+        $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
+        $magazineSlug = $article->magazine?->slug;
+
+        return $magazineSlug
+            ? "{$frontendUrl}/magazines/{$magazineSlug}/articles/{$article->slug}"
+            : "{$frontendUrl}/articles/{$article->slug}";
+    }
+
+    private function canManageIssue($user, MagazineIssue $issue): bool
+    {
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $issue->magazine_id, ['publisher']);
+    }
+
+    private function assignedMagazineIds($user, array $roles): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->unique()
+            ->values()
+            ->all();
+
+        return DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->pluck('magazine_id')
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function findAuthorizedArticle(Request $request, int $articleId, array $roles, bool $requireAssignedRole = true): Article

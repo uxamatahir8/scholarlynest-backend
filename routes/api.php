@@ -201,7 +201,13 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/articles/{id}/production-assignments', [ArticleWorkflowController::class, 'assignProduction'])->middleware('permission:articles.approve');
         Route::post('/production-assignments/{id}/complete', [ArticleWorkflowController::class, 'completeProduction']);
         Route::get('/issues', [ArticleWorkflowController::class, 'issues'])->middleware('permission:articles.view-own');
+        Route::get('/issues/magazines', [ArticleWorkflowController::class, 'issueMagazines'])->middleware('permission:articles.view-own');
+        Route::get('/issues/eligible-articles', [ArticleWorkflowController::class, 'eligibleIssueArticles'])->middleware('permission:articles.view-own');
         Route::post('/issues', [ArticleWorkflowController::class, 'storeIssue'])->middleware('permission:articles.approve');
+        Route::get('/issues/{id}', [ArticleWorkflowController::class, 'showIssue'])->middleware('permission:articles.view-own');
+        Route::post('/issues/{id}', [ArticleWorkflowController::class, 'updateIssue'])->middleware('permission:articles.approve');
+        Route::post('/issues/{id}/publish', [ArticleWorkflowController::class, 'publishIssue'])->middleware('permission:articles.approve');
+        Route::post('/issues/{id}/unpublish', [ArticleWorkflowController::class, 'unpublishIssue'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/publish', [ArticleWorkflowController::class, 'publish'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/post-publication-actions', [ArticleWorkflowController::class, 'postPublication'])->middleware('permission:articles.approve');
         Route::get('/articles/{id}/audit-logs', [ArticleWorkflowController::class, 'auditLogs'])->middleware('permission:articles.view-own');

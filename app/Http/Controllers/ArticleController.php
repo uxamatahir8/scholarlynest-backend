@@ -515,6 +515,12 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED) {
+            return response()->json([
+                'message' => 'Published articles are locked from normal editing. Use the post-publication action workflow for changes.',
+            ], 422);
+        }
+
         // Check if user has editorial privileges
         $isEditorial = $this->hasGlobalArticleAccess($user)
             || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
