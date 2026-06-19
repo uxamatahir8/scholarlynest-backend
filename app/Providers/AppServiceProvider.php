@@ -8,7 +8,9 @@ use Illuminate\Support\Facades\Event;
 use App\Models\Article;
 use App\Policies\ArticlePolicy;
 use App\Events\ArticleSubmitted;
+use App\Events\ArticleWorkflowEventOccurred;
 use App\Listeners\SendArticleSubmissionNotifications;
+use App\Listeners\SendArticleWorkflowNotifications;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -30,6 +32,11 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(
             ArticleSubmitted::class,
             SendArticleSubmissionNotifications::class
+        );
+
+        Event::listen(
+            ArticleWorkflowEventOccurred::class,
+            SendArticleWorkflowNotifications::class
         );
     }
 }

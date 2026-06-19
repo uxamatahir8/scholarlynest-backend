@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Constants\ArticleStatus;
+use App\Events\ArticleWorkflowEventOccurred;
 use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AssignReviewerRequest;
@@ -201,9 +202,16 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
+        $assignment->load('subEditor:id,name,email');
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'sub_editor.assigned', $request->user(), [
+            'sub_editor' => $assignment->subEditor,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
+        ]));
+
         return response()->json([
             'message' => 'Sub editor assigned.',
-            'assignment' => $assignment->load('subEditor:id,name,email'),
+            'assignment' => $assignment,
             'article' => $article->fresh(),
         ], 201);
     }
@@ -238,9 +246,16 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
+        $assignment->load('reviewer:id,name,email');
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'reviewer.assigned', $request->user(), [
+            'reviewer' => $assignment->reviewer,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::REVIEWER_ASSIGNED,
+        ]));
+
         return response()->json([
             'message' => 'Reviewer assigned.',
-            'assignment' => $assignment->load('reviewer:id,name,email'),
+            'assignment' => $assignment,
             'article' => $article->fresh(),
         ], 201);
     }
@@ -280,6 +295,12 @@ class ArticleWorkflowController extends Controller
             ]);
         });
 
+        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'sub_editor.recommendation_submitted', $request->user(), [
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+        ]));
+
         return response()->json([
             'message' => 'Sub editor recommendation submitted.',
             'assignment' => $assignment->fresh(),
@@ -309,6 +330,12 @@ class ArticleWorkflowController extends Controller
                 'reviewer_assignment_id' => $assignment->id,
             ]);
         });
+
+        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.accepted', $request->user(), [
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+        ]));
 
         return response()->json([
             'message' => 'Reviewer assignment accepted.',
@@ -354,6 +381,12 @@ class ArticleWorkflowController extends Controller
             ]);
         });
 
+        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.submitted', $request->user(), [
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+        ]));
+
         return response()->json([
             'message' => 'Review submitted.',
             'assignment' => $assignment->fresh(),
@@ -374,6 +407,12 @@ class ArticleWorkflowController extends Controller
         $this->audit($article, $request->user()->id, 'review.reopened', $article->status, $article->status, [
             'reviewer_assignment_id' => $assignment->id,
         ]);
+
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'review.reopened', $request->user(), [
+            'assignment_id' => $assignment->id,
+            'from_status' => $article->status,
+            'to_status' => $article->status,
+        ]));
 
         return response()->json([
             'message' => 'Review assignment reopened.',
@@ -415,6 +454,19 @@ class ArticleWorkflowController extends Controller
             return $decision;
         });
 
+        $decisionEvent = match ($decisionStatus) {
+            ArticleStatus::ACCEPTED => 'article.accepted',
+            ArticleStatus::REJECTED => 'article.rejected',
+            ArticleStatus::REVISION_REQUIRED, ArticleStatus::MINOR_REVISION_REQUIRED, ArticleStatus::MAJOR_REVISION_REQUIRED => 'revision.requested',
+            default => 'editorial.decision',
+        };
+
+        event(new ArticleWorkflowEventOccurred($article->fresh(), $decisionEvent, $request->user(), [
+            'decision_id' => $decision->id,
+            'from_status' => $oldStatus,
+            'to_status' => $decisionStatus,
+        ]));
+
         return response()->json([
             'message' => 'Editorial decision recorded.',
             'decision' => $decision,
@@ -449,9 +501,17 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
+        $assignment->load('user:id,name,email');
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'production.assigned', $request->user(), [
+            'assignee' => $assignment->user,
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => $nextStatus,
+        ]));
+
         return response()->json([
             'message' => 'Production assignment created.',
-            'assignment' => $assignment->load('user:id,name,email'),
+            'assignment' => $assignment,
             'article' => $article->fresh(),
         ], 201);
     }
@@ -494,6 +554,18 @@ class ArticleWorkflowController extends Controller
         $this->audit($assignment->article, $user->id, 'production.completed', $oldStatus, ArticleStatus::READY_FOR_PUBLICATION, [
             'production_assignment_id' => $assignment->id,
         ]);
+
+        $freshArticle = $assignment->article->fresh();
+        event(new ArticleWorkflowEventOccurred($freshArticle, 'production.completed', $user, [
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
+        ]));
+        event(new ArticleWorkflowEventOccurred($freshArticle, 'article.ready_for_publication', $user, [
+            'assignment_id' => $assignment->id,
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
+        ]));
 
         return response()->json([
             'message' => 'Production assignment completed.',
@@ -563,6 +635,11 @@ class ArticleWorkflowController extends Controller
             $this->audit($article, $request->user()->id, 'article.published', $oldStatus, ArticleStatus::PUBLISHED, $request->validated());
         });
 
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'article.published', $request->user(), [
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::PUBLISHED,
+        ]));
+
         return response()->json([
             'message' => 'Article published.',
             'article' => $article->fresh(),
@@ -575,7 +652,9 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);
         $oldStatus = $article->status;
 
-        $action = DB::transaction(function () use ($request, $article, $oldStatus) {
+        $nextStatus = $article->status;
+
+        $action = DB::transaction(function () use ($request, $article, $oldStatus, &$nextStatus) {
             $action = PostPublicationAction::create([
                 'article_id' => $article->id,
                 'action_type' => $request->action_type,
@@ -599,6 +678,13 @@ class ArticleWorkflowController extends Controller
 
             return $action;
         });
+
+        event(new ArticleWorkflowEventOccurred($article->fresh(), 'post_publication.recorded', $request->user(), [
+            'action_id' => $action->id,
+            'action_type' => $request->action_type,
+            'from_status' => $oldStatus,
+            'to_status' => $nextStatus,
+        ]));
 
         return response()->json([
             'message' => 'Post-publication action recorded.',

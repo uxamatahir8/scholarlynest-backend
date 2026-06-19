@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Constants\ArticleStatus;
+use App\Events\ArticleWorkflowEventOccurred;
 use App\Http\Requests\StoreArticleRequest;
 use App\Http\Requests\UpdateArticleRequest;
 use App\Models\Article;
@@ -409,6 +410,10 @@ class ArticleController extends Controller
 
         $article->save();
 
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
+            $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $article->status);
+        }
+
         // Send newsletter announcement when advanced to published
         if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::PUBLISHED) {
             $this->sendArticleNewsletter($article);
@@ -632,8 +637,9 @@ class ArticleController extends Controller
             $this->persistArticleAuthors($article, $authorResolution['authors']);
         });
 
-        // Dispatch synchronized queued notifications
-        event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
+        if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
+            $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
+        }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
         if (ArticleStatus::isAcceptedOrPublished($article->status) && empty($article->pdf_path)) {
@@ -794,6 +800,31 @@ class ArticleController extends Controller
         }
 
         $article->tags()->sync($tagIds);
+    }
+
+    private function dispatchStatusWorkflowEvent(Article $article, User $actor, string $oldStatus, string $newStatus): void
+    {
+        $normalizedStatus = ArticleStatus::normalize($newStatus);
+
+        $event = match ($normalizedStatus) {
+            ArticleStatus::RESUBMITTED => 'article.resubmitted',
+            ArticleStatus::ACCEPTED => 'article.accepted',
+            ArticleStatus::REJECTED => 'article.rejected',
+            ArticleStatus::REVISION_REQUIRED, ArticleStatus::MINOR_REVISION_REQUIRED, ArticleStatus::MAJOR_REVISION_REQUIRED => 'revision.requested',
+            ArticleStatus::COPY_EDITING, ArticleStatus::PROOFREADING => 'production.assigned',
+            ArticleStatus::READY_FOR_PUBLICATION => 'article.ready_for_publication',
+            ArticleStatus::PUBLISHED => 'article.published',
+            default => null,
+        };
+
+        if (!$event) {
+            return;
+        }
+
+        event(new ArticleWorkflowEventOccurred($article, $event, $actor, [
+            'from_status' => ArticleStatus::normalize($oldStatus),
+            'to_status' => $normalizedStatus,
+        ]));
     }
 
     /**
