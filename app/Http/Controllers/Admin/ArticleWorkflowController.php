@@ -93,6 +93,50 @@ class ArticleWorkflowController extends Controller
         return response()->json(['data' => $users]);
     }
 
+    public function mySubEditorAssignments(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$this->isGlobal($user) && !$user->hasRole('sub_editor')) {
+            return response()->json(['message' => 'Forbidden. Sub editor role required.'], 403);
+        }
+
+        $assignments = SubEditorAssignment::query()
+            ->with($this->assignmentRelations())
+            ->when(!$this->isGlobal($user), fn ($query) => $query->where('sub_editor_id', $user->id))
+            ->orderByRaw('completed_at IS NOT NULL')
+            ->orderByRaw('due_date IS NULL')
+            ->orderBy('due_date')
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'data' => $assignments->map(fn (SubEditorAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+        ]);
+    }
+
+    public function myReviewerAssignments(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$this->isGlobal($user) && !$user->hasRole('reviewer')) {
+            return response()->json(['message' => 'Forbidden. Reviewer role required.'], 403);
+        }
+
+        $assignments = ReviewerAssignment::query()
+            ->with($this->assignmentRelations())
+            ->when(!$this->isGlobal($user), fn ($query) => $query->where('reviewer_id', $user->id))
+            ->orderByRaw('completed_at IS NOT NULL')
+            ->orderByRaw('due_date IS NULL')
+            ->orderBy('due_date')
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'data' => $assignments->map(fn (ReviewerAssignment $assignment) => $this->assignmentPayload($assignment, $user)),
+        ]);
+    }
+
     public function screen(ScreenArticleRequest $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
@@ -590,6 +634,38 @@ class ArticleWorkflowController extends Controller
         }
 
         throw new HttpResponseException(response()->json(['message' => 'Forbidden. Magazine assignment required.'], 403));
+    }
+
+    private function assignmentRelations(): array
+    {
+        return [
+            'article.issue',
+            'article.magazine:id,title,slug',
+            'article.files.uploader:id,name,email',
+            'article.subEditorAssignments.subEditor:id,name,email',
+            'article.reviewerAssignments.reviewer:id,name,email',
+            'article.editorialDecisions.decider:id,name,email',
+            'article.productionAssignments.user:id,name,email',
+            'article.postPublicationActions.performer:id,name,email',
+            'article.auditLogs.actor:id,name,email',
+        ];
+    }
+
+    private function assignmentPayload(SubEditorAssignment|ReviewerAssignment $assignment, $user): array
+    {
+        $article = $assignment->article;
+        $articleData = $article->toArray();
+        $visibleFiles = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files);
+        $articleData['files'] = $visibleFiles;
+
+        $assignmentData = $assignment->toArray();
+        $assignmentData['article'] = $articleData;
+        $assignmentData['files'] = $visibleFiles;
+        $assignmentData['is_overdue'] = $assignment->due_date
+            && $assignment->due_date->isPast()
+            && !in_array($assignment->status, ['completed'], true);
+
+        return $assignmentData;
     }
 
     private function isGlobal($user): bool
