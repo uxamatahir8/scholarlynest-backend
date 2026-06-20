@@ -128,7 +128,6 @@ class ArticleAssetTest extends TestCase
                      'asset' => [
                          'id',
                          'article_id',
-                         'file_path',
                          'original_filename',
                          'file_size',
                          'mime_type',
@@ -241,9 +240,9 @@ class ArticleAssetTest extends TestCase
     }
 
     /**
-     * Test public user can download assets for approved articles.
+     * Test public user cannot download assets for approved articles until published.
      */
-    public function test_public_user_can_download_assets_for_approved_articles(): void
+    public function test_public_user_cannot_download_assets_for_approved_articles(): void
     {
         // Approve the article
         $this->article->update(['status' => 'approved']);
@@ -261,10 +260,7 @@ class ArticleAssetTest extends TestCase
 
         $response = $this->get("/api/articles/assets/{$asset->id}/download");
 
-        $response->assertStatus(200)
-                 ->assertHeader('Content-Type', 'application/pdf')
-                 ->assertHeader('Content-Disposition', 'attachment; filename="supplement.pdf"')
-                 ->assertHeader('X-Content-Type-Options', 'nosniff');
+        $response->assertStatus(403);
     }
 
     /**

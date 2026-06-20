@@ -55,15 +55,19 @@ Route::get('/newsletter/unsubscribe/{token}', [NewsletterController::class, 'uns
 // Public Magazines & Articles Read Routes
 Route::get('/magazines', [MagazineController::class, 'index']);
 Route::get('/magazines/latest', [MagazineController::class, 'latest']);
+Route::get('/magazines/{slug}/about-and-overview', [MagazineController::class, 'aboutAndOverview']);
+Route::get('/magazines/{slug}/table-of-contents', [MagazineController::class, 'tableOfContents']);
+Route::get('/magazines/{slug}/latest-published-articles', [MagazineController::class, 'latestPublishedArticles']);
+Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'publicPage']);
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
 Route::get('/articles/latest', [ArticleController::class, 'latest']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
-Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf']);
-Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download']);
-Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download']);
+Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
+Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:60,1');
+Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:60,1');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
     $query = \App\Models\Magazine::orderBy('created_at', 'desc');

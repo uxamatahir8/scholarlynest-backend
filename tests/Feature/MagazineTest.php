@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Models\MagazineIssue;
 use App\Models\Article;
 use App\Models\User;
 use App\Models\Role;
@@ -202,8 +203,8 @@ class MagazineTest extends TestCase
         $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
         $user = User::factory()->create();
 
-        // Create 8 approved articles to verify the limit of 6 and latest order
-        for ($i = 1; $i <= 8; $i++) {
+        // Create 12 published articles to verify the default limit of 10 and latest order
+        for ($i = 1; $i <= 12; $i++) {
             $article = Article::create([
                 'magazine_id' => $magazine->id,
                 'user_id' => $user->id,
@@ -231,13 +232,13 @@ class MagazineTest extends TestCase
         $response = $this->getJson('/api/articles/latest');
 
         $response->assertStatus(200)
-                 ->assertJsonCount(6, 'data')
-                 ->assertJsonPath('data.0.title', 'Article 8')
-                 ->assertJsonPath('data.5.title', 'Article 3');
+                 ->assertJsonCount(10, 'data')
+                 ->assertJsonPath('data.0.title', 'Article 12')
+                 ->assertJsonPath('data.9.title', 'Article 3');
     }
 
     /**
-     * Test fetching magazine details returns approved articles grouped by month and year.
+     * Test fetching table of contents returns published articles for the magazine.
      */
     public function test_magazine_details_returns_grouped_articles(): void
     {
@@ -279,19 +280,14 @@ class MagazineTest extends TestCase
             'published_at' => \Carbon\Carbon::parse('2026-10-22 12:00:00'),
         ]);
 
-        $response = $this->getJson("/api/magazines/biology-today");
+        $response = $this->getJson("/api/magazines/biology-today/table-of-contents");
 
         $response->assertStatus(200)
-                 ->assertJsonStructure([
-                     'grouped_articles' => [
-                         'Sep 2026',
-                         'Oct 2026',
-                     ]
-                 ])
-                 ->assertJsonCount(1, 'grouped_articles.Sep 2026')
-                 ->assertJsonCount(1, 'grouped_articles.Oct 2026')
-                 ->assertJsonPath('grouped_articles.Sep 2026.0.slug', 'article-one')
-                 ->assertJsonPath('grouped_articles.Oct 2026.0.slug', 'article-two');
+                 ->assertJsonCount(1, 'issues')
+                 ->assertJsonCount(2, 'issues.0.articles')
+                 ->assertJsonPath('issues.0.articles.0.slug', 'article-two')
+                 ->assertJsonPath('issues.0.articles.1.slug', 'article-one')
+                 ->assertJsonMissing(['slug' => 'article-pending']);
     }
 
     /**
@@ -566,4 +562,206 @@ class MagazineTest extends TestCase
         $this->assertNull($article->featured_image);
         Storage::disk('public')->assertMissing('articles/old_image.png');
     }
+    public function test_public_about_overview_resolves_only_requested_magazine(): void
+    {
+        Magazine::create(['title' => 'Magazine A', 'slug' => 'magazine-a', 'description' => 'A desc', 'about_text' => 'A about']);
+        Magazine::create(['title' => 'Magazine B', 'slug' => 'magazine-b', 'description' => 'B desc', 'about_text' => 'B about']);
+
+        $response = $this->getJson('/api/magazines/magazine-a/about-and-overview');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('magazine.slug', 'magazine-a')
+            ->assertJsonPath('magazine.about_text', 'A about')
+            ->assertJsonMissing(['slug' => 'magazine-b']);
+    }
+
+    public function test_magazine_latest_published_articles_are_scoped_sorted_limited_and_public_safe(): void
+    {
+        $magazine = Magazine::create(['title' => 'Energy', 'slug' => 'energy']);
+        $otherMagazine = Magazine::create(['title' => 'Robotics', 'slug' => 'robotics']);
+        $user = User::factory()->create();
+
+        for ($i = 1; $i <= 12; $i++) {
+            Article::create([
+                'magazine_id' => $magazine->id,
+                'user_id' => $user->id,
+                'title' => "Energy Article $i",
+                'slug' => "energy-article-$i",
+                'abstract' => "Abstract $i",
+                'full_text' => "Private full text $i",
+                'status' => 'published',
+                'published_at' => now()->addMinutes($i),
+            ]);
+        }
+
+        Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Draft Energy Article',
+            'slug' => 'draft-energy-article',
+            'abstract' => 'Draft',
+            'full_text' => 'Draft private full text',
+            'status' => 'submitted',
+            'published_at' => now()->addDay(),
+        ]);
+
+        Article::create([
+            'magazine_id' => $otherMagazine->id,
+            'user_id' => $user->id,
+            'title' => 'Other Magazine Article',
+            'slug' => 'other-magazine-article',
+            'abstract' => 'Other',
+            'full_text' => 'Other private full text',
+            'status' => 'published',
+            'published_at' => now()->addDays(2),
+        ]);
+
+        $response = $this->getJson('/api/magazines/energy/latest-published-articles');
+
+        $response->assertStatus(200)
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('data.0.title', 'Energy Article 12')
+            ->assertJsonPath('data.9.title', 'Energy Article 3')
+            ->assertJsonMissing(['title' => 'Draft Energy Article'])
+            ->assertJsonMissing(['title' => 'Other Magazine Article'])
+            ->assertJsonMissing(['status' => 'published'])
+            ->assertJsonMissing(['full_text' => 'Private full text 12']);
+    }
+
+    public function test_public_table_of_contents_excludes_unpublished_and_groups_by_issue(): void
+    {
+        $magazine = Magazine::create(['title' => 'Biology', 'slug' => 'biology']);
+        $otherMagazine = Magazine::create(['title' => 'Chemistry', 'slug' => 'chemistry']);
+        $user = User::factory()->create();
+        $issue = MagazineIssue::create([
+            'magazine_id' => $magazine->id,
+            'volume_number' => 2,
+            'issue_number' => 1,
+            'issue_year' => 2026,
+            'is_published' => true,
+            'published_at' => now(),
+        ]);
+
+        Article::create([
+            'magazine_id' => $magazine->id,
+            'magazine_issue_id' => $issue->id,
+            'user_id' => $user->id,
+            'title' => 'Published Biology',
+            'slug' => 'published-biology',
+            'abstract' => 'Abstract',
+            'full_text' => 'Private full text',
+            'status' => 'published',
+            'doi' => '10.1234/bio.1',
+            'page_start' => 11,
+            'page_end' => 19,
+            'published_at' => now(),
+        ]);
+
+        Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $user->id,
+            'title' => 'Unpublished Biology',
+            'slug' => 'unpublished-biology',
+            'abstract' => 'Abstract',
+            'full_text' => 'Private full text',
+            'status' => 'submitted',
+        ]);
+
+        Article::create([
+            'magazine_id' => $otherMagazine->id,
+            'user_id' => $user->id,
+            'title' => 'Published Chemistry',
+            'slug' => 'published-chemistry',
+            'abstract' => 'Abstract',
+            'full_text' => 'Private full text',
+            'status' => 'published',
+            'published_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/magazines/biology/table-of-contents');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('magazine.slug', 'biology')
+            ->assertJsonPath('issues.0.issue.volume_number', 2)
+            ->assertJsonPath('issues.0.articles.0.title', 'Published Biology')
+            ->assertJsonPath('issues.0.articles.0.page_start', 11)
+            ->assertJsonMissing(['title' => 'Unpublished Biology'])
+            ->assertJsonMissing(['title' => 'Published Chemistry'])
+            ->assertJsonMissing(['full_text' => 'Private full text']);
+    }
+
+    public function test_custom_page_slugs_are_unique_per_magazine_and_can_repeat_across_magazines(): void
+    {
+        $magazineA = Magazine::create(['title' => 'Magazine A', 'slug' => 'magazine-a']);
+        $magazineB = Magazine::create(['title' => 'Magazine B', 'slug' => 'magazine-b']);
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $first = $this->postJson("/api/admin/magazines/{$magazineA->id}/pages", [
+            'title' => 'Editorial Board',
+            'content' => 'A board',
+        ]);
+        $second = $this->postJson("/api/admin/magazines/{$magazineA->id}/pages", [
+            'title' => 'Editorial Board',
+            'content' => 'A board duplicate',
+        ]);
+        $third = $this->postJson("/api/admin/magazines/{$magazineB->id}/pages", [
+            'title' => 'Editorial Board',
+            'content' => 'B board',
+        ]);
+
+        $first->assertStatus(211)->assertJsonPath('page.slug', 'editorial-board');
+        $second->assertStatus(211)->assertJsonPath('page.slug', 'editorial-board-2');
+        $third->assertStatus(211)->assertJsonPath('page.slug', 'editorial-board');
+    }
+
+    public function test_public_custom_pages_are_magazine_scoped_and_active_only(): void
+    {
+        $magazineA = Magazine::create(['title' => 'Magazine A', 'slug' => 'magazine-a']);
+        $magazineB = Magazine::create(['title' => 'Magazine B', 'slug' => 'magazine-b']);
+
+        MagazinePage::create(['magazine_id' => $magazineA->id, 'title' => 'Ethics Policy', 'slug' => 'ethics-policy', 'content' => 'A ethics', 'status' => 'active']);
+        MagazinePage::create(['magazine_id' => $magazineB->id, 'title' => 'Ethics Policy', 'slug' => 'ethics-policy', 'content' => 'B ethics', 'status' => 'active']);
+        MagazinePage::create(['magazine_id' => $magazineA->id, 'title' => 'Draft Policy', 'slug' => 'draft-policy', 'content' => 'Draft content', 'status' => 'draft']);
+
+        $this->getJson('/api/magazines/magazine-a/pages/ethics-policy')
+            ->assertStatus(200)
+            ->assertJsonPath('page.content', 'A ethics')
+            ->assertJsonMissing(['content' => 'B ethics']);
+
+        $this->getJson('/api/magazines/magazine-b/pages/ethics-policy')
+            ->assertStatus(200)
+            ->assertJsonPath('page.content', 'B ethics');
+
+        $this->getJson('/api/magazines/magazine-a/pages/draft-policy')->assertStatus(404);
+        $this->getJson('/api/magazines/magazine-a/pages/missing-policy')->assertStatus(404);
+    }
+
+    public function test_reserved_custom_page_slugs_are_rejected(): void
+    {
+        $magazine = Magazine::create(['title' => 'Magazine A', 'slug' => 'magazine-a']);
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $this->postJson("/api/admin/magazines/{$magazine->id}/pages", [
+            'title' => 'Table of Contents',
+            'content' => 'Reserved route collision',
+        ])->assertStatus(422);
+    }
+
+    public function test_empty_magazine_public_lists_return_empty_collections(): void
+    {
+        Magazine::create(['title' => 'Empty', 'slug' => 'empty']);
+
+        $this->getJson('/api/magazines/empty/latest-published-articles')
+            ->assertStatus(200)
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson('/api/magazines/empty/table-of-contents')
+            ->assertStatus(200)
+            ->assertJsonCount(0, 'issues');
+    }
+
 }

@@ -53,15 +53,15 @@ class ArticleWorkflowController extends Controller
 
         $article->load([
             'issue',
-            'files.uploader:id,name,email',
-            'subEditorAssignments.subEditor:id,name,email',
-            'reviewerAssignments.reviewer:id,name,email',
-            'editorialDecisions.decider:id,name,email',
-            'productionAssignments.user:id,name,email',
-            'postPublicationActions.performer:id,name,email',
-            'auditLogs.actor:id,name,email',
-            'versions.creator:id,name,email',
-            'versions.files.uploader:id,name,email',
+            'files.uploader:id,name',
+            'subEditorAssignments.subEditor:id,name',
+            'reviewerAssignments.reviewer:id,name',
+            'editorialDecisions.decider:id,name',
+            'productionAssignments.user:id,name',
+            'postPublicationActions.performer:id,name',
+            'auditLogs.actor:id,name',
+            'versions.creator:id,name',
+            'versions.files.uploader:id,name',
         ]);
 
         $articlePayload = $this->workflowArticlePayload($article, $request->user());
@@ -76,7 +76,7 @@ class ArticleWorkflowController extends Controller
     public function versions(Request $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
-        $article->load(['versions.creator:id,name,email', 'versions.files.uploader:id,name,email']);
+        $article->load(['versions.creator:id,name', 'versions.files.uploader:id,name']);
 
         return response()->json([
             'data' => $this->serializedVersions($article, $request->user()),
@@ -117,11 +117,13 @@ class ArticleWorkflowController extends Controller
                         });
                 });
             })
-            ->select(['id', 'name', 'email', 'role_id'])
+            ->select(['id', 'name', 'role_id'])
             ->orderBy('name')
             ->get();
 
-        return response()->json(['data' => $users]);
+        return response()->json([
+            'data' => $users->map(fn (User $assignee) => $this->assigneePayload($assignee))->values(),
+        ]);
     }
 
     public function mySubEditorAssignments(Request $request): JsonResponse
@@ -341,7 +343,7 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Article screening recorded.',
-            'article' => $article->fresh(),
+            'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue', 'files.uploader:id,name']), $request->user()),
             'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
@@ -374,7 +376,7 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
-        $assignment->load('subEditor:id,name,email');
+        $assignment->load('subEditor:id,name');
         event(new ArticleWorkflowEventOccurred($article->fresh(), 'sub_editor.assigned', $request->user(), [
             'sub_editor' => $assignment->subEditor,
             'from_status' => $oldStatus,
@@ -383,8 +385,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Sub editor assigned.',
-            'assignment' => $assignment,
-            'article' => $article->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment, $request->user()),
+            'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue']), $request->user()),
         ], 201);
     }
 
@@ -418,7 +420,7 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
-        $assignment->load('reviewer:id,name,email');
+        $assignment->load('reviewer:id,name');
         event(new ArticleWorkflowEventOccurred($article->fresh(), 'reviewer.assigned', $request->user(), [
             'reviewer' => $assignment->reviewer,
             'from_status' => $oldStatus,
@@ -427,8 +429,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Reviewer assigned.',
-            'assignment' => $assignment,
-            'article' => $article->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment, $request->user()),
+            'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue']), $request->user()),
         ], 201);
     }
 
@@ -475,7 +477,7 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Sub editor recommendation submitted.',
-            'assignment' => $assignment->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $request->user()),
             'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
@@ -511,8 +513,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Reviewer assignment accepted.',
-            'assignment' => $assignment->fresh(),
-            'article' => $assignment->article->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $request->user()),
+            'article' => $this->workflowArticlePayload($assignment->article->fresh(['magazine:id,title,slug', 'issue']), $request->user()),
         ]);
     }
 
@@ -561,7 +563,7 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Review submitted.',
-            'assignment' => $assignment->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $request->user()),
             'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
@@ -588,7 +590,7 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Review assignment reopened.',
-            'assignment' => $assignment->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $request->user()),
         ]);
     }
 
@@ -650,8 +652,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Editorial decision recorded.',
-            'decision' => $decision,
-            'article' => $article->fresh(),
+            'decision' => $this->editorialDecisionPayload($decision->fresh(['decider:id,name']), true),
+            'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue']), $request->user()),
         ], 201);
     }
 
@@ -682,7 +684,7 @@ class ArticleWorkflowController extends Controller
             return $assignment;
         });
 
-        $assignment->load('user:id,name,email');
+        $assignment->load('user:id,name');
         event(new ArticleWorkflowEventOccurred($article->fresh(), 'production.assigned', $request->user(), [
             'assignee' => $assignment->user,
             'assignment_id' => $assignment->id,
@@ -692,8 +694,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Production assignment created.',
-            'assignment' => $assignment,
-            'article' => $article->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment, $request->user()),
+            'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue']), $request->user()),
         ], 201);
     }
 
@@ -750,8 +752,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Production assignment completed.',
-            'assignment' => $assignment->fresh(),
-            'article' => $assignment->article->fresh(),
+            'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $user),
+            'article' => $this->workflowArticlePayload($assignment->article->fresh(['magazine:id,title,slug', 'issue']), $user),
             'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
@@ -1025,8 +1027,8 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'message' => 'Post-publication action recorded.',
-            'action' => $action,
-            'article' => $article->fresh(),
+            'action' => $this->postPublicationActionPayload($action->fresh(['performer:id,name'])),
+            'article' => $this->publicationArticlePayload($article->fresh(['magazine:id,title,slug', 'issue', 'articleAuthors'])),
         ], 201);
     }
 
@@ -1035,7 +1037,15 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor'], false);
 
         return response()->json([
-            'data' => $article->auditLogs()->with('actor:id,name,email')->latest()->paginate($request->integer('per_page', 25)),
+            'data' => $article->auditLogs()->with('actor:id,name')->latest()->paginate($request->integer('per_page', 25))->through(fn ($log) => [
+                'id' => $log->id,
+                'article_id' => $log->article_id,
+                'event' => $log->event,
+                'from_status' => $log->from_status,
+                'to_status' => $log->to_status,
+                'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
+                'created_at' => $log->created_at,
+            ]),
         ]);
     }
 
@@ -1099,15 +1109,54 @@ class ArticleWorkflowController extends Controller
     {
         $article->loadMissing(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title,issue_month,issue_year', 'articleAuthors']);
 
-        $data = $article->toArray();
-        $data['article_url'] = $this->articleUrl($article);
-        $data['pdf_url'] = $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null;
-        $data['citation'] = [
-            'format' => 'APA',
-            'text' => $this->citationService->apa($article),
+        return [
+            'id' => $article->id,
+            'magazine_id' => $article->magazine_id,
+            'magazine_issue_id' => $article->magazine_issue_id,
+            'magazine' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'title' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+            ] : null,
+            'issue' => $article->issue ? [
+                'id' => $article->issue->id,
+                'volume_number' => $article->issue->volume_number,
+                'issue_number' => $article->issue->issue_number,
+                'special_title' => $article->issue->special_title,
+                'issue_month' => $article->issue->issue_month,
+                'issue_year' => $article->issue->issue_year,
+            ] : null,
+            'title' => $article->title,
+            'subtitle' => $article->subtitle,
+            'slug' => $article->slug,
+            'abstract' => $article->abstract,
+            'doi' => $article->doi,
+            'status' => $article->status,
+            'published_year' => $article->published_year,
+            'published_month' => $article->published_month,
+            'page_start' => $article->page_start,
+            'page_end' => $article->page_end,
+            'published_at' => $article->published_at,
+            'has_pdf' => !empty($article->pdf_path),
+            'pdf_url' => $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'article_url' => $this->articleUrl($article),
+            'article_authors' => $article->articleAuthors
+                ->sortBy('author_order')
+                ->map(fn ($author) => [
+                    'id' => $author->id,
+                    'co_author_name' => $author->co_author_name,
+                    'author_order' => $author->author_order,
+                    'is_owner' => $author->is_owner,
+                    'is_corresponding' => $author->is_corresponding,
+                ])
+                ->values(),
+            'citation' => [
+                'format' => 'APA',
+                'text' => $this->citationService->apa($article),
+            ],
+            'created_at' => $article->created_at,
+            'updated_at' => $article->updated_at,
         ];
-
-        return $data;
     }
 
     private function articleUrl(Article $article): string
@@ -1202,15 +1251,15 @@ class ArticleWorkflowController extends Controller
         return [
             'article.issue',
             'article.magazine:id,title,slug',
-            'article.files.uploader:id,name,email',
-            'article.subEditorAssignments.subEditor:id,name,email',
-            'article.reviewerAssignments.reviewer:id,name,email',
-            'article.editorialDecisions.decider:id,name,email',
-            'article.productionAssignments.user:id,name,email',
-            'article.postPublicationActions.performer:id,name,email',
-            'article.auditLogs.actor:id,name,email',
-            'article.versions.creator:id,name,email',
-            'article.versions.files.uploader:id,name,email',
+            'article.files.uploader:id,name',
+            'article.subEditorAssignments.subEditor:id,name',
+            'article.reviewerAssignments.reviewer:id,name',
+            'article.editorialDecisions.decider:id,name',
+            'article.productionAssignments.user:id,name',
+            'article.postPublicationActions.performer:id,name',
+            'article.auditLogs.actor:id,name',
+            'article.versions.creator:id,name',
+            'article.versions.files.uploader:id,name',
         ];
     }
 
@@ -1225,65 +1274,188 @@ class ArticleWorkflowController extends Controller
 
     private function workflowArticlePayload(Article $article, $user): array
     {
-        $data = $article->toArray();
-        $data['files'] = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files);
-        $data['versions'] = $this->serializedVersions($article, $user);
-
         $canViewEditorial = $this->canViewEditorialInternals($user, $article);
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         $canViewProduction = $canViewPublication || $this->hasProductionAssignment($user, $article);
 
-        $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
-            ? ($data['audit_logs'] ?? [])
-            : [];
+        $data = [
+            'id' => $article->id,
+            'magazine_id' => $article->magazine_id,
+            'magazine' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'title' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+            ] : null,
+            'issue' => $article->issue ? [
+                'id' => $article->issue->id,
+                'volume_number' => $article->issue->volume_number,
+                'issue_number' => $article->issue->issue_number,
+                'special_title' => $article->issue->special_title,
+                'issue_month' => $article->issue->issue_month,
+                'issue_year' => $article->issue->issue_year,
+            ] : null,
+            'title' => $article->title,
+            'subtitle' => $article->subtitle,
+            'slug' => $article->slug,
+            'abstract' => $article->abstract,
+            'full_text' => $article->full_text,
+            'status' => $article->status,
+            'author_status' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? $article->status,
+            'doi' => $article->doi,
+            'published_at' => $article->published_at,
+            'published_year' => $article->published_year,
+            'published_month' => $article->published_month,
+            'page_start' => $article->page_start,
+            'page_end' => $article->page_end,
+            'has_pdf' => !empty($article->pdf_path),
+            'files' => app(ArticleFileController::class)->filterVisibleFiles($user, $article->files ?? []),
+            'versions' => $this->serializedVersions($article, $user),
+            'created_at' => $article->created_at,
+            'updated_at' => $article->updated_at,
+        ];
 
-        $data['sub_editor_assignments'] = collect($data['sub_editor_assignments'] ?? [])
-            ->filter(function (array $assignment) use ($user, $canViewEditorial) {
-                return $canViewEditorial || (int) ($assignment['sub_editor_id'] ?? 0) === (int) ($user?->id ?? 0);
-            })
-            ->values()
-            ->all();
-
-        $data['reviewer_assignments'] = collect($data['reviewer_assignments'] ?? [])
-            ->filter(function (array $assignment) use ($user, $canViewReviewWorkflow) {
-                return $canViewReviewWorkflow || (int) ($assignment['reviewer_id'] ?? 0) === (int) ($user?->id ?? 0);
-            })
-            ->map(function (array $assignment) use ($user, $canViewEditorial) {
-                $isOwnReviewer = (int) ($assignment['reviewer_id'] ?? 0) === (int) ($user?->id ?? 0);
-                if (!$canViewEditorial && !$isOwnReviewer) {
-                    unset($assignment['confidential_comments']);
-                }
-                if (!$canViewEditorial && !$isOwnReviewer) {
-                    unset($assignment['reviewer']);
-                }
-                return $assignment;
-            })
-            ->values()
-            ->all();
-
-        $data['editorial_decisions'] = collect($data['editorial_decisions'] ?? [])
-            ->map(function (array $decision) use ($canViewEditorial) {
-                if (!$canViewEditorial) {
-                    unset($decision['internal_notes']);
-                }
-                return $decision;
-            })
-            ->values()
-            ->all();
-
-        $data['production_assignments'] = collect($data['production_assignments'] ?? [])
-            ->filter(function (array $assignment) use ($user, $canViewProduction) {
-                return $canViewProduction || (int) ($assignment['user_id'] ?? 0) === (int) ($user?->id ?? 0);
-            })
-            ->values()
-            ->all();
-
-        if (!$canViewPublication && !$this->hasProductionAssignment($user, $article) && !$this->isArticleAuthorRecord($user, $article) && (int) $article->user_id !== (int) ($user?->id ?? 0)) {
-            $data['post_publication_actions'] = [];
+        if ($canViewEditorial || (int) $article->user_id === (int) ($user?->id ?? 0) || $this->isArticleAuthorRecord($user, $article)) {
+            $data['change_summary'] = $article->change_summary;
+            $data['revision_response'] = $article->revision_response;
+            $data['rejection_reason'] = $article->rejection_reason;
         }
 
+        $data['sub_editor_assignments'] = collect($article->subEditorAssignments ?? [])
+            ->filter(fn ($assignment) => $canViewEditorial || (int) $assignment->sub_editor_id === (int) ($user?->id ?? 0))
+            ->map(fn ($assignment) => $this->minimalAssignmentPayload($assignment, $user))
+            ->values();
+
+        $data['reviewer_assignments'] = collect($article->reviewerAssignments ?? [])
+            ->filter(fn ($assignment) => $canViewReviewWorkflow || (int) $assignment->reviewer_id === (int) ($user?->id ?? 0))
+            ->map(fn ($assignment) => $this->reviewerAssignmentPayload($assignment, $user, $canViewEditorial))
+            ->values();
+
+        $data['editorial_decisions'] = collect($article->editorialDecisions ?? [])
+            ->map(fn ($decision) => $this->editorialDecisionPayload($decision, $canViewEditorial))
+            ->values();
+
+        $data['production_assignments'] = collect($article->productionAssignments ?? [])
+            ->filter(fn ($assignment) => $canViewProduction || (int) $assignment->user_id === (int) ($user?->id ?? 0))
+            ->map(fn ($assignment) => $this->minimalAssignmentPayload($assignment, $user))
+            ->values();
+
+        $data['post_publication_actions'] = $canViewPublication
+            ? collect($article->postPublicationActions ?? [])->map(fn ($action) => $this->postPublicationActionPayload($action))->values()
+            : [];
+
+        $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
+            ? collect($article->auditLogs ?? [])->map(fn ($log) => [
+                'id' => $log->id,
+                'article_id' => $log->article_id,
+                'event' => $log->event,
+                'from_status' => $log->from_status,
+                'to_status' => $log->to_status,
+                'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
+                'created_at' => $log->created_at,
+            ])->values()
+            : [];
+
         return $data;
+    }
+
+    private function assigneePayload(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'role' => $user->role ? [
+                'id' => $user->role->id,
+                'name' => $user->role->name,
+                'display_name' => $user->role->display_name,
+            ] : null,
+        ];
+    }
+
+    private function minimalAssignmentPayload(SubEditorAssignment|ReviewerAssignment|ProductionAssignment $assignment, $user): array
+    {
+        $payload = [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            'created_at' => $assignment->created_at,
+        ];
+
+        if ($assignment instanceof SubEditorAssignment) {
+            $payload['sub_editor_id'] = $assignment->sub_editor_id;
+            $payload['sub_editor'] = $assignment->subEditor ? ['id' => $assignment->subEditor->id, 'name' => $assignment->subEditor->name] : null;
+            if ((int) $assignment->sub_editor_id === (int) ($user?->id ?? 0) || $this->isGlobal($user)) {
+                $payload['recommendation'] = $assignment->recommendation;
+                $payload['comments'] = $assignment->comments;
+            }
+        } elseif ($assignment instanceof ProductionAssignment) {
+            $payload['user_id'] = $assignment->user_id;
+            $payload['role'] = $assignment->role;
+            $payload['user'] = $assignment->user ? ['id' => $assignment->user->id, 'name' => $assignment->user->name] : null;
+        } elseif ($assignment instanceof ReviewerAssignment) {
+            $payload['reviewer_id'] = $assignment->reviewer_id;
+            $payload['reviewer'] = $assignment->reviewer ? ['id' => $assignment->reviewer->id, 'name' => $assignment->reviewer->name] : null;
+            if ((int) $assignment->reviewer_id === (int) ($user?->id ?? 0) || $this->canViewEditorialInternals($user, $assignment->article)) {
+                $payload['recommendation'] = $assignment->recommendation;
+            }
+        }
+
+        return $payload;
+    }
+
+    private function reviewerAssignmentPayload(ReviewerAssignment $assignment, $user, bool $canViewEditorial): array
+    {
+        $payload = $this->minimalAssignmentPayload($assignment, $user);
+        $isOwnReviewer = (int) $assignment->reviewer_id === (int) ($user?->id ?? 0);
+
+        if ($isOwnReviewer || $canViewEditorial) {
+            $payload['scorecard'] = $assignment->scorecard;
+            $payload['comments_for_author'] = $assignment->comments_for_author;
+        }
+
+        if ($canViewEditorial || $isOwnReviewer) {
+            $payload['confidential_comments'] = $assignment->confidential_comments;
+        }
+
+        if (!$canViewEditorial && !$isOwnReviewer) {
+            unset($payload['reviewer']);
+        }
+
+        return $payload;
+    }
+
+    private function editorialDecisionPayload(EditorialDecision $decision, bool $includeInternal): array
+    {
+        $payload = [
+            'id' => $decision->id,
+            'article_id' => $decision->article_id,
+            'decision' => $decision->decision,
+            'decision_source' => $decision->decision_source,
+            'decision_date' => $decision->decision_date,
+            'comments_for_author' => $decision->comments_for_author,
+            'decider' => $decision->decider ? ['id' => $decision->decider->id, 'name' => $decision->decider->name] : null,
+        ];
+
+        if ($includeInternal) {
+            $payload['internal_notes'] = $decision->internal_notes;
+        }
+
+        return $payload;
+    }
+
+    private function postPublicationActionPayload(PostPublicationAction $action): array
+    {
+        return [
+            'id' => $action->id,
+            'article_id' => $action->article_id,
+            'action_type' => $action->action_type,
+            'reason' => $action->reason,
+            'notice_text' => $action->notice_text,
+            'performer' => $action->performer ? ['id' => $action->performer->id, 'name' => $action->performer->name] : null,
+            'created_at' => $action->created_at,
+        ];
     }
 
     private function canViewAuditLogs($user, Article $article): bool
@@ -1302,7 +1474,7 @@ class ArticleWorkflowController extends Controller
         $articleData = $this->workflowArticlePayload($article, $user);
         $visibleFiles = $articleData['files'] ?? [];
 
-        $assignmentData = $assignment->toArray();
+        $assignmentData = $this->minimalAssignmentPayload($assignment, $user);
         $assignmentData['article'] = $articleData;
         $assignmentData['files'] = $visibleFiles;
         $assignmentData['is_overdue'] = $assignment->due_date

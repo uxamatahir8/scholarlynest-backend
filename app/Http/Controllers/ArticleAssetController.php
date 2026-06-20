@@ -73,7 +73,7 @@ class ArticleAssetController extends Controller
 
         return response()->json([
             'message' => 'Asset uploaded successfully.',
-            'asset' => $asset
+            'asset' => $this->serializeAsset($asset),
         ], 201);
     }
 
@@ -127,8 +127,7 @@ class ArticleAssetController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // Accepted and published articles bypass private access controls.
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::ACCEPTED && ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
             $user = $request->user('sanctum');
             if (!$user || $user->cannot('view', $article)) {
                 return response()->json(['message' => 'This action is unauthorized.'], 403);
@@ -137,7 +136,7 @@ class ArticleAssetController extends Controller
 
         $relativePath = str_replace('storage/', '', $asset->file_path);
         if (!Storage::disk('public')->exists($relativePath)) {
-            return response()->json(['message' => 'The file could not be found on storage.'], 404);
+            return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
         $absolutePath = Storage::disk('public')->path($relativePath);
@@ -148,5 +147,16 @@ class ArticleAssetController extends Controller
             'Content-Disposition' => 'attachment; filename="' . $asset->original_filename . '"',
             'X-Content-Type-Options' => 'nosniff',
         ]);
+    }
+
+    private function serializeAsset(ArticleAsset $asset): array
+    {
+        return [
+            'id' => $asset->id,
+            'article_id' => $asset->article_id,
+            'original_filename' => $asset->original_filename,
+            'file_size' => $asset->file_size,
+            'mime_type' => $asset->mime_type,
+        ];
     }
 }

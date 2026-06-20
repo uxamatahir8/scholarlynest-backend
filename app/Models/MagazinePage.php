@@ -17,6 +17,7 @@ class MagazinePage extends Model
         'slug',
         'content',
         'sort_order',
+        'status',
         'created_by',
         'created_by_role',
         'is_editor_created',

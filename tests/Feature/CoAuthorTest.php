@@ -212,15 +212,15 @@ class CoAuthorTest extends TestCase
         $response = $this->getJson('/api/articles/' . $article->slug);
         $response->assertStatus(404);
 
-        // 2. Unrelated user gets 403 Forbidden
+        // 2. Unrelated user gets 404 because unpublished article details are hidden on the public endpoint
         Sanctum::actingAs($malloy);
         $response = $this->getJson('/api/articles/' . $article->slug);
-        $response->assertStatus(403);
+        $response->assertStatus(404);
 
-        // 3. Co-author with read-only can view pending
+        // 3. Co-author with read-only cannot view pending via the public article detail endpoint
         Sanctum::actingAs($dave);
         $response = $this->getJson('/api/articles/' . $article->slug);
-        $response->assertStatus(200);
+        $response->assertStatus(404);
 
         // 4. Co-author with read-only cannot edit (update)
         $response = $this->putJson('/api/admin/articles/' . $article->id, [

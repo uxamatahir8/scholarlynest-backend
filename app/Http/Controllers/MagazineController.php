@@ -129,69 +129,148 @@ class MagazineController extends Controller
 
     /**
      * GET /api/magazines/{slug}
-     * Returns the magazine shell along with sorted magazine_pages.
+     * Returns only the public magazine shell and active navigation pages.
      */
     public function show(string $slug): JsonResponse
     {
-        $user = request()->user('sanctum');
-        if ($user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
-            $query = Magazine::where('slug', $slug)->whereHas('editors', function($q) use ($user) {
-                $q->where('users.id', $user->id);
-            });
-        } else {
-            $query = Magazine::where('slug', $slug);
-        }
-
-        $magazine = $query->with(['pages' => function ($query) {
-                $query->orderBy('sort_order', 'asc');
-            }])
-            ->first();
+        $magazine = $this->publicMagazineQuery($slug)->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
         }
 
-        $articles = $magazine->articles()
-            ->where('status', 'published')
-            ->orderBy('published_at', 'desc')
-            ->with('user:id,name,email')
-            ->get();
+        return response()->json($this->publicShellPayload($magazine));
+    }
 
-        $groupedArticles = $articles->groupBy(function ($article) {
-            $month = $article->published_month;
-            $year = $article->published_year;
+    /**
+     * GET /api/magazines/{slug}/about-and-overview
+     * Returns public about/overview data for one magazine only.
+     */
+    public function aboutAndOverview(string $slug): JsonResponse
+    {
+        $magazine = $this->publicMagazineQuery($slug)->first();
 
-            if (!$month || !$year) {
-                $date = $article->published_at ?? $article->created_at;
-                if ($date) {
-                    $month = $date->format('M');
-                    $year = $date->format('Y');
-                } else {
-                    $month = 'Jan';
-                    $year = 2026;
-                }
-            }
+        if (!$magazine) {
+            return response()->json(['message' => 'Magazine not found.'], 404);
+        }
 
-            // Standardize month to 3-letter abbreviation (e.g., 'September' -> 'Sep', 'Sep' -> 'Sep')
-            if (strlen($month) > 3) {
-                try {
-                    $month = \Carbon\Carbon::parse($month)->format('M');
-                } catch (\Exception $e) {
-                    $month = substr($month, 0, 3);
-                }
-            }
+        return response()->json([
+            'magazine' => array_merge($this->publicMagazinePayload($magazine), [
+                'about_text' => $magazine->about_text,
+            ]),
+            'seo' => $this->magazineSeoPayload($magazine, 'About & Overview'),
+        ]);
+    }
 
-            return "{$month} {$year}";
-        });
+    /**
+     * GET /api/magazines/{slug}/latest-published-articles
+     * Returns up to 10 latest published articles for one magazine only.
+     */
+    public function latestPublishedArticles(string $slug, Request $request): JsonResponse
+    {
+        $magazine = $this->publicMagazineQuery($slug)->first();
 
-        $magazineData = $magazine->toArray();
-        $magazineData['seo_title'] = $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest';
-        $magazineData['seo_description'] = $magazine->seo_description ?: Str::limit(strip_tags($magazine->description), 160, '');
-        $magazineData['seo_keywords'] = $magazine->seo_keywords ?: '';
-        $magazineData['og_image'] = $magazine->cover_image;
-        $magazineData['grouped_articles'] = $groupedArticles;
+        if (!$magazine) {
+            return response()->json(['message' => 'Magazine not found.'], 404);
+        }
 
-        return response()->json($magazineData);
+        $limit = min($request->integer('limit', 10), 10);
+        $articles = $this->publishedArticleQuery($magazine)
+            ->limit($limit)
+            ->get()
+            ->map(fn ($article) => $this->publicArticlePayload($article))
+            ->values();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $articles,
+        ]);
+    }
+
+    /**
+     * GET /api/magazines/{slug}/table-of-contents
+     * Returns public table of contents grouped by issue for one magazine only.
+     */
+    public function tableOfContents(string $slug): JsonResponse
+    {
+        $magazine = $this->publicMagazineQuery($slug)->first();
+
+        if (!$magazine) {
+            return response()->json(['message' => 'Magazine not found.'], 404);
+        }
+
+        $articles = $this->publishedArticleQuery($magazine)->get();
+
+        $issues = $articles
+            ->groupBy(fn ($article) => $article->issue ? 'issue-' . $article->issue->id : 'unassigned')
+            ->map(function ($issueArticles) {
+                $first = $issueArticles->first();
+                $issue = $first->issue;
+
+                return [
+                    'issue' => $issue ? [
+                        'id' => $issue->id,
+                        'volume_number' => $issue->volume_number,
+                        'issue_number' => $issue->issue_number,
+                        'issue_month' => $issue->issue_month,
+                        'issue_year' => $issue->issue_year,
+                        'special_title' => $issue->special_title,
+                        'published_at' => $issue->published_at,
+                    ] : null,
+                    'published_at' => $issue?->published_at ?? $first->published_at ?? $first->created_at,
+                    'articles' => $issueArticles->map(fn ($article) => $this->publicArticlePayload($article))->values(),
+                ];
+            })
+            ->sortByDesc(fn ($group) => optional($group['published_at'])->timestamp ?? strtotime((string) $group['published_at']) ?: 0)
+            ->values();
+
+        return response()->json([
+            'magazine' => $this->publicMagazinePayload($magazine),
+            'issues' => $issues,
+            'seo' => $this->magazineSeoPayload($magazine, 'Table of Contents'),
+        ]);
+    }
+
+    /**
+     * GET /api/magazines/{slug}/pages/{pageSlug}
+     * Returns one public active custom page scoped to the requested magazine.
+     */
+    public function publicPage(string $slug, string $pageSlug): JsonResponse
+    {
+        if ($this->isReservedPublicPageSlug($pageSlug)) {
+            return response()->json(['message' => 'Page not found.'], 404);
+        }
+
+        $magazine = $this->publicMagazineQuery($slug)->first();
+
+        if (!$magazine) {
+            return response()->json(['message' => 'Magazine not found.'], 404);
+        }
+
+        $page = $magazine->pages()
+            ->where('slug', $pageSlug)
+            ->where('status', 'active')
+            ->first();
+
+        if (!$page) {
+            return response()->json(['message' => 'Page not found.'], 404);
+        }
+
+        return response()->json([
+            'magazine' => $this->publicMagazinePayload($magazine),
+            'page' => [
+                'id' => $page->id,
+                'title' => $page->title,
+                'slug' => $page->slug,
+                'content' => $page->content,
+            ],
+            'seo' => [
+                'title' => $page->title . ' | ' . $magazine->title . ' | ScholarlyNest',
+                'description' => Str::limit(strip_tags($page->content), 160, ''),
+                'keywords' => $magazine->seo_keywords ?: '',
+                'og_image' => $magazine->cover_image,
+            ],
+        ]);
     }
 
     /**
@@ -347,25 +426,20 @@ class MagazineController extends Controller
 
         $validated = $request->validate([
             'title' => 'required|string|max:255',
+            'slug' => 'nullable|string|max:255',
             'content' => 'required|string',
             'sort_order' => 'integer',
+            'status' => 'nullable|in:active,draft,private,inactive',
         ]);
 
-        $slug = Str::slug($validated['title']);
-        
-        // Ensure slug uniqueness within this magazine
-        $slugBase = $slug;
-        $counter = 1;
-        while (MagazinePage::where('magazine_id', $magazineId)->where('slug', $slug)->exists()) {
-            $slug = $slugBase . '-' . $counter;
-            $counter++;
-        }
+        $slug = $this->uniquePageSlug($magazineId, $validated['slug'] ?? $validated['title']);
 
         $page = $magazine->pages()->create([
             'title' => $validated['title'],
             'slug' => $slug,
             'content' => $validated['content'],
             'sort_order' => $validated['sort_order'] ?? 0,
+            'status' => $validated['status'] ?? 'active',
             'created_by' => $user->id,
             'created_by_role' => $user->role?->name,
             'is_editor_created' => $user->hasRole('editor'),
@@ -505,11 +579,19 @@ class MagazineController extends Controller
 
         $validated = $request->validate([
             'title' => 'required|string|max:255',
+            'slug' => 'nullable|string|max:255',
             'content' => 'required|string',
             'sort_order' => 'integer',
+            'status' => 'nullable|in:active,draft,private,inactive',
         ]);
 
-        $page->update($validated);
+        $page->update([
+            'title' => $validated['title'],
+            'slug' => $this->uniquePageSlug($magazineId, $validated['slug'] ?? $validated['title'], $page->id),
+            'content' => $validated['content'],
+            'sort_order' => $validated['sort_order'] ?? $page->sort_order,
+            'status' => $validated['status'] ?? $page->status ?? 'active',
+        ]);
 
         return response()->json([
             'message' => 'Magazine page updated successfully.',
@@ -543,6 +625,130 @@ class MagazineController extends Controller
         return response()->json([
             'message' => 'Magazine page deleted successfully.'
         ]);
+    }
+
+    private function publicMagazineQuery(string $slug)
+    {
+        return Magazine::where('slug', $slug);
+    }
+
+    private function publicMagazinePayload(Magazine $magazine): array
+    {
+        return [
+            'id' => $magazine->id,
+            'title' => $magazine->title,
+            'slug' => $magazine->slug,
+            'cover_image' => $magazine->cover_image,
+            'description' => $magazine->description,
+            'seo_title' => $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest',
+            'seo_description' => $magazine->seo_description ?: Str::limit(strip_tags((string) $magazine->description), 160, ''),
+            'seo_keywords' => $magazine->seo_keywords ?: '',
+            'og_image' => $magazine->cover_image,
+        ];
+    }
+
+    private function publicShellPayload(Magazine $magazine): array
+    {
+        return array_merge($this->publicMagazinePayload($magazine), [
+            'pages' => $magazine->pages()
+                ->where('status', 'active')
+                ->orderBy('sort_order')
+                ->get(['id', 'magazine_id', 'title', 'slug', 'sort_order'])
+                ->values(),
+        ]);
+    }
+
+    private function magazineSeoPayload(Magazine $magazine, string $section): array
+    {
+        return [
+            'title' => $section . ' | ' . ($magazine->seo_title ?: $magazine->title . ' | ScholarlyNest'),
+            'description' => $magazine->seo_description ?: Str::limit(strip_tags((string) ($magazine->about_text ?: $magazine->description)), 160, ''),
+            'keywords' => $magazine->seo_keywords ?: '',
+            'og_image' => $magazine->cover_image,
+        ];
+    }
+
+    private function publishedArticleQuery(Magazine $magazine)
+    {
+        return $magazine->articles()
+            ->where('status', 'published')
+            ->with([
+                'user:id,name',
+                'issue:id,volume_number,issue_number,special_title,issue_month,issue_year,published_at',
+                'articleAuthors:id,article_id,co_author_name,author_order,is_owner,is_corresponding',
+            ])
+            ->orderByDesc('published_at')
+            ->latest();
+    }
+
+    private function publicArticlePayload($article): array
+    {
+        return [
+            'id' => $article->id,
+            'title' => $article->title,
+            'slug' => $article->slug,
+            'abstract' => $article->abstract,
+            'doi' => $article->doi,
+            'published_at' => $article->published_at,
+            'created_at' => $article->created_at,
+            'page_start' => $article->page_start,
+            'page_end' => $article->page_end,
+            'user' => $article->user ? [
+                'id' => $article->user->id,
+                'name' => $article->user->name,
+            ] : null,
+            'article_authors' => $article->articleAuthors
+                ->sortBy('author_order')
+                ->map(fn ($author) => [
+                    'id' => $author->id,
+                    'co_author_name' => $author->co_author_name,
+                    'author_order' => $author->author_order,
+                    'is_owner' => $author->is_owner,
+                    'is_corresponding' => $author->is_corresponding,
+                ])
+                ->values(),
+            'issue' => $article->issue ? [
+                'id' => $article->issue->id,
+                'volume_number' => $article->issue->volume_number,
+                'issue_number' => $article->issue->issue_number,
+                'issue_month' => $article->issue->issue_month,
+                'issue_year' => $article->issue->issue_year,
+                'special_title' => $article->issue->special_title,
+                'published_at' => $article->issue->published_at,
+            ] : null,
+        ];
+    }
+
+    private function reservedPublicPageSlugs(): array
+    {
+        return ['about-and-overview', 'table-of-contents', 'articles', 'issues', 'pages', 'latest-articles', 'latest-published-articles'];
+    }
+
+    private function isReservedPublicPageSlug(?string $slug): bool
+    {
+        return in_array(Str::slug((string) $slug), $this->reservedPublicPageSlugs(), true);
+    }
+
+    private function uniquePageSlug(int $magazineId, string $source, ?int $ignorePageId = null): string
+    {
+        $base = Str::slug($source) ?: 'page';
+
+        if ($this->isReservedPublicPageSlug($base)) {
+            abort(response()->json(['message' => 'This page slug is reserved for a standard magazine route.'], 422));
+        }
+
+        $slug = $base;
+        $counter = 2;
+
+        while (MagazinePage::where('magazine_id', $magazineId)
+            ->where('slug', $slug)
+            ->when($ignorePageId, fn ($query) => $query->where('id', '!=', $ignorePageId))
+            ->exists()) {
+            $slug = $base . '-' . $counter;
+            $counter++;
+        }
+
+        return $slug;
     }
 
     private function hasGlobalMagazineAccess($user): bool

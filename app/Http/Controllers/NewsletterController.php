@@ -36,7 +36,7 @@ class NewsletterController extends Controller
                     $this->sendWelcomeEmail($subscriber);
                     return response()->json([
                         'message' => 'Thank you for subscribing to our newsletter!',
-                        'subscriber' => $subscriber
+                        'subscriber' => $this->subscriberPayload($subscriber)
                     ], 211);
                 }
 
@@ -54,7 +54,7 @@ class NewsletterController extends Controller
 
             return response()->json([
                 'message' => 'Thank you for subscribing to our newsletter!',
-                'subscriber' => $subscriber
+                'subscriber' => $this->subscriberPayload($subscriber)
             ], 211);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
@@ -97,6 +97,17 @@ class NewsletterController extends Controller
         } catch (\Exception $e) {
             logger()->error("Failed sending welcome email to {$subscriber->email}: " . $e->getMessage());
         }
+    }
+
+    private function subscriberPayload(NewsletterSubscriber $subscriber): array
+    {
+        return [
+            'id' => $subscriber->id,
+            'email' => $subscriber->email,
+            'is_active' => (bool) $subscriber->is_active,
+            'created_at' => $subscriber->created_at,
+            'updated_at' => $subscriber->updated_at,
+        ];
     }
 
     /**
@@ -204,7 +215,6 @@ HTML;
             return [
                 'id' => $sub->id,
                 'email' => $sub->email,
-                'token' => $sub->token,
                 'created_at' => $sub->created_at,
                 'updated_at' => $sub->updated_at,
                 'is_registered' => !is_null($userRecord),

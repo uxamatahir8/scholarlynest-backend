@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use Illuminate\Http\JsonResponse;
@@ -41,7 +42,7 @@ class ArticleFileController extends Controller
 
     public function download(Request $request, int $fileId)
     {
-        $file = ArticleFile::with(['article', 'uploader:id,name,email'])->findOrFail($fileId);
+        $file = ArticleFile::with(['article', 'uploader:id,name'])->findOrFail($fileId);
 
         if (!$this->canAccess($request->user('sanctum'), $file)) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
@@ -49,7 +50,7 @@ class ArticleFileController extends Controller
 
         $relativePath = str_replace('storage/', '', $file->file_path);
         if (!Storage::disk('public')->exists($relativePath)) {
-            return response()->json(['message' => 'The file could not be found on storage.'], 404);
+            return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
         return response()->file(Storage::disk('public')->path($relativePath), [
@@ -82,7 +83,7 @@ class ArticleFileController extends Controller
 
     public function serializeFile(ArticleFile $file): array
     {
-        $file->loadMissing('uploader:id,name,email');
+        $file->loadMissing('uploader:id,name');
 
         return [
             'id' => $file->id,
@@ -93,13 +94,14 @@ class ArticleFileController extends Controller
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,
             'size' => $file->size,
-            'uploaded_by' => $file->uploaded_by,
-            'uploader' => $file->uploader,
+            'uploader' => $file->uploader ? [
+                'id' => $file->uploader->id,
+                'name' => $file->uploader->name,
+            ] : null,
             'created_at' => $file->created_at,
             'download_url' => "/api/articles/files/{$file->id}/download",
             'assignment_type' => $file->assignment_type,
             'assignment_id' => $file->assignment_id,
-            'metadata' => $file->metadata,
         ];
     }
 
@@ -126,7 +128,7 @@ class ArticleFileController extends Controller
 
         if (!$user) {
             return in_array($file->file_type, [ArticleFile::SUPPLEMENTARY, ArticleFile::PUBLICATION_PDF], true)
-                && in_array($article->status, ['accepted', 'published'], true);
+                && ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED;
         }
 
         if ($article->user_id === $user->id || $this->isAuthorRecord($user, $article)) {

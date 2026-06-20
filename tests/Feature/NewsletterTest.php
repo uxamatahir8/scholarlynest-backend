@@ -41,6 +41,7 @@ class NewsletterTest extends TestCase
                  ->assertJson([
                      'message' => 'Thank you for subscribing to our newsletter!'
                  ]);
+        $this->assertStringNotContainsString('token', $response->getContent());
  
         $this->assertDatabaseHas('newsletter_subscribers', [
             'email' => 'scholar@scholarlynest.com',
@@ -174,6 +175,7 @@ class NewsletterTest extends TestCase
         $response = $this->getJson('/api/admin/newsletter/subscribers');
         $response->assertStatus(200)
                  ->assertJsonCount(2);
+        $this->assertStringNotContainsString('token', $response->getContent());
  
         // 2. Send campaign
         $campaignResponse = $this->postJson('/api/admin/newsletter/send', [

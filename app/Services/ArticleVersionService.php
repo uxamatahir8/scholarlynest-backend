@@ -84,7 +84,7 @@ class ArticleVersionService
             'data_availability_statement' => $article->data_availability_statement,
             'author_contribution_statement' => $article->author_contribution_statement,
             'full_text' => $article->full_text,
-            'pdf_path' => $article->pdf_path,
+            'has_pdf' => !empty($article->pdf_path),
             'doi' => $article->doi,
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
@@ -92,7 +92,6 @@ class ArticleVersionService
             'page_end' => $article->page_end,
             'authors' => $article->articleAuthors->map(fn ($author) => [
                 'name' => $author->co_author_name,
-                'email' => $author->co_author_email,
                 'affiliation' => $author->affiliation,
                 'is_owner' => $author->is_owner,
                 'is_corresponding' => $author->is_corresponding,
@@ -119,7 +118,7 @@ class ArticleVersionService
 
     public function serializeVersion(ArticleVersion $version, ?User $viewer = null): array
     {
-        $version->loadMissing(['creator:id,name,email', 'files.uploader:id,name,email']);
+        $version->loadMissing(['creator:id,name', 'files.uploader:id,name']);
         $fileController = app(\App\Http\Controllers\ArticleFileController::class);
         $visibleFiles = collect($version->files)
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
@@ -133,13 +132,15 @@ class ArticleVersionService
             'version_number' => $version->version_number,
             'label' => $version->label,
             'status_snapshot' => $version->status_snapshot,
-            'metadata_snapshot' => $version->metadata_snapshot,
+            'metadata_snapshot' => $this->safeMetadataSnapshot($version->metadata_snapshot ?? [], $viewer),
             'file_snapshot' => $this->visibleFileSnapshot($version->file_snapshot ?? [], $visibleFiles),
             'files' => $visibleFiles,
             'change_summary' => $version->change_summary,
             'author_response' => $version->author_response,
-            'created_by' => $version->created_by,
-            'creator' => $version->creator,
+            'creator' => $version->creator ? [
+                'id' => $version->creator->id,
+                'name' => $version->creator->name,
+            ] : null,
             'created_at' => $version->created_at,
         ];
     }
@@ -152,6 +153,22 @@ class ArticleVersionService
             ->filter(fn ($file) => in_array($file['id'] ?? null, $visibleIds, true))
             ->values()
             ->all();
+    }
+
+    private function safeMetadataSnapshot(array $snapshot, ?User $viewer): array
+    {
+        unset($snapshot['pdf_path']);
+        if (isset($snapshot['authors']) && is_array($snapshot['authors'])) {
+            $snapshot['authors'] = collect($snapshot['authors'])
+                ->map(function ($author) {
+                    unset($author['email']);
+                    return $author;
+                })
+                ->values()
+                ->all();
+        }
+
+        return $snapshot;
     }
 
     private function serializeFileSnapshot(ArticleFile $file): array

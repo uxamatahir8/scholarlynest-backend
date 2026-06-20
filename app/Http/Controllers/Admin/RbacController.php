@@ -28,7 +28,7 @@ class RbacController extends Controller
      */
     public function roles(): JsonResponse
     {
-        $roles = Role::with('permissions')->get();
+        $roles = Role::with('permissions')->get()->map(fn (Role $role) => $this->rolePayload($role))->values();
         return response()->json($roles);
     }
 
@@ -37,7 +37,11 @@ class RbacController extends Controller
      */
     public function permissions(): JsonResponse
     {
-        $permissions = Permission::all();
+        $permissions = Permission::query()
+            ->select(['id', 'name', 'module', 'description'])
+            ->orderBy('module')
+            ->orderBy('name')
+            ->get();
         return response()->json($permissions);
     }
 
@@ -59,7 +63,7 @@ class RbacController extends Controller
             'is_system' => false,
         ]);
 
-        return response()->json($role->load('permissions'), 201);
+        return response()->json($this->rolePayload($role->load('permissions')), 201);
     }
 
     /**
@@ -92,7 +96,7 @@ class RbacController extends Controller
         }
         $role->save();
 
-        return response()->json($role->load('permissions'));
+        return response()->json($this->rolePayload($role->load('permissions')));
     }
 
     /**
@@ -151,7 +155,7 @@ class RbacController extends Controller
         $permissionIds = Permission::whereIn('name', $requestedPermissions)->pluck('id');
         $role->permissions()->sync($permissionIds);
 
-        return response()->json($role->load('permissions'));
+        return response()->json($this->rolePayload($role->load('permissions')));
     }
 
     /**
@@ -172,7 +176,7 @@ class RbacController extends Controller
                 });
             })
             ->get();
-        return response()->json($users);
+        return response()->json($users->map(fn (User $user) => $this->userPayload($user))->values());
     }
 
     /**
@@ -196,7 +200,7 @@ class RbacController extends Controller
         $user->role_id = $request->role_id;
         $user->save();
 
-        return response()->json($user->load('role'));
+        return response()->json($this->userPayload($user->load('role')));
     }
 
     /**
@@ -257,7 +261,7 @@ class RbacController extends Controller
 
         $this->sendWelcomeHtmlEmail($user->email, $user->name, $createPasswordLink);
 
-        return response()->json($user->load(['role', 'magazines']), 201);
+        return response()->json($this->userPayload($user->load(['role', 'magazines'])), 201);
     }
 
     /**
@@ -312,7 +316,7 @@ class RbacController extends Controller
             }
         });
 
-        return response()->json($user->load(['role', 'magazines']));
+        return response()->json($this->userPayload($user->load(['role', 'magazines'])));
     }
 
     /**
@@ -325,7 +329,11 @@ class RbacController extends Controller
 
         return response()->json([
             'default_registration_role' => $roleName,
-            'role' => $role
+            'role' => $role ? [
+                'id' => $role->id,
+                'name' => $role->name,
+                'display_name' => $role->display_name,
+            ] : null,
         ]);
     }
 
@@ -390,6 +398,55 @@ class RbacController extends Controller
             'publisher',
             'magazine_editor',
         ], true);
+    }
+
+    private function rolePayload(Role $role): array
+    {
+        return [
+            'id' => $role->id,
+            'name' => $role->name,
+            'display_name' => $role->display_name,
+            'description' => $role->description,
+            'is_system' => (bool) $role->is_system,
+            'permissions' => $role->permissions
+                ? $role->permissions->map(fn (Permission $permission) => [
+                    'id' => $permission->id,
+                    'name' => $permission->name,
+                    'module' => $permission->module,
+                    'description' => $permission->description,
+                ])->values()
+                : [],
+        ];
+    }
+
+    private function userPayload(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role_id' => $user->role_id,
+            'university_name' => $user->university_name,
+            'profile_image' => $user->profile_image,
+            'email_verified_at' => $user->email_verified_at,
+            'needs_password_reset' => (bool) $user->needs_password_reset,
+            'role' => $user->role ? [
+                'id' => $user->role->id,
+                'name' => $user->role->name,
+                'display_name' => $user->role->display_name,
+            ] : null,
+            'magazines' => $user->relationLoaded('magazines')
+                ? $user->magazines->map(fn ($magazine) => [
+                    'id' => $magazine->id,
+                    'title' => $magazine->title,
+                    'slug' => $magazine->slug,
+                    'pivot' => [
+                        'role' => $magazine->pivot?->role,
+                    ],
+                ])->values()
+                : [],
+            'created_at' => $user->created_at,
+        ];
     }
 
     private function magazineSyncPayload(array $magazineIds, string $roleName, ?int $assignedBy): array

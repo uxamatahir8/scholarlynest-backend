@@ -145,7 +145,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Email verified successfully.',
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -253,7 +253,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -293,7 +293,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -509,7 +509,7 @@ class AuthController extends Controller
     public function me(Request $request): JsonResponse
     {
         return response()->json([
-            'user' => $request->user()->load('role.permissions')
+            'user' => $this->authUserPayload($request->user())
         ]);
     }
 
@@ -584,7 +584,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -674,7 +674,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ], 201);
@@ -816,7 +816,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Password updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
     }
 
@@ -841,7 +841,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Profile updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
     }
 
@@ -994,7 +994,98 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Email updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
+    }
+
+    private function authUserPayload(User $user): array
+    {
+        $user->loadMissing('role.permissions');
+        $role = $user->role;
+        $permissionNames = $role?->permissions
+            ? $role->permissions->pluck('name')->values()->all()
+            : [];
+        $isRbacAdmin = $user->hasRole('super_admin') || $user->hasRole('admin');
+
+        $payload = [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'profile_image' => $user->profile_image,
+            'university_name' => $user->university_name,
+            'email_verified_at' => $user->email_verified_at,
+            'needs_password_reset' => (bool) $user->needs_password_reset,
+            'two_factor_enabled' => (bool) $user->two_factor_enabled,
+            'role_id' => $user->role_id,
+            'role' => $role ? [
+                'id' => $role->id,
+                'name' => $role->name,
+                'display_name' => $role->display_name,
+            ] : null,
+            'roles' => $role ? [[
+                'id' => $role->id,
+                'name' => $role->name,
+                'display_name' => $role->display_name,
+            ]] : [],
+            'capabilities' => $this->capabilityPayload($permissionNames, $user),
+        ];
+
+        if ($isRbacAdmin) {
+            $payload['permissions'] = $role?->permissions
+                ? $role->permissions->map(fn ($permission) => [
+                    'id' => $permission->id,
+                    'name' => $permission->name,
+                    'module' => $permission->module,
+                ])->values()->all()
+                : [];
+        }
+
+        return $payload;
+    }
+
+    private function capabilityPayload(array $permissionNames, User $user): array
+    {
+        $permissions = array_fill_keys($permissionNames, true);
+        $isSuperAdmin = $user->hasRole('super_admin');
+        $allowList = [
+            'articles.view-any',
+            'articles.view-own',
+            'articles.create',
+            'articles.edit-own',
+            'articles.approve',
+            'articles.auto-approve',
+            'articles.manage-assets',
+            'magazines.view-any',
+            'magazines.view-own',
+            'magazines.create',
+            'magazines.edit',
+            'magazines.delete',
+            'seo.articles',
+            'seo.magazines',
+            'seo.cms-pages',
+            'roles.view-any',
+            'settings.view-any',
+            'settings.manage',
+            'footer.manage',
+            'newsletters.view-any',
+            'newsletters.send',
+        ];
+
+        $capabilities = [];
+        foreach ($allowList as $permission) {
+            $capabilities[$permission] = $isSuperAdmin || isset($permissions[$permission]);
+        }
+
+        $capabilities['can_view_author_dashboard'] = $user->hasRole('author') || ($capabilities['articles.view-own'] ?? false);
+        $capabilities['can_view_editor_dashboard'] = $user->hasRole('editor') || ($capabilities['articles.approve'] ?? false);
+        $capabilities['can_view_sub_editor_dashboard'] = $user->hasRole('sub_editor');
+        $capabilities['can_view_reviewer_dashboard'] = $user->hasRole('reviewer');
+        $capabilities['can_view_publisher_dashboard'] = $user->hasRole('publisher');
+        $capabilities['can_view_copy_editor_dashboard'] = $user->hasRole('copy_editor');
+        $capabilities['can_view_proofreader_dashboard'] = $user->hasRole('proofreader');
+        $capabilities['can_manage_assigned_magazines'] = ($capabilities['magazines.view-any'] ?? false) || ($capabilities['magazines.view-own'] ?? false);
+        $capabilities['can_manage_rbac'] = $isSuperAdmin || ($capabilities['roles.view-any'] ?? false);
+
+        return $capabilities;
     }
 }

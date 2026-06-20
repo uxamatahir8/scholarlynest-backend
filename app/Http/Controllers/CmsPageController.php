@@ -38,12 +38,17 @@ class CmsPageController extends Controller
             ], 404);
         }
 
-        $pageData = $page->toArray();
-        $pageData['seo_title'] = $page->seo_title ?: $page->title . ' | ScholarlyNest';
-        $pageData['seo_description'] = $page->seo_description ?: \Illuminate\Support\Str::limit(strip_tags($page->content_html), 160, '');
-        $pageData['seo_keywords'] = $page->seo_keywords ?: '';
-
-        return response()->json($pageData);
+        return response()->json([
+            'id' => $page->id,
+            'title' => $page->title,
+            'slug' => $page->slug,
+            'content_html' => $page->content_html,
+            'content_text' => $page->content_text,
+            'seo_title' => $page->seo_title ?: $page->title . ' | ScholarlyNest',
+            'seo_description' => $page->seo_description ?: \Illuminate\Support\Str::limit(strip_tags($page->content_html), 160, ''),
+            'seo_keywords' => $page->seo_keywords ?: '',
+            'updated_at' => $page->updated_at,
+        ]);
     }
 
     /**

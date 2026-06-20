@@ -34,63 +34,34 @@ class ArticleController extends Controller
 
     public function show(string $idOrSlug): JsonResponse
     {
-        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email,created_at', 'tags', 'articleAuthors', 'assets']);
+        $query = Article::with([
+            'magazine:id,title,slug,cover_image',
+            'user:id,name,created_at',
+            'tags:id,name',
+            'articleAuthors:id,article_id,co_author_name,affiliation,university_name,author_order,is_owner,is_corresponding',
+            'assets:id,article_id,original_filename,file_size,mime_type',
+            'issue:id,volume_number,issue_number,special_title,issue_month,issue_year',
+        ]);
 
-        if (is_numeric($idOrSlug)) {
-            $article = $query->find((int)$idOrSlug);
-        } else {
-            $article = $query->where('slug', $idOrSlug)->first();
-        }
+        $article = is_numeric($idOrSlug)
+            ? $query->find((int) $idOrSlug)
+            : $query->where('slug', $idOrSlug)->first();
 
-        if (!$article) {
+        if (!$article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        // submitted -> under_review trigger on first administrative/editorial view
-        if (ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED) {
-            $user = request()->user('sanctum');
-            if ($user) {
-                $isAdminOrEditor = $user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor');
-                if (!$isAdminOrEditor && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
-                    $isAdminOrEditor = \DB::table('magazine_user')
-                        ->where('user_id', $user->id)
-                        ->where('magazine_id', $article->magazine_id)
-                        ->exists();
-                }
-                if ($isAdminOrEditor) {
-                    $article->status = ArticleStatus::UNDER_REVIEW;
-                    $article->saveQuietly();
-                }
-            }
-        }
-
-        // If the article is not published, authorize the viewer via ArticlePolicy
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
-            $user = request()->user('sanctum');
-            if (!$user) {
-                // Hide the page entirely for unauthorized public viewers
-                return response()->json(['message' => 'Article not found.'], 404);
-            }
-            if ($user->cannot('view', $article)) {
-                return response()->json(['message' => 'This action is unauthorized.'], 403);
-            }
-        }
-
-        // Increment impressions on view
         $article->increment('impressions');
 
-        // Fetch author user metrics (total papers published)
         $authorApprovedCount = Article::where('user_id', $article->user_id)
             ->where('status', 'published')
             ->count();
 
-        // Map metrics payload
         $authorMetrics = [
             'total_papers_approved' => $authorApprovedCount,
-            'member_since' => $article->user->created_at->format('M Y'),
+            'member_since' => $article->user?->created_at?->format('M Y'),
         ];
 
-        // Fetch adjacent articles
         $publishedAt = $article->published_at ?? $article->created_at;
 
         $previousArticle = Article::where('magazine_id', $article->magazine_id)
@@ -103,7 +74,7 @@ class ArticleController extends Controller
             })
             ->orderBy('published_at', 'desc')
             ->orderBy('created_at', 'desc')
-            ->first();
+            ->first(['id', 'slug', 'title']);
 
         $nextArticle = Article::where('magazine_id', $article->magazine_id)
             ->where('status', 'published')
@@ -115,23 +86,17 @@ class ArticleController extends Controller
             })
             ->orderBy('published_at', 'asc')
             ->orderBy('created_at', 'asc')
-            ->first();
+            ->first(['id', 'slug', 'title']);
 
-        $articleData = $article->toArray();
-        $articleData['seo_title'] = $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest');
-        $articleData['seo_description'] = $article->seo_description ?: Str::limit(strip_tags($article->abstract), 160, '');
-        $articleData['seo_keywords'] = $article->seo_keywords ?: $article->tags->pluck('name')->implode(', ');
-        $articleData['og_image'] = ($article->magazine && $article->magazine->cover_image) ? $article->magazine->cover_image : null;
-
-        $articleData['previous_article_id'] = $previousArticle?->id;
-        $articleData['next_article_id'] = $nextArticle?->id;
-        $articleData['previous_article_slug'] = $previousArticle?->slug;
-        $articleData['next_article_slug'] = $nextArticle?->slug;
-        $articleData['previous_article_title'] = $previousArticle?->title;
-        $articleData['next_article_title'] = $nextArticle?->title;
+        $articlePayload = array_merge($this->publicArticlePayload($article, true), [
+            'previous_article_slug' => $previousArticle?->slug,
+            'next_article_slug' => $nextArticle?->slug,
+            'previous_article_title' => $previousArticle?->title,
+            'next_article_title' => $nextArticle?->title,
+        ]);
 
         return response()->json([
-            'article' => $articleData,
+            'article' => $articlePayload,
             'author_metrics' => $authorMetrics,
             'previous_article_id' => $previousArticle?->id,
             'next_article_id' => $nextArticle?->id,
@@ -148,13 +113,20 @@ class ArticleController extends Controller
      */
     public function latest(Request $request): JsonResponse
     {
-        $limit = $request->integer('limit', 6);
+        $limit = min($request->integer('limit', 10), 10);
         
         $articles = Article::where('status', 'published')
-            ->with(['magazine:id,title,slug,cover_image', 'user:id,name'])
+            ->with([
+                'magazine:id,title,slug,cover_image',
+                'user:id,name',
+                'issue:id,volume_number,issue_number,special_title,issue_month,issue_year',
+                'articleAuthors:id,article_id,co_author_name,author_order,is_owner,is_corresponding',
+            ])
+            ->orderByDesc('published_at')
             ->latest()
             ->limit($limit)
-            ->get();
+            ->get()
+            ->map(fn (Article $article) => $this->publicArticlePayload($article));
 
         return response()->json([
             'status' => 'success',
@@ -299,7 +271,7 @@ class ArticleController extends Controller
         }
 
         $status = $request->query('status');
-        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name,email', 'tags', 'shareClicks']);
+        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
 
         if ($this->hasGlobalArticleAccess($user)) {
             // Super admins and legacy admins retain global visibility.
@@ -364,6 +336,8 @@ class ArticleController extends Controller
 
         $perPage = $request->integer('per_page', 25);
         $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
+
+        $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $user));
 
         return response()->json($articles);
     }
@@ -446,8 +420,7 @@ class ArticleController extends Controller
                 $article->pdf_path = $generatedPdfUrl;
             } catch (\Exception $e) {
                 return response()->json([
-                    'message' => 'Article status updated, but dynamic PDF generation failed: ' . $e->getMessage(),
-                    'error' => $e->getTraceAsString()
+                    'message' => 'Article status updated, but PDF generation failed. Please try again.',
                 ], 500);
             }
         }
@@ -480,7 +453,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article status updated successfully.',
-            'article' => $article
+            'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']), $user)
         ]);
     }
 
@@ -496,12 +469,12 @@ class ArticleController extends Controller
         }
 
         $article = Article::with([
-            'tags',
-            'magazine',
+            'tags:id,name',
+            'magazine:id,title,slug,cover_image',
             'issue',
             'shareClicks',
             'articleAuthors',
-            'assets',
+            'assets:id,article_id,original_filename,file_size,mime_type',
             'subEditorAssignments.subEditor:id,name,email',
             'reviewerAssignments.reviewer:id,name,email',
             'editorialDecisions.decider:id,name,email',
@@ -526,7 +499,18 @@ class ArticleController extends Controller
             }
         }
 
-        return response()->json($article);
+        return response()->json($this->adminArticleDetailPayload($article->fresh([
+            'tags:id,name',
+            'magazine:id,title,slug,cover_image',
+            'issue',
+            'shareClicks',
+            'articleAuthors',
+            'assets:id,article_id,original_filename,file_size,mime_type',
+            'subEditorAssignments.subEditor:id,name,email',
+            'reviewerAssignments.reviewer:id,name,email',
+            'editorialDecisions.decider:id,name,email',
+            'productionAssignments.user:id,name,email',
+        ]), $user));
     }
 
     /**
@@ -734,7 +718,7 @@ class ArticleController extends Controller
                 $article->save();
             } catch (\Exception $e) {
                 return response()->json([
-                    'message' => 'Article updated successfully, but PDF generation failed: ' . $e->getMessage()
+                    'message' => 'Article updated successfully, but PDF generation failed. Please try again.'
                 ], 500);
             }
         }
@@ -753,7 +737,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article updated successfully.',
-            'article' => $article->load(['tags', 'articleAuthors'])
+            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image', 'issue', 'articleAuthors', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
         ]);
     }
 
@@ -1006,17 +990,16 @@ class ArticleController extends Controller
      */
     public function downloadPdf($id)
     {
-        $article = Article::findOrFail($id);
+        $article = Article::find($id);
 
-        if (empty($article->pdf_path)) {
-            return response()->json(['error' => 'No PDF file is associated with this article.'], 404);
+        if (!$article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED || empty($article->pdf_path)) {
+            return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
-        // Extract the relative path from 'storage/manuscripts/abc.pdf' -> 'manuscripts/abc.pdf'
         $path = str_replace('storage/', '', $article->pdf_path);
 
         if (!Storage::disk('public')->exists($path)) {
-            return response()->json(['error' => 'The PDF file could not be found on storage.'], 404);
+            return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
         $absolutePath = Storage::disk('public')->path($path);
@@ -1025,6 +1008,218 @@ class ArticleController extends Controller
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . basename($article->pdf_path) . '"'
         ]);
+    }
+
+    private function publicArticlePayload(Article $article, bool $includeBody = false): array
+    {
+        $payload = [
+            'id' => $article->id,
+            'title' => $article->title,
+            'subtitle' => $article->subtitle,
+            'slug' => $article->slug,
+            'abstract' => $article->abstract,
+            'featured_image' => $article->featured_image,
+            'doi' => $article->doi,
+            'published_at' => $article->published_at,
+            'created_at' => $article->created_at,
+            'published_year' => $article->published_year,
+            'published_month' => $article->published_month,
+            'page_start' => $article->page_start,
+            'page_end' => $article->page_end,
+            'seo_title' => $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest'),
+            'seo_description' => $article->seo_description ?: Str::limit(strip_tags((string) $article->abstract), 160, ''),
+            'seo_keywords' => $article->seo_keywords ?: $article->tags->pluck('name')->implode(', '),
+            'og_image' => $article->magazine?->cover_image,
+            'has_pdf' => !empty($article->pdf_path),
+            'magazine' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'title' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+                'cover_image' => $article->magazine->cover_image,
+            ] : null,
+            'user' => $article->user ? [
+                'id' => $article->user->id,
+                'name' => $article->user->name,
+            ] : null,
+            'issue' => $article->issue ? [
+                'id' => $article->issue->id,
+                'volume_number' => $article->issue->volume_number,
+                'issue_number' => $article->issue->issue_number,
+                'special_title' => $article->issue->special_title,
+                'issue_month' => $article->issue->issue_month,
+                'issue_year' => $article->issue->issue_year,
+            ] : null,
+            'article_authors' => $article->articleAuthors
+                ->sortBy('author_order')
+                ->map(fn ($author) => [
+                    'id' => $author->id,
+                    'co_author_name' => $author->co_author_name,
+                    'affiliation' => $author->affiliation,
+                    'university_name' => $author->university_name,
+                    'author_order' => $author->author_order,
+                    'is_owner' => $author->is_owner,
+                    'is_corresponding' => $author->is_corresponding,
+                ])
+                ->values(),
+            'assets' => $article->assets
+                ->map(fn ($asset) => [
+                    'id' => $asset->id,
+                    'original_filename' => $asset->original_filename,
+                    'file_size' => $asset->file_size,
+                    'mime_type' => $asset->mime_type,
+                ])
+                ->values(),
+        ];
+
+        if ($includeBody) {
+            $payload['full_text'] = $article->full_text;
+        }
+
+        return $payload;
+    }
+
+    private function adminArticleSummaryPayload(Article $article, User $viewer): array
+    {
+        $article->loadMissing(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name']);
+
+        return [
+            'id' => $article->id,
+            'magazine_id' => $article->magazine_id,
+            'title' => $article->title,
+            'subtitle' => $article->subtitle,
+            'slug' => $article->slug,
+            'abstract' => $article->abstract,
+            'status' => $article->status,
+            'author_status' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? $article->status,
+            'featured_image' => $article->featured_image,
+            'doi' => $article->doi,
+            'published_at' => $article->published_at,
+            'published_year' => $article->published_year,
+            'published_month' => $article->published_month,
+            'page_start' => $article->page_start,
+            'page_end' => $article->page_end,
+            'has_pdf' => !empty($article->pdf_path),
+            'magazine' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'title' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+                'cover_image' => $article->magazine->cover_image,
+            ] : null,
+            'user' => $article->user ? [
+                'id' => $article->user->id,
+                'name' => $article->user->name,
+            ] : null,
+            'tags' => $article->tags->map(fn ($tag) => [
+                'id' => $tag->id,
+                'name' => $tag->name,
+            ])->values(),
+            'clicks' => $article->clicks,
+            'impressions' => $article->impressions,
+            'created_at' => $article->created_at,
+            'updated_at' => $article->updated_at,
+        ];
+    }
+
+    private function adminArticleDetailPayload(Article $article, User $viewer): array
+    {
+        $article->loadMissing(['articleAuthors', 'assets', 'issue']);
+        $payload = $this->adminArticleSummaryPayload($article, $viewer);
+        $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
+            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor', 'magazine_editor']);
+        $isAuthor = (int) $article->user_id === (int) $viewer->id
+            || $article->articleAuthors->contains(fn ($author) => (int) $author->user_id === (int) $viewer->id || strtolower((string) $author->co_author_email) === strtolower((string) $viewer->email));
+
+        $payload += [
+            'full_text' => $article->full_text,
+            'keywords' => $article->keywords,
+            'article_category' => $article->article_category,
+            'article_type' => $article->article_type,
+            'subject_area' => $article->subject_area,
+            'language' => $article->language,
+            'ethical_approval_statement' => $article->ethical_approval_statement,
+            'conflict_of_interest_statement' => $article->conflict_of_interest_statement,
+            'funding_statement' => $article->funding_statement,
+            'data_availability_statement' => $article->data_availability_statement,
+            'author_contribution_statement' => $article->author_contribution_statement,
+            'change_summary' => $article->change_summary,
+            'revision_response' => $article->revision_response,
+            'rejection_reason' => $article->rejection_reason,
+            'issue' => $article->issue ? [
+                'id' => $article->issue->id,
+                'volume_number' => $article->issue->volume_number,
+                'issue_number' => $article->issue->issue_number,
+                'special_title' => $article->issue->special_title,
+                'issue_month' => $article->issue->issue_month,
+                'issue_year' => $article->issue->issue_year,
+            ] : null,
+            'article_authors' => $article->articleAuthors
+                ->sortBy('author_order')
+                ->map(function ($author) use ($isAuthor, $canViewEditorial) {
+                    $data = [
+                        'id' => $author->id,
+                        'user_id' => $author->user_id,
+                        'co_author_name' => $author->co_author_name,
+                        'affiliation' => $author->affiliation,
+                        'university_name' => $author->university_name,
+                        'author_order' => $author->author_order,
+                        'is_owner' => $author->is_owner,
+                        'is_corresponding' => $author->is_corresponding,
+                    ];
+                    if ($isAuthor || $canViewEditorial) {
+                        $data['co_author_email'] = $author->co_author_email;
+                        $data['can_edit'] = $author->can_edit;
+                    }
+                    return $data;
+                })
+                ->values(),
+            'assets' => $article->assets
+                ->map(fn ($asset) => [
+                    'id' => $asset->id,
+                    'original_filename' => $asset->original_filename,
+                    'file_size' => $asset->file_size,
+                    'mime_type' => $asset->mime_type,
+                ])
+                ->values(),
+        ];
+
+        if ($canViewEditorial) {
+            $payload['seo_title'] = $article->seo_title;
+            $payload['seo_description'] = $article->seo_description;
+            $payload['seo_keywords'] = $article->seo_keywords;
+            $payload['sub_editor_assignments'] = $article->subEditorAssignments?->map(fn ($assignment) => $this->assignmentPreviewPayload($assignment, 'subEditor'))->values() ?? [];
+            $payload['reviewer_assignments'] = $article->reviewerAssignments?->map(fn ($assignment) => $this->assignmentPreviewPayload($assignment, 'reviewer', true))->values() ?? [];
+            $payload['editorial_decisions'] = $article->editorialDecisions?->map(fn ($decision) => [
+                'id' => $decision->id,
+                'decision' => $decision->decision,
+                'decision_source' => $decision->decision_source,
+                'comments_for_author' => $decision->comments_for_author,
+                'internal_notes' => $decision->internal_notes,
+                'decision_date' => $decision->decision_date,
+                'decider' => $decision->decider ? ['id' => $decision->decider->id, 'name' => $decision->decider->name] : null,
+            ])->values() ?? [];
+        }
+
+        return $payload;
+    }
+
+    private function assignmentPreviewPayload($assignment, string $relation, bool $includeReview = false): array
+    {
+        $payload = [
+            'id' => $assignment->id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            $relation => $assignment->{$relation} ? [
+                'id' => $assignment->{$relation}->id,
+                'name' => $assignment->{$relation}->name,
+            ] : null,
+        ];
+
+        if ($includeReview) {
+            $payload['recommendation'] = $assignment->recommendation;
+        }
+
+        return $payload;
     }
 
     /**
