@@ -159,10 +159,89 @@ class RbacController extends Controller
     }
 
     /**
-     * Get all system users along with their role.
+     * Get paginated system users with live search (restricted to super_admin).
+     */
+    public function index(Request $request): JsonResponse
+    {
+        // Only super_admin is allowed
+        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+        }
+
+        try {
+            $request->validate([
+                'search' => 'nullable|string|max:255',
+                'page' => 'nullable|integer|min:1',
+                'per_page' => 'nullable|integer|min:10|max:100',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => $e->errors()
+            ], 422);
+        }
+
+        try {
+            $search = $request->query('search');
+            $perPage = intval($request->query('per_page', 20));
+
+            $query = User::with('role');
+
+            if ($search !== null && trim($search) !== '') {
+                $terms = explode(' ', trim($search));
+                foreach ($terms as $term) {
+                    if (trim($term) === '') continue;
+                    $query->where(function ($q) use ($term) {
+                        $q->where('name', 'like', "%{$term}%")
+                          ->orWhere('email', 'like', "%{$term}%")
+                          ->orWhereHas('role', function ($qr) use ($term) {
+                              $qr->where('name', 'like', "%{$term}%")
+                                ->orWhere('display_name', 'like', "%{$term}%");
+                          });
+                    });
+                }
+            }
+
+            // Exclude logged in user
+            $loggedInUserId = $request->user()?->id;
+            if ($loggedInUserId) {
+                $query->where('id', '!=', $loggedInUserId);
+            }
+
+            $paginator = $query->paginate($perPage);
+
+            $paginator->through(function (User $user) {
+                return [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'profile_image' => $user->profile_image,
+                    'roles' => $user->role ? [[
+                        'id' => $user->role->id,
+                        'name' => $user->role->name,
+                        'display_name' => $user->role->display_name,
+                    ]] : [],
+                    'status' => $user->email_verified_at ? 'active' : 'pending',
+                    'created_at' => $user->created_at?->toIso8601String(),
+                ];
+            });
+
+            return response()->json($paginator);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'An error occurred while querying the user directory.'], 500);
+        }
+    }
+
+    /**
+     * Get all system users along with their role (Legacy / dropdown compatibility).
      */
     public function users(Request $request): JsonResponse
     {
+        // If query parameters or path indicate Super Admin user listing/search, direct to index()
+        if (str_contains($request->getPathInfo(), '/rbac/') === false && !$request->has('role')) {
+            return $this->index($request);
+        }
+
         $loggedInUserId = $request->user()?->id;
         $roleFilter = $request->query('role');
         $users = User::with(['role', 'magazines', 'assignedEditors'])
