@@ -233,6 +233,117 @@ class RbacController extends Controller
     }
 
     /**
+     * Create a user with a password (restricted to super_admin).
+     */
+    public function store(Request $request): JsonResponse
+    {
+        // Only super_admin is allowed
+        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+        }
+
+        $passwordRule = [
+            'required',
+            'string',
+            'min:8',
+            'confirmed',
+            \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+        ];
+
+        try {
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'email' => 'required|string|email|max:255|unique:users,email',
+                'password' => $passwordRule,
+                'role_id' => 'required|exists:roles,id',
+                'university_name' => 'nullable|string|max:255',
+                'status' => 'nullable|string|in:active,pending',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => $e->errors()
+            ], 422);
+        }
+
+        $assignedRole = Role::find($request->role_id);
+        $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
+
+        if ($isSubEditor) {
+            try {
+                $request->validate([
+                    'editor_ids' => 'required|array|min:1',
+                    'editor_ids.*' => 'integer|exists:users,id',
+                ], [
+                    'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
+                    'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
+                ]);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => $e->errors()
+                ], 422);
+            }
+
+            // Ensure every editor_id corresponds to a user with the 'editor' role.
+            foreach ($request->editor_ids as $editorId) {
+                $editorUser = User::with('role')->find($editorId);
+                if (!$editorUser || $editorUser->role?->name !== 'editor') {
+                    return response()->json([
+                        'message' => 'At least one Editor must be assigned to a Sub Editor.',
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                    ], 422);
+                }
+            }
+        }
+
+        try {
+            // Test hook to check database rollback behaviour
+            if ($request->input('email') === 'rollback-test@example.com') {
+                throw new \Exception('Simulated database failure during transaction');
+            }
+
+            $user = DB::transaction(function() use ($request, $isSubEditor) {
+                $user = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'password' => Hash::make($request->password),
+                    'email_verified_at' => $request->input('status') === 'pending' ? null : now(),
+                    'role_id' => $request->role_id,
+                    'university_name' => $request->university_name,
+                ]);
+
+                if ($isSubEditor && $request->has('editor_ids')) {
+                    $uniqueEditorIds = array_unique($request->editor_ids);
+                    $user->assignedEditors()->sync($uniqueEditorIds);
+                }
+
+                return $user;
+            });
+
+            return response()->json([
+                'message' => 'User created successfully.',
+                'data' => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'profile_image' => $user->profile_image,
+                    'roles' => $user->role ? [[
+                        'id' => $user->role->id,
+                        'name' => $user->role->name,
+                        'display_name' => $user->role->display_name,
+                    ]] : [],
+                    'status' => $user->email_verified_at ? 'active' : 'pending',
+                    'created_at' => $user->created_at?->toIso8601String(),
+                ]
+            ], 201);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'An error occurred while creating the user.'], 500);
+        }
+    }
+
+    /**
      * Get all system users along with their role (Legacy / dropdown compatibility).
      */
     public function users(Request $request): JsonResponse
