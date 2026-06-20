@@ -555,4 +555,37 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             ->count();
         $this->assertEquals(0, $pivotCount);
     }
+
+    /**
+     * GET /api/admin/users?role=editor is Super Admin only and minimized.
+     */
+    public function test_editor_list_endpoint_payload_minimization_and_security(): void
+    {
+        // 1. Unauthenticated / Forbidden roles
+        $nonSuperAdminRoles = ['admin', 'author', 'editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'];
+        foreach ($nonSuperAdminRoles as $roleName) {
+            Sanctum::actingAs($this->user($roleName));
+            $this->getJson('/api/admin/users?role=editor')->assertForbidden();
+        }
+
+        // 2. Super Admin access
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+
+        $response = $this->getJson('/api/admin/users?role=editor');
+        $response->assertOk();
+
+        $data = $response->json();
+        $this->assertNotEmpty($data);
+
+        // Find the created editor in the list
+        $editorRow = collect($data)->firstWhere('id', $editor->id);
+        $this->assertNotNull($editorRow);
+
+        // Verify it only contains id, name, email
+        $this->assertCount(3, $editorRow);
+        $this->assertArrayHasKey('id', $editorRow);
+        $this->assertArrayHasKey('name', $editorRow);
+        $this->assertArrayHasKey('email', $editorRow);
+    }
 }

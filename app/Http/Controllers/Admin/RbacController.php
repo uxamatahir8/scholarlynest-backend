@@ -343,11 +343,15 @@ class RbacController extends Controller
         }
     }
 
-    /**
-     * Get all system users along with their role (Legacy / dropdown compatibility).
-     */
     public function users(Request $request): JsonResponse
     {
+        // If path is /api/admin/users (no /rbac/), it must be Super Admin-only!
+        if (str_contains($request->getPathInfo(), '/rbac/') === false) {
+            if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+                return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+            }
+        }
+
         // If query parameters or path indicate Super Admin user listing/search, direct to index()
         if (str_contains($request->getPathInfo(), '/rbac/') === false && !$request->has('role')) {
             return $this->index($request);
@@ -366,6 +370,15 @@ class RbacController extends Controller
                 });
             })
             ->get();
+
+        if ($roleFilter === 'editor') {
+            return response()->json($users->map(fn (User $user) => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+            ])->values());
+        }
+
         return response()->json($users->map(fn (User $user) => $this->userPayload($user))->values());
     }
 
