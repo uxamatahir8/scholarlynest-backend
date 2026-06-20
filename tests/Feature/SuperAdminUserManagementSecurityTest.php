@@ -666,6 +666,39 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     }
 
     /**
+     * Super Admin can update user by entirely omitting password fields.
+     */
+    public function test_super_admin_can_update_user_omitting_password_fields(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $originalPassword = 'Password123!';
+        $targetUser = User::factory()->create([
+            'role_id' => $this->roles['editor']->id,
+            'password' => Hash::make($originalPassword),
+        ]);
+
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => 'Omitted Pass Name',
+            'email' => 'omitted.pass@example.com',
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+            // password and password_confirmation are completely omitted
+        ]);
+
+        $response->assertOk();
+        $this->assertDatabaseHas('users', [
+            'id' => $targetUser->id,
+            'name' => 'Omitted Pass Name',
+            'email' => 'omitted.pass@example.com',
+        ]);
+
+        // Verify original password is still valid
+        $user = User::find($targetUser->id);
+        $this->assertTrue(Hash::check($originalPassword, $user->password));
+    }
+
+
+    /**
      * Super Admin can update password when valid password and confirmation are provided.
      */
     public function test_super_admin_can_update_password_when_valid(): void
