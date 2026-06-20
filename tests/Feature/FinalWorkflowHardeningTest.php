@@ -286,7 +286,7 @@ class FinalWorkflowHardeningTest extends TestCase
             'is_system' => false,
         ]);
 
-        Sanctum::actingAs($this->user('admin'));
+        Sanctum::actingAs($this->user('super_admin'));
 
         $this->postJson("/api/admin/rbac/roles/{$customRole->id}/permissions", [
             'permissions' => ['articles.view-own', 'articles.delete-own', 'magazines.delete'],

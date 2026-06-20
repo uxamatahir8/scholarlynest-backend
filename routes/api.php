@@ -249,7 +249,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
  
         // Dynamic RBAC Management
-        Route::prefix('rbac')->group(function () {
+        Route::prefix('rbac')->middleware('super-admin')->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');
             Route::put('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
