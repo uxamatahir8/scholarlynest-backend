@@ -18,6 +18,9 @@ return Application::configure(basePath: dirname(__DIR__))
             'super-admin' => \App\Http\Middleware\RequireSuperAdmin::class,
             'super-admin-delete' => \App\Http\Middleware\RequireSuperAdminForDeletes::class,
         ]);
+        $middleware->appendToGroup('api', [
+            \App\Http\Middleware\ValidateImpersonationSession::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(function (ThrottleRequestsException $e) {
