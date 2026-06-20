@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Constants\SystemRoles;
 use App\Http\Controllers\Controller;
 use App\Models\Permission;
 use App\Models\Role;
@@ -12,11 +13,21 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
 class RbacController extends Controller
 {
     protected NotificationService $notificationService;
+
+    private const PROTECTED_ASSIGNMENT_PERMISSIONS = [
+        'roles.view-any',
+        'roles.manage',
+        'users.view-any',
+        'users.create',
+        'users.manage',
+        'settings.manage',
+    ];
 
     public function __construct(NotificationService $notificationService)
     {
@@ -28,7 +39,13 @@ class RbacController extends Controller
      */
     public function roles(): JsonResponse
     {
-        $roles = Role::with('permissions')->get()->map(fn (Role $role) => $this->rolePayload($role))->values();
+        $roles = Role::with('permissions')
+            ->orderByDesc('is_system')
+            ->orderBy('display_name')
+            ->get()
+            ->map(fn (Role $role) => $this->rolePayload($role))
+            ->values();
+
         return response()->json($roles);
     }
 
@@ -41,7 +58,10 @@ class RbacController extends Controller
             ->select(['id', 'name', 'module', 'description'])
             ->orderBy('module')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->map(fn (Permission $permission) => $this->permissionPayload($permission))
+            ->values();
+
         return response()->json($permissions);
     }
 
@@ -50,16 +70,31 @@ class RbacController extends Controller
      */
     public function storeRole(Request $request): JsonResponse
     {
-        $request->validate([
-            'name' => 'required|string|unique:roles,name|max:255',
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
             'display_name' => 'required|string|max:255',
             'description' => 'nullable|string',
         ]);
 
+        $name = $this->normalizeRoleName($validated['name']);
+        if ($name === '' || in_array($name, SystemRoles::names(), true) || $name === 'admin') {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['name' => ['This role identifier is reserved.']],
+            ], 422);
+        }
+
+        if (Role::where('name', $name)->exists()) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['name' => ['The role identifier has already been taken.']],
+            ], 422);
+        }
+
         $role = Role::create([
-            'name' => strtolower(Str::slug($request->name)),
-            'display_name' => $request->display_name,
-            'description' => $request->description,
+            'name' => $name,
+            'display_name' => $validated['display_name'],
+            'description' => $validated['description'] ?? null,
             'is_system' => false,
         ]);
 
@@ -79,20 +114,36 @@ class RbacController extends Controller
             ], 400);
         }
 
-        $request->validate([
-            'name' => 'sometimes|required|string|max:255|unique:roles,name,' . $role->id,
+        $validated = $request->validate([
+            'name' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                function (string $attribute, mixed $value, \Closure $fail) use ($role) {
+                    $name = $this->normalizeRoleName((string) $value);
+                    if ($name === '' || in_array($name, SystemRoles::names(), true) || $name === 'admin') {
+                        $fail('This role identifier is reserved.');
+                        return;
+                    }
+
+                    if (Role::where('name', $name)->whereKeyNot($role->id)->exists()) {
+                        $fail('The role identifier has already been taken.');
+                    }
+                },
+            ],
             'display_name' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
         ]);
 
-        if ($request->has('name')) {
-            $role->name = strtolower(Str::slug($request->name));
+        if (array_key_exists('name', $validated)) {
+            $role->name = $this->normalizeRoleName($validated['name']);
         }
-        if ($request->has('display_name')) {
-            $role->display_name = $request->display_name;
+        if (array_key_exists('display_name', $validated)) {
+            $role->display_name = $validated['display_name'];
         }
-        if ($request->has('description')) {
-            $role->description = $request->description;
+        if (array_key_exists('description', $validated)) {
+            $role->description = $validated['description'];
         }
         $role->save();
 
@@ -134,10 +185,28 @@ class RbacController extends Controller
      */
     public function syncRolePermissions(Request $request, int $id): JsonResponse
     {
-        $request->validate([
+        $validator = Validator::make($request->all(), [
             'permissions' => 'required|array',
-            'permissions.*' => 'string|exists:permissions,name',
+            'permissions.*' => [
+                'required',
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    if (!is_int($value) && !is_string($value)) {
+                        $fail('Each permission must be a valid permission identifier.');
+                    }
+                },
+            ],
         ]);
+
+        $validator->after(function ($validator) use ($request) {
+            $normalized = collect($request->input('permissions', []))
+                ->map(fn ($permission) => is_numeric($permission) ? 'id:' . (int) $permission : 'name:' . (string) $permission);
+
+            if ($normalized->duplicates()->isNotEmpty()) {
+                $validator->errors()->add('permissions', 'Duplicate permission assignments are not allowed.');
+            }
+        });
+
+        $validator->validate();
 
         $role = Role::findOrFail($id);
 
@@ -147,13 +216,42 @@ class RbacController extends Controller
             ], 400);
         }
 
-        $requestedPermissions = collect($request->permissions)
-            ->reject(fn (string $permission) => str_contains($permission, '.delete'))
-            ->values()
-            ->all();
+        $requestedPermissions = collect($request->input('permissions', []));
+        $ids = $requestedPermissions
+            ->filter(fn ($permission) => is_numeric($permission))
+            ->map(fn ($permission) => (int) $permission);
+        $names = $requestedPermissions
+            ->reject(fn ($permission) => is_numeric($permission))
+            ->map(fn ($permission) => (string) $permission);
 
-        $permissionIds = Permission::whereIn('name', $requestedPermissions)->pluck('id');
-        $role->permissions()->sync($permissionIds);
+        $permissions = Permission::query()
+            ->whereIn('id', $ids)
+            ->orWhereIn('name', $names)
+            ->get();
+
+        if ($permissions->count() !== $requestedPermissions->count()) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['permissions' => ['One or more selected permissions are invalid.']],
+            ], 422);
+        }
+
+        $syncablePermissions = $permissions
+            ->reject(fn (Permission $permission) => str_contains($permission->name, '.delete'))
+            ->values();
+
+        $blockedPermissions = $syncablePermissions
+            ->pluck('name')
+            ->filter(fn (string $name) => $this->isProtectedAssignmentPermission($name));
+
+        if ($blockedPermissions->isNotEmpty()) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['permissions' => ['Protected Super Admin permissions cannot be assigned to custom roles.']],
+            ], 422);
+        }
+
+        $role->permissions()->sync($syncablePermissions->pluck('id'));
 
         return response()->json($this->rolePayload($role->load('permissions')));
     }
@@ -863,21 +961,53 @@ class RbacController extends Controller
 
     private function rolePayload(Role $role): array
     {
+        $isLocked = (bool) $role->is_system
+            || in_array($role->name, SystemRoles::names(), true)
+            || $role->name === 'admin';
+
         return [
             'id' => $role->id,
             'name' => $role->name,
             'display_name' => $role->display_name,
             'description' => $role->description,
             'is_system' => (bool) $role->is_system,
+            'is_locked' => $isLocked,
             'permissions' => $role->permissions
-                ? $role->permissions->map(fn (Permission $permission) => [
-                    'id' => $permission->id,
-                    'name' => $permission->name,
-                    'module' => $permission->module,
-                    'description' => $permission->description,
-                ])->values()
+                ? $role->permissions->map(fn (Permission $permission) => $this->permissionPayload($permission))->values()
                 : [],
         ];
+    }
+
+    private function permissionPayload(Permission $permission): array
+    {
+        return [
+            'id' => $permission->id,
+            'name' => $permission->name,
+            'display_name' => $this->permissionDisplayName($permission->name),
+            'module' => $permission->module,
+            'description' => $permission->description,
+        ];
+    }
+
+    private function normalizeRoleName(string $name): string
+    {
+        return strtolower(Str::slug($name));
+    }
+
+    private function permissionDisplayName(string $name): string
+    {
+        $label = Str::of($name)
+            ->replace(['.', '-', '_'], ' ')
+            ->headline()
+            ->toString();
+
+        return str_replace(['Seo', 'Cms'], ['SEO', 'CMS'], $label);
+    }
+
+    private function isProtectedAssignmentPermission(string $name): bool
+    {
+        return in_array($name, self::PROTECTED_ASSIGNMENT_PERMISSIONS, true)
+            || str_contains($name, 'impersonat');
     }
 
     private function userPayload(User $user): array

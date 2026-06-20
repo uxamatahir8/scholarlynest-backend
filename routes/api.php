@@ -259,6 +259,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');
             Route::put('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
+            Route::patch('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
             Route::delete('/roles/{id}', [RbacController::class, 'deleteRole'])->middleware(['super-admin-delete', 'permission:roles.manage']);
             Route::get('/permissions', [RbacController::class, 'permissions'])->middleware('permission:roles.view-any');
             Route::post('/roles/{id}/permissions', [RbacController::class, 'syncRolePermissions'])->middleware('permission:roles.manage');
