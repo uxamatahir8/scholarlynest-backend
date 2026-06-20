@@ -255,6 +255,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
  
         // Dynamic RBAC Management
+        Route::prefix('user-management')->middleware('super-admin')->group(function () {
+            Route::get('/registration-settings', [RbacController::class, 'registrationSettings'])->middleware('permission:settings.view-any');
+            Route::patch('/registration-settings', [RbacController::class, 'updateRegistrationSettings'])->middleware('permission:settings.manage');
+            Route::get('/registration-role-options', [RbacController::class, 'registrationRoleOptions'])->middleware('permission:settings.view-any');
+        });
+
         Route::prefix('rbac')->middleware('super-admin')->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');

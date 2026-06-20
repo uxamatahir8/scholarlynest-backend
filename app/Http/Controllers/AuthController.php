@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\Role;
+use App\Models\Setting;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -51,6 +53,10 @@ class AuthController extends Controller
      */
     public function register(Request $request): JsonResponse
     {
+        if (!$this->publicRegistrationEnabled()) {
+            return response()->json(['message' => 'Registration is currently closed.'], 403);
+        }
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
@@ -64,6 +70,7 @@ class AuthController extends Controller
             ],
         ]);
 
+        $defaultRole = $this->defaultRegistrationRole();
         $code = strval(mt_rand(100000, 999999));
 
         $user = User::create([
@@ -73,15 +80,8 @@ class AuthController extends Controller
             'university_name' => $request->university_name,
             'verification_code' => $code,
             'verification_code_expires_at' => now()->addMinutes(15),
+            'role_id' => $defaultRole?->id,
         ]);
-
-        // Dynamically assign the default registration role from settings
-        $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
-        $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
-        if ($defaultRole) {
-            $user->role_id = $defaultRole->id;
-            $user->save();
-        }
 
         if ($request->boolean('subscribe_newsletter')) {
             \App\Models\NewsletterSubscriber::firstOrCreate([
@@ -595,6 +595,10 @@ class AuthController extends Controller
      */
     public function googleSignUp(Request $request): JsonResponse
     {
+        if (!$this->publicRegistrationEnabled()) {
+            return response()->json(['message' => 'Registration is currently closed.'], 403);
+        }
+
         $request->validate([
             'credential' => 'required|string',
         ]);
@@ -626,6 +630,8 @@ class AuthController extends Controller
             ], 422);
         }
 
+        $defaultRole = $this->defaultRegistrationRole();
+
         // Create new user
         $user = User::create([
             'name' => $name,
@@ -634,15 +640,8 @@ class AuthController extends Controller
             'university_name' => null,
             'password' => null, // Password is null for social logins
             'email_verified_at' => now(), // Auto-verified via Google
+            'role_id' => $defaultRole?->id,
         ]);
-
-        // Dynamically assign the default registration role from settings
-        $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
-        $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
-        if ($defaultRole) {
-            $user->role_id = $defaultRole->id;
-            $user->save();
-        }
 
         if ($request->boolean('subscribe_newsletter')) {
             \App\Models\NewsletterSubscriber::firstOrCreate([
@@ -996,6 +995,33 @@ class AuthController extends Controller
             'message' => 'Email updated successfully.',
             'user' => $this->authUserPayload($user)
         ]);
+    }
+
+    private function publicRegistrationEnabled(): bool
+    {
+        $value = Setting::where('key', 'registration_enabled')->value('value');
+        if ($value === null) {
+            return true;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function defaultRegistrationRole(): ?Role
+    {
+        $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
+        $role = Role::where('name', $roleName)->first();
+
+        if (!$this->isRegistrationEligibleRole($role)) {
+            $role = Role::where('name', 'author')->first();
+        }
+
+        return $role;
+    }
+
+    private function isRegistrationEligibleRole(?Role $role): bool
+    {
+        return $role && $role->name === 'author';
     }
 
     private function authUserPayload(User $user): array

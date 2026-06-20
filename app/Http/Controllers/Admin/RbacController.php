@@ -29,6 +29,10 @@ class RbacController extends Controller
         'settings.manage',
     ];
 
+    private const REGISTRATION_ELIGIBLE_ROLE_NAMES = [
+        'author',
+    ];
+
     public function __construct(NotificationService $notificationService)
     {
         $this->notificationService = $notificationService;
@@ -883,16 +887,11 @@ class RbacController extends Controller
      */
     public function getRegistrationRole(): JsonResponse
     {
-        $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
-        $role = Role::where('name', $roleName)->first();
+        $settings = $this->registrationSettingsPayload();
 
         return response()->json([
-            'default_registration_role' => $roleName,
-            'role' => $role ? [
-                'id' => $role->id,
-                'name' => $role->name,
-                'display_name' => $role->display_name,
-            ] : null,
+            'default_registration_role' => $settings['default_role']['name'] ?? 'author',
+            'role' => $settings['default_role'],
         ]);
     }
 
@@ -905,13 +904,78 @@ class RbacController extends Controller
             'default_registration_role' => 'required|string|exists:roles,name',
         ]);
 
+        $role = Role::where('name', $request->default_registration_role)->first();
+        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['default_registration_role' => ['This role cannot be used for public registration.']],
+            ], 422);
+        }
+
         Setting::updateOrCreate(
             ['key' => 'default_registration_role'],
-            ['value' => $request->default_registration_role]
+            ['value' => $role->name]
         );
 
         return response()->json([
             'message' => 'Default registration role updated successfully.'
+        ]);
+    }
+
+    public function registrationSettings(): JsonResponse
+    {
+        return response()->json([
+            'data' => $this->registrationSettingsPayload(),
+        ]);
+    }
+
+    public function registrationRoleOptions(): JsonResponse
+    {
+        $roles = Role::query()
+            ->whereIn('name', self::REGISTRATION_ELIGIBLE_ROLE_NAMES)
+            ->orderBy('display_name')
+            ->get()
+            ->filter(fn (Role $role) => $this->isRegistrationEligibleRole($role))
+            ->map(fn (Role $role) => $this->minimalRolePayload($role))
+            ->values();
+
+        return response()->json(['data' => $roles]);
+    }
+
+    public function updateRegistrationSettings(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'registration_enabled' => 'required|boolean',
+            'default_role_id' => 'required|integer|exists:roles,id',
+            'registration_notice' => 'nullable|string|max:500',
+        ]);
+
+        $role = Role::find($validated['default_role_id']);
+        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => ['default_role_id' => ['This role cannot be used for public registration.']],
+            ], 422);
+        }
+
+        DB::transaction(function () use ($validated, $role) {
+            Setting::updateOrCreate(
+                ['key' => 'registration_enabled'],
+                ['value' => $validated['registration_enabled'] ? '1' : '0']
+            );
+            Setting::updateOrCreate(
+                ['key' => 'default_registration_role'],
+                ['value' => $role->name]
+            );
+            Setting::updateOrCreate(
+                ['key' => 'registration_notice'],
+                ['value' => $validated['registration_notice'] ?? '']
+            );
+        });
+
+        return response()->json([
+            'message' => 'Registration settings updated successfully.',
+            'data' => $this->registrationSettingsPayload(),
         ]);
     }
 
@@ -976,6 +1040,47 @@ class RbacController extends Controller
                 ? $role->permissions->map(fn (Permission $permission) => $this->permissionPayload($permission))->values()
                 : [],
         ];
+    }
+
+    private function registrationSettingsPayload(): array
+    {
+        $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
+        $role = Role::where('name', $roleName)->first();
+        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+            $role = Role::where('name', 'author')->first();
+        }
+
+        return [
+            'registration_enabled' => $this->settingBoolean('registration_enabled', true),
+            'default_role' => $role ? $this->minimalRolePayload($role) : null,
+            'email_verification_required' => true,
+            'registration_notice' => Setting::where('key', 'registration_notice')->value('value')
+                ?? 'Create an author account to submit manuscripts.',
+        ];
+    }
+
+    private function minimalRolePayload(Role $role): array
+    {
+        return [
+            'id' => $role->id,
+            'name' => $role->name,
+            'display_name' => $role->display_name,
+        ];
+    }
+
+    private function isRegistrationEligibleRole(Role $role): bool
+    {
+        return in_array($role->name, self::REGISTRATION_ELIGIBLE_ROLE_NAMES, true);
+    }
+
+    private function settingBoolean(string $key, bool $default): bool
+    {
+        $value = Setting::where('key', $key)->value('value');
+        if ($value === null) {
+            return $default;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN);
     }
 
     private function permissionPayload(Permission $permission): array
