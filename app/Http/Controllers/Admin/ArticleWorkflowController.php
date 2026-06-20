@@ -101,12 +101,21 @@ class ArticleWorkflowController extends Controller
         $users = User::query()
             ->with('role:id,name,display_name')
             ->whereHas('role', fn ($query) => $query->where('name', $role))
-            ->when($role === 'sub_editor' && !$this->isGlobal($user) && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')), function ($query) use ($user) {
-                $query->whereIn('users.id', function ($subQuery) use ($user) {
+            ->when($role === 'sub_editor', function ($query) use ($user) {
+                // Exclude orphan Sub Editors (those with zero Editor links)
+                $query->whereIn('users.id', function ($subQuery) {
                     $subQuery->select('sub_editor_id')
-                        ->from('editor_sub_editor')
-                        ->where('editor_id', $user->id);
+                        ->from('editor_sub_editor');
                 });
+
+                // Editors see only Sub Editors linked to them
+                if (!$this->isGlobal($user) && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+                    $query->whereIn('users.id', function ($subQuery) use ($user) {
+                        $subQuery->select('sub_editor_id')
+                            ->from('editor_sub_editor')
+                            ->where('editor_id', $user->id);
+                    });
+                }
             })
             ->when($magazineId && in_array($role, ['editor', 'publisher'], true), function ($query) use ($magazineId, $role) {
                 $query->whereHas('magazines', function ($magazineQuery) use ($magazineId, $role) {
@@ -117,7 +126,7 @@ class ArticleWorkflowController extends Controller
                         });
                 });
             })
-            ->select(['id', 'name', 'role_id'])
+            ->select(['id', 'name', 'email', 'role_id'])
             ->orderBy('name')
             ->get();
 
@@ -352,6 +361,26 @@ class ArticleWorkflowController extends Controller
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
+
+        $subEditor = User::findOrFail($request->sub_editor_id);
+        
+        // 1. Must not be an orphan
+        if ($subEditor->assignedEditors()->count() === 0) {
+            return response()->json([
+                'message' => 'The selected Sub Editor has no Editor assignments and cannot be assigned to workflows.'
+            ], 422);
+        }
+
+        // 2. Editor must be linked to the Sub-Editor, unless global
+        $user = $request->user();
+        if (!$this->isGlobal($user)) {
+            $isLinked = $user->assignedSubEditors()->where('sub_editor_id', $subEditor->id)->exists();
+            if (!$isLinked) {
+                return response()->json([
+                    'message' => 'You can only assign Sub Editors linked to your desk.'
+                ], 422);
+            }
+        }
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus) {
             $assignment = SubEditorAssignment::updateOrCreate(
@@ -1364,11 +1393,7 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $user->id,
             'name' => $user->name,
-            'role' => $user->role ? [
-                'id' => $user->role->id,
-                'name' => $user->role->name,
-                'display_name' => $user->role->display_name,
-            ] : null,
+            'email' => $user->email,
         ];
     }
 

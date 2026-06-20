@@ -285,7 +285,7 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
         $this->assertSame([], $payload['article']['audit_logs']);
     }
 
-    public function test_editor_assignee_response_is_scoped_and_omits_email(): void
+    public function test_editor_assignee_response_is_scoped_and_includes_email(): void
     {
         DB::table('editor_sub_editor')->insert([
             'editor_id' => $this->editor->id,
@@ -298,7 +298,7 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
 
         $payload = $this->getJson("/api/admin/workflow/assignees?role=sub_editor&magazine_id={$this->magazine->id}")
             ->assertOk()
-            ->assertJsonMissing(['email' => $this->subEditor->email])
+            ->assertJsonFragment(['email' => $this->subEditor->email])
             ->json();
 
         $this->assertCount(1, $payload['data']);

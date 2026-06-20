@@ -62,6 +62,9 @@ class ArticleWorkflowTest extends TestCase
         $this->subEditor->magazines()->attach($this->magazine->id, ['role' => 'sub_editor']);
         $this->reviewer->magazines()->attach($this->magazine->id, ['role' => 'reviewer']);
 
+        // Link the sub editor to the editor
+        $this->editor->assignedSubEditors()->attach($this->subEditor->id);
+
         $this->article = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->author->id,

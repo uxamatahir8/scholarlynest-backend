@@ -165,7 +165,7 @@ class RbacController extends Controller
     {
         $loggedInUserId = $request->user()?->id;
         $roleFilter = $request->query('role');
-        $users = User::with(['role', 'magazines'])
+        $users = User::with(['role', 'magazines', 'assignedEditors'])
             ->when($loggedInUserId, function ($query) use ($loggedInUserId) {
                 return $query->where('id', '!=', $loggedInUserId);
             })
@@ -197,10 +197,41 @@ class RbacController extends Controller
             ], 400);
         }
 
-        $user->role_id = $request->role_id;
-        $user->save();
+        $assignedRole = Role::find($request->role_id);
+        $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
-        return response()->json($this->userPayload($user->load('role')));
+        if ($isSubEditor) {
+            $request->validate([
+                'editor_ids' => 'required|array|min:1',
+                'editor_ids.*' => 'integer|exists:users,id',
+            ], [
+                'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
+                'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
+            ]);
+
+            foreach ($request->editor_ids as $editorId) {
+                $editorUser = User::find($editorId);
+                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                    return response()->json([
+                        'message' => 'At least one Editor must be assigned to a Sub Editor.',
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                    ], 422);
+                }
+            }
+        }
+
+        DB::transaction(function () use ($user, $request, $isSubEditor) {
+            $user->role_id = $request->role_id;
+            $user->save();
+
+            if ($isSubEditor) {
+                $user->assignedEditors()->sync($request->editor_ids);
+            } else {
+                $user->assignedEditors()->detach();
+            }
+        });
+
+        return response()->json($this->userPayload($user->load(['role', 'assignedEditors'])));
     }
 
     /**
@@ -222,9 +253,32 @@ class RbacController extends Controller
             'magazine_ids.*' => 'integer|exists:magazines,id',
         ]);
 
+        $assignedRole = Role::find($request->role_id);
+        $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
+
+        if ($isSubEditor) {
+            $request->validate([
+                'editor_ids' => 'required|array|min:1',
+                'editor_ids.*' => 'integer|exists:users,id',
+            ], [
+                'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
+                'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
+            ]);
+
+            foreach ($request->editor_ids as $editorId) {
+                $editorUser = User::find($editorId);
+                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                    return response()->json([
+                        'message' => 'At least one Editor must be assigned to a Sub Editor.',
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                    ], 422);
+                }
+            }
+        }
+
         $randomPassword = Str::random(32);
 
-        $user = DB::transaction(function() use ($request, $randomPassword) {
+        $user = DB::transaction(function() use ($request, $randomPassword, $isSubEditor) {
             $user = User::create([
                 'name' => $request->name,
                 'email' => $request->email,
@@ -241,6 +295,10 @@ class RbacController extends Controller
                     $assignedRole->name,
                     $request->user()?->id
                 ));
+            }
+
+            if ($isSubEditor) {
+                $user->assignedEditors()->sync($request->editor_ids);
             }
 
             return $user;
@@ -287,7 +345,31 @@ class RbacController extends Controller
             ], 400);
         }
 
-        DB::transaction(function () use ($request, $user) {
+        $assignedRoleId = $request->has('role_id') ? $request->role_id : $user->role_id;
+        $assignedRole = Role::find($assignedRoleId);
+        $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
+
+        if ($isSubEditor) {
+            $request->validate([
+                'editor_ids' => 'required|array|min:1',
+                'editor_ids.*' => 'integer|exists:users,id',
+            ], [
+                'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
+                'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
+            ]);
+
+            foreach ($request->editor_ids as $editorId) {
+                $editorUser = User::find($editorId);
+                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                    return response()->json([
+                        'message' => 'At least one Editor must be assigned to a Sub Editor.',
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                    ], 422);
+                }
+            }
+        }
+
+        DB::transaction(function () use ($request, $user, $isSubEditor) {
             if ($request->has('name')) {
                 $user->name = $request->name;
             }
@@ -301,6 +383,14 @@ class RbacController extends Controller
                 $user->university_name = $request->university_name;
             }
             $user->save();
+
+            if ($isSubEditor) {
+                if ($request->has('editor_ids')) {
+                    $user->assignedEditors()->sync($request->editor_ids);
+                }
+            } else {
+                $user->assignedEditors()->detach();
+            }
 
             $assignedRole = $user->role;
             if ($assignedRole && $this->roleUsesMagazineAssignments($assignedRole->name)) {
@@ -435,6 +525,13 @@ class RbacController extends Controller
                 'name' => $user->role->name,
                 'display_name' => $user->role->display_name,
             ] : null,
+            'assigned_editors' => $user->hasRole('sub_editor') && $user->relationLoaded('assignedEditors')
+                ? $user->assignedEditors->map(fn ($e) => [
+                    'id' => $e->id,
+                    'name' => $e->name,
+                    'email' => $e->email
+                ])->values()->all()
+                : [],
             'magazines' => $user->relationLoaded('magazines')
                 ? $user->magazines->map(fn ($magazine) => [
                     'id' => $magazine->id,

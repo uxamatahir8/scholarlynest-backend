@@ -34,6 +34,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
 
             // 2. Truncate workflow tables in safe dependency order
             $tables = [
+                'editor_sub_editor',
                 'article_tag',
                 'article_share_clicks',
                 'article_author',
@@ -675,7 +676,15 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     ]);
 
                     if ($hasSubEditor) {
-                        $subEditorUser = $subEditors[$artIndex % 3];
+                        $validSubEditors = [];
+                        if ($editorUser->email === 'editor1@example.com') {
+                            $validSubEditors = [$subEditors[0], $subEditors[1]];
+                        } elseif ($editorUser->email === 'editor2@example.com') {
+                            $validSubEditors = [$subEditors[1], $subEditors[2]];
+                        } else {
+                            $validSubEditors = [$subEditors[2]];
+                        }
+                        $subEditorUser = $validSubEditors[$artIndex % count($validSubEditors)];
                         $seStatus = 'active';
                         $seCompletedAt = null;
                         $seRec = null;

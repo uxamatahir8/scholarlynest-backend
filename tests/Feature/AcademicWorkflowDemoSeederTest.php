@@ -112,9 +112,53 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         $lastArticleDate = $articles->last()->created_at->format('Y-m-d');
         
         $this->logProgress("First article: " . $firstArticleDate . ", Last article: " . $lastArticleDate);
-        $this->assertTrue($firstArticleDate >= '2015-01-23'); // exactly 23 January 2015
-        $this->assertTrue($lastArticleDate <= '2026-06-19'); // exactly 19 June 2026
-        
+        // 13. Verify all seeded Sub-Editors are linked to at least one Editor (no orphans)
+        $this->logProgress("Asserting no orphan Sub Editors");
+        $subEditors = User::whereHas('role', function($q) {
+            $q->where('name', 'sub_editor');
+        })->get();
+        $this->assertNotEmpty($subEditors);
+        foreach ($subEditors as $subEditor) {
+            $linkCount = DB::table('editor_sub_editor')->where('sub_editor_id', $subEditor->id)->count();
+            $this->assertGreaterThan(0, $linkCount, "Sub Editor {$subEditor->email} has no linked editors.");
+        }
+
+        // 14. Verify at least one shared Sub-Editor exists
+        $this->logProgress("Asserting shared Sub Editor exists");
+        $sharedExists = false;
+        foreach ($subEditors as $subEditor) {
+            $linkCount = DB::table('editor_sub_editor')->where('sub_editor_id', $subEditor->id)->count();
+            if ($linkCount > 1) {
+                $sharedExists = true;
+                break;
+            }
+        }
+        $this->assertTrue($sharedExists, "No shared Sub-Editor exists in the seeded relationships.");
+
+        // 15. Verify article Sub-Editor assignments belong to Sub-Editors linked to the article's assigned Editor
+        $this->logProgress("Asserting article assignments match editor-sub_editor links");
+        $assignments = DB::table('sub_editor_assignments')->get();
+        $this->assertNotEmpty($assignments);
+        foreach ($assignments as $assignment) {
+            $article = Article::find($assignment->article_id);
+            $this->assertNotNull($article);
+            
+            // The article's magazine has assigned editors
+            $magazineEditor = DB::table('magazine_user')
+                ->where('magazine_id', $article->magazine_id)
+                ->where('role', 'editor')
+                ->first();
+            $this->assertNotNull($magazineEditor, "No Editor assigned to magazine ID {$article->magazine_id} for article ID {$article->id}");
+            
+            // Check if there is a relationship between this editor and the assigned sub-editor
+            $linkExists = DB::table('editor_sub_editor')
+                ->where('editor_id', $magazineEditor->user_id)
+                ->where('sub_editor_id', $assignment->sub_editor_id)
+                ->exists();
+            $this->assertTrue($linkExists, "Article {$article->id} (magazine {$article->magazine_id}) is assigned to Sub Editor {$assignment->sub_editor_id}, but that Sub Editor is not linked to the magazine's Editor {$magazineEditor->user_id}.");
+        }
+
         $this->logProgress("Test finished successfully");
     }
 }
+

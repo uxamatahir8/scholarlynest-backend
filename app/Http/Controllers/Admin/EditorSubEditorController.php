@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
 
 class EditorSubEditorController extends Controller
 {
@@ -18,17 +19,11 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
-            $subEditors = User::whereHas('role', function ($query) {
-                $query->where('name', 'sub_editor')->orWhere('name', 'sub-editor');
-            })->get();
-        } else {
-            $subEditors = $user->assignedSubEditors;
-        }
+        $subEditors = $user->assignedSubEditors;
 
         $data = $subEditors->map(function ($subEditor) {
             return [
@@ -37,6 +32,7 @@ class EditorSubEditorController extends Controller
                 'email' => $subEditor->email,
                 'created_at' => $subEditor->created_at,
                 'assigned_at' => ($subEditor->pivot && isset($subEditor->pivot->created_at)) ? $subEditor->pivot->created_at : $subEditor->created_at,
+                'editors_count' => $subEditor->assignedEditors()->count(),
             ];
         });
 
@@ -50,7 +46,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -64,40 +60,62 @@ class EditorSubEditorController extends Controller
             return response()->json(['message' => 'Sub Editor role not found in system.'], 500);
         }
 
-        $subEditor = User::where('email', $validated['email'])->first();
+        try {
+            $result = DB::transaction(function () use ($validated, $role, $user) {
+                $subEditor = User::where('email', $validated['email'])->first();
 
-        if (!$subEditor) {
-            $subEditor = User::create([
-                'name' => $validated['name'],
-                'email' => $validated['email'],
-                'password' => Hash::make('Password123!'),
-                'role_id' => $role->id,
-                'email_verified_at' => now(),
-                'needs_password_reset' => true,
-                'university_name' => $user->university_name,
-                'current_email_verified' => true,
-            ]);
-        } else {
-            // Update to sub_editor role
-            $subEditor->role_id = $role->id;
-            $subEditor->save();
+                if (!$subEditor) {
+                    $subEditor = User::create([
+                        'name' => $validated['name'],
+                        'email' => $validated['email'],
+                        'password' => Hash::make('Password123!'),
+                        'role_id' => $role->id,
+                        'email_verified_at' => now(),
+                        'needs_password_reset' => true,
+                        'university_name' => $user->university_name,
+                        'current_email_verified' => true,
+                    ]);
+                } else {
+                    $subEditor->role_id = $role->id;
+                    $subEditor->save();
+                }
+
+                if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+                    if ($user->assignedSubEditors()->where('sub_editor_id', $subEditor->id)->exists()) {
+                        return [
+                            'status' => 200,
+                            'message' => 'Sub Editor is already assigned to you.',
+                            'sub_editor' => $subEditor
+                        ];
+                    }
+                    $user->assignedSubEditors()->attach($subEditor->id, ['created_by' => $user->id]);
+                }
+
+                if ($subEditor->assignedEditors()->count() === 0) {
+                    throw new \Exception('This Sub Editor must remain assigned to at least one Editor.', 422);
+                }
+
+                return [
+                    'status' => 201,
+                    'message' => 'Sub Editor linked successfully.',
+                    'sub_editor' => $subEditor
+                ];
+            });
+
+            return response()->json([
+                'message' => $result['message'],
+                'sub_editor' => [
+                    'id' => $result['sub_editor']->id,
+                    'name' => $result['sub_editor']->name,
+                    'email' => $result['sub_editor']->email,
+                ]
+            ], $result['status']);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => $e->getMessage()
+            ], $e->getCode() === 422 ? 422 : 500);
         }
-
-        // Link with Editor if logged in user is editor
-        if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            if (!$user->assignedSubEditors()->where('sub_editor_id', $subEditor->id)->exists()) {
-                $user->assignedSubEditors()->attach($subEditor->id, ['created_by' => $user->id]);
-            }
-        }
-
-        return response()->json([
-            'message' => 'Sub Editor linked successfully.',
-            'sub_editor' => [
-                'id' => $subEditor->id,
-                'name' => $subEditor->name,
-                'email' => $subEditor->email,
-            ]
-        ], 201);
     }
 
     /**
@@ -107,13 +125,25 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            $user->assignedSubEditors()->detach($subEditorId);
+        $subEditor = User::findOrFail($subEditorId);
+        $editorsCount = $subEditor->assignedEditors()->count();
+
+        $isLinked = $user->assignedSubEditors()->where('sub_editor_id', $subEditorId)->exists();
+        if (!$isLinked) {
+            return response()->json(['message' => 'Not assigned to this Sub Editor.'], 400);
         }
+
+        if ($editorsCount <= 1) {
+            return response()->json([
+                'message' => 'This Sub Editor must remain assigned to at least one Editor.'
+            ], 422);
+        }
+
+        $user->assignedSubEditors()->detach($subEditorId);
 
         return response()->json(['message' => 'Sub Editor unassigned successfully.']);
     }
