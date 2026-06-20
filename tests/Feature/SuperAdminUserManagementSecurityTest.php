@@ -10,6 +10,7 @@ use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class SuperAdminUserManagementSecurityTest extends TestCase
 {
@@ -587,5 +588,362 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         $this->assertArrayHasKey('id', $editorRow);
         $this->assertArrayHasKey('name', $editorRow);
         $this->assertArrayHasKey('email', $editorRow);
+    }
+
+    /**
+     * Super Admin can retrieve safe user detail.
+     */
+    public function test_super_admin_can_retrieve_safe_user_detail(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $targetUser = User::factory()->create([
+            'role_id' => $this->roles['editor']->id,
+            'google_id' => '99998888',
+            'verification_code' => 'xxx111'
+        ]);
+
+        $response = $this->getJson("/api/admin/users/{$targetUser->id}");
+        $response->assertOk();
+        $userRow = $response->json();
+
+        // Verify shape and banned keys
+        $expectedKeys = ['id', 'name', 'email', 'profile_image', 'university', 'organization', 'status', 'roles', 'assigned_editors', 'created_at'];
+        foreach ($expectedKeys as $key) {
+            $this->assertArrayHasKey($key, $userRow);
+        }
+
+        $sensitiveKeys = ['password', 'password_hash', 'remember_token', 'access_token', 'verification_code', 'google_id', 'permissions'];
+        foreach ($sensitiveKeys as $key) {
+            $this->assertArrayNotHasKey($key, $userRow);
+        }
+    }
+
+    /**
+     * Legacy Admin and other roles cannot retrieve user detail.
+     */
+    public function test_other_roles_cannot_retrieve_user_detail(): void
+    {
+        $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $nonSuperAdminRoles = ['admin', 'author', 'editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'];
+
+        foreach ($nonSuperAdminRoles as $roleName) {
+            Sanctum::actingAs($this->user($roleName));
+            $this->getJson("/api/admin/users/{$targetUser->id}")->assertForbidden();
+        }
+    }
+
+    /**
+     * Super Admin can update name/email without password.
+     */
+    public function test_super_admin_can_update_user_without_password(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $originalPassword = 'Password123!';
+        $targetUser = User::factory()->create([
+            'role_id' => $this->roles['editor']->id,
+            'password' => Hash::make($originalPassword),
+        ]);
+
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => 'Updated Name',
+            'email' => 'updated.email@example.com',
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+            'password' => '',
+            'password_confirmation' => ''
+        ]);
+
+        $response->assertOk();
+        $this->assertDatabaseHas('users', [
+            'id' => $targetUser->id,
+            'name' => 'Updated Name',
+            'email' => 'updated.email@example.com',
+        ]);
+
+        // Verify original password is still valid
+        $user = User::find($targetUser->id);
+        $this->assertTrue(Hash::check($originalPassword, $user->password));
+    }
+
+    /**
+     * Super Admin can update password when valid password and confirmation are provided.
+     */
+    public function test_super_admin_can_update_password_when_valid(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+
+        $newPassword = 'NewSecurePassword123!';
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => $targetUser->name,
+            'email' => $targetUser->email,
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+            'password' => $newPassword,
+            'password_confirmation' => $newPassword
+        ]);
+
+        $response->assertOk();
+        $user = User::find($targetUser->id);
+        $this->assertTrue(Hash::check($newPassword, $user->password));
+    }
+
+    /**
+     * Mismatched password confirmation fails safely.
+     */
+    public function test_update_mismatched_password_fails(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => $targetUser->name,
+            'email' => $targetUser->email,
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+            'password' => 'NewPass123!',
+            'password_confirmation' => 'MismatchPass123!'
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors('password');
+    }
+
+    /**
+     * User detail payload and Update response excludes sensitive fields.
+     */
+    public function test_update_response_excludes_sensitive_fields(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => 'Safe Edit',
+            'email' => 'safe.edit@example.com',
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+        ]);
+
+        $response->assertOk();
+        $userRow = $response->json('data');
+
+        $this->assertArrayHasKey('id', $userRow);
+        $this->assertArrayHasKey('name', $userRow);
+        $this->assertArrayHasKey('email', $userRow);
+        $this->assertArrayHasKey('roles', $userRow);
+        $this->assertArrayHasKey('status', $userRow);
+        $this->assertArrayHasKey('created_at', $userRow);
+
+        $sensitiveKeys = ['password', 'password_hash', 'remember_token', 'access_token', 'verification_code', 'google_id', 'permissions'];
+        foreach ($sensitiveKeys as $key) {
+            $this->assertArrayNotHasKey($key, $userRow);
+        }
+    }
+
+    /**
+     * Super Admin can update a Sub Editor while retaining assigned Editors.
+     */
+    public function test_update_sub_editor_retaining_editors(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create(['role_id' => $this->roles['sub_editor']->id]);
+        $subEditor->assignedEditors()->sync([$editor->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => 'Sub Editor Maintained Name',
+            'email' => $subEditor->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+            'editor_ids' => [$editor->id]
+        ]);
+
+        $response->assertOk();
+        $sub = User::find($subEditor->id);
+        $this->assertCount(1, $sub->assignedEditors);
+    }
+
+    /**
+     * Super Admin cannot update a Sub Editor to zero Editors.
+     */
+    public function test_update_sub_editor_to_zero_editors_fails(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create(['role_id' => $this->roles['sub_editor']->id]);
+        $subEditor->assignedEditors()->sync([$editor->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => 'Sub Editor Bad Update',
+            'email' => $subEditor->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+            'editor_ids' => []
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors('editor_ids');
+    }
+
+    /**
+     * Super Admin can add an Editor to a Sub Editor.
+     */
+    public function test_add_editor_to_sub_editor(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor1 = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $editor2 = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create(['role_id' => $this->roles['sub_editor']->id]);
+        $subEditor->assignedEditors()->sync([$editor1->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => $subEditor->name,
+            'email' => $subEditor->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+            'editor_ids' => [$editor1->id, $editor2->id]
+        ]);
+
+        $response->assertOk();
+        $sub = User::find($subEditor->id);
+        $this->assertCount(2, $sub->assignedEditors);
+    }
+
+    /**
+     * Super Admin can remove an Editor when at least one Editor remains.
+     */
+    public function test_remove_editor_retaining_one(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor1 = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $editor2 = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create(['role_id' => $this->roles['sub_editor']->id]);
+        $subEditor->assignedEditors()->sync([$editor1->id, $editor2->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => $subEditor->name,
+            'email' => $subEditor->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+            'editor_ids' => [$editor1->id]
+        ]);
+
+        $response->assertOk();
+        $sub = User::find($subEditor->id);
+        $this->assertCount(1, $sub->assignedEditors);
+        $this->assertEquals($editor1->id, $sub->assignedEditors[0]->id);
+    }
+
+    /**
+     * A user changed into Sub Editor requires valid Editor assignment.
+     */
+    public function test_user_transition_to_sub_editor_requires_editors(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $targetUser = User::factory()->create(['role_id' => $this->roles['author']->id]);
+
+        // Attempt without editor_ids
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => $targetUser->name,
+            'email' => $targetUser->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+        ]);
+        $response->assertStatus(422);
+
+        // Attempt with valid editor_ids
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $response2 = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => $targetUser->name,
+            'email' => $targetUser->email,
+            'role_id' => $this->roles['sub_editor']->id,
+            'status' => 'active',
+            'editor_ids' => [$editor->id]
+        ]);
+        $response2->assertOk();
+        $user = User::find($targetUser->id);
+        $this->assertEquals($this->roles['sub_editor']->id, $user->role_id);
+        $this->assertCount(1, $user->assignedEditors);
+    }
+
+    /**
+     * A user changed away from Sub Editor safely detaches pivot links.
+     */
+    public function test_user_transition_away_from_sub_editor_detaches_pivots(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create(['role_id' => $this->roles['sub_editor']->id]);
+        $subEditor->assignedEditors()->sync([$editor->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => $subEditor->name,
+            'email' => $subEditor->email,
+            'role_id' => $this->roles['author']->id,
+            'status' => 'active',
+        ]);
+
+        $response->assertOk();
+        $user = User::find($subEditor->id);
+        $this->assertEquals($this->roles['author']->id, $user->role_id);
+        
+        $pivotCount = DB::table('editor_sub_editor')
+            ->where('sub_editor_id', $subEditor->id)
+            ->count();
+        $this->assertEquals(0, $pivotCount);
+    }
+
+    /**
+     * Failed pivot synchronization rolls back user/role changes.
+     */
+    public function test_failed_pivot_sync_rolls_back_update_transaction(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $subEditor = User::factory()->create([
+            'name' => 'Original Sub Editor Name',
+            'email' => 'rollback-update-test@example.com',
+            'role_id' => $this->roles['sub_editor']->id
+        ]);
+        $subEditor->assignedEditors()->sync([$editor->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$subEditor->id}", [
+            'name' => 'Mismatched Role Attempt Name',
+            'email' => 'rollback-update-test@example.com',
+            'role_id' => $this->roles['author']->id, // role change
+            'status' => 'active',
+            'editor_ids' => []
+        ]);
+
+        $response->assertStatus(500);
+        
+        // Assert name and role are rolled back
+        $user = User::find($subEditor->id);
+        $this->assertEquals('Original Sub Editor Name', $user->name);
+        $this->assertEquals($this->roles['sub_editor']->id, $user->role_id);
+    }
+
+    /**
+     * Non-Sub Editor update does not create Editor–Sub Editor pivot links.
+     */
+    public function test_non_sub_editor_update_does_not_create_pivots(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
+        $targetUser = User::factory()->create(['role_id' => $this->roles['author']->id]);
+
+        $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
+            'name' => 'Still Author',
+            'email' => $targetUser->email,
+            'role_id' => $this->roles['author']->id,
+            'status' => 'active',
+            'editor_ids' => [$editor->id] // send anyway
+        ]);
+
+        $response->assertOk();
+        $pivotCount = DB::table('editor_sub_editor')
+            ->where('sub_editor_id', $targetUser->id)
+            ->count();
+        $this->assertEquals(0, $pivotCount);
     }
 }

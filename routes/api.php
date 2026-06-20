@@ -156,6 +156,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/stats', [ArticleController::class, 'adminStats']);
         Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
         Route::post('/users', [RbacController::class, 'store'])->middleware('super-admin');
+        Route::get('/users/{id}', [RbacController::class, 'show'])->middleware('super-admin');
+        Route::patch('/users/{id}', [RbacController::class, 'update'])->middleware('super-admin');
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
         Route::get('/contact-messages', [ContactController::class, 'getMessages']);
         Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);

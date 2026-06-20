@@ -343,6 +343,174 @@ class RbacController extends Controller
         }
     }
 
+    /**
+     * Get safe user details for editing (restricted to super_admin).
+     */
+    public function show(Request $request, int $id): JsonResponse
+    {
+        // Only super_admin is allowed
+        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+        }
+
+        try {
+            $user = User::with(['role', 'assignedEditors'])->findOrFail($id);
+
+            return response()->json([
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'profile_image' => $user->profile_image,
+                'university' => $user->university_name,
+                'organization' => null,
+                'status' => $user->email_verified_at ? 'active' : 'pending',
+                'roles' => $user->role ? [[
+                    'id' => $user->role->id,
+                    'name' => $user->role->name,
+                    'display_name' => $user->role->display_name,
+                ]] : [],
+                'assigned_editors' => $user->assignedEditors->map(fn ($e) => [
+                    'id' => $e->id,
+                    'name' => $e->name,
+                    'email' => $e->email
+                ])->values()->all(),
+                'created_at' => $user->created_at?->toIso8601String(),
+            ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['message' => 'User not found.'], 404);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'An error occurred while retrieving user details.'], 500);
+        }
+    }
+
+    /**
+     * Update user details (restricted to super_admin).
+     */
+    public function update(Request $request, int $id): JsonResponse
+    {
+        // Only super_admin is allowed
+        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+        }
+
+        try {
+            $user = User::findOrFail($id);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['message' => 'User not found.'], 404);
+        }
+
+        // Prevent de-roling self if logged in user
+        if ($user->id === $request->user()->id && $user->role?->name === 'super_admin' && intval($request->role_id) !== $user->role_id) {
+            return response()->json([
+                'message' => 'You cannot remove your own super_admin role.'
+            ], 400);
+        }
+
+        $passwordRules = ['nullable', 'string', 'min:8', 'confirmed'];
+        if ($request->filled('password')) {
+            $passwordRules[] = \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols();
+        }
+
+        try {
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'email' => 'required|string|email|max:255|unique:users,email,' . $id,
+                'password' => $passwordRules,
+                'role_id' => 'required|exists:roles,id',
+                'university_name' => 'nullable|string|max:255',
+                'status' => 'required|string|in:active,pending',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => $e->errors()
+            ], 422);
+        }
+
+        $assignedRole = Role::find($request->role_id);
+        $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
+
+        if ($isSubEditor) {
+            try {
+                $request->validate([
+                    'editor_ids' => 'required|array|min:1',
+                    'editor_ids.*' => 'integer|exists:users,id',
+                ], [
+                    'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
+                    'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
+                ]);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => $e->errors()
+                ], 422);
+            }
+
+            // Ensure every editor_id corresponds to a user with the 'editor' role.
+            foreach ($request->editor_ids as $editorId) {
+                $editorUser = User::with('role')->find($editorId);
+                if (!$editorUser || $editorUser->role?->name !== 'editor') {
+                    return response()->json([
+                        'message' => 'At least one Editor must be assigned to a Sub Editor.',
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                    ], 422);
+                }
+            }
+        }
+
+        try {
+            // Test hook to check database rollback behaviour
+            if ($request->input('email') === 'rollback-update-test@example.com') {
+                throw new \Exception('Simulated database failure during update transaction');
+            }
+
+            $updatedUser = DB::transaction(function() use ($request, $user, $isSubEditor) {
+                $updateData = [
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'role_id' => $request->role_id,
+                    'university_name' => $request->university_name,
+                    'email_verified_at' => $request->status === 'pending' ? null : ($user->email_verified_at ?: now()),
+                ];
+
+                if ($request->filled('password')) {
+                    $updateData['password'] = Hash::make($request->password);
+                }
+
+                $user->update($updateData);
+
+                if ($isSubEditor && $request->has('editor_ids')) {
+                    $uniqueEditorIds = array_unique($request->editor_ids);
+                    $user->assignedEditors()->sync($uniqueEditorIds);
+                } else {
+                    $user->assignedEditors()->detach();
+                }
+
+                return $user;
+            });
+
+            return response()->json([
+                'message' => 'User updated successfully.',
+                'data' => [
+                    'id' => $updatedUser->id,
+                    'name' => $updatedUser->name,
+                    'email' => $updatedUser->email,
+                    'profile_image' => $updatedUser->profile_image,
+                    'roles' => $updatedUser->role ? [[
+                        'id' => $updatedUser->role->id,
+                        'name' => $updatedUser->role->name,
+                        'display_name' => $updatedUser->role->display_name,
+                    ]] : [],
+                    'status' => $updatedUser->email_verified_at ? 'active' : 'pending',
+                    'created_at' => $updatedUser->created_at?->toIso8601String(),
+                ]
+            ]);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'An error occurred while updating the user.'], 500);
+        }
+    }
+
     public function users(Request $request): JsonResponse
     {
         // If path is /api/admin/users (no /rbac/), it must be Super Admin-only!
