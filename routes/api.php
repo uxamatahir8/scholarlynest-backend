@@ -62,6 +62,7 @@ Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'pu
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
 Route::get('/articles/latest', [ArticleController::class, 'latest']);
+Route::get('/public/homepage-stats', [ArticleController::class, 'publicHomepageStats']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);

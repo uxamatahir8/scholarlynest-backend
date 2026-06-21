@@ -8,6 +8,7 @@ use App\Http\Requests\StoreArticleRequest;
 use App\Http\Requests\UpdateArticleRequest;
 use App\Models\Article;
 use App\Models\Magazine;
+use App\Models\MagazineIssue;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\ArticleFile;
@@ -131,6 +132,37 @@ class ArticleController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => $articles
+        ]);
+    }
+
+
+    /**
+     * GET /api/public/homepage-stats
+     * Safe aggregate counts for public homepage discovery surfaces.
+     */
+    public function publicHomepageStats(): JsonResponse
+    {
+        $publishedArticleIds = Article::where('status', ArticleStatus::PUBLISHED)->pluck('id');
+
+        $primaryAuthorCount = Article::where('status', ArticleStatus::PUBLISHED)
+            ->whereNotNull('user_id')
+            ->distinct('user_id')
+            ->count('user_id');
+
+        $coAuthorCount = \DB::table('article_author')
+            ->whereIn('article_id', $publishedArticleIds)
+            ->whereNotNull('co_author_name')
+            ->where('co_author_name', '!=', '')
+            ->distinct('co_author_name')
+            ->count('co_author_name');
+
+        return response()->json([
+            'published_articles_count' => $publishedArticleIds->count(),
+            'active_magazines_count' => Magazine::count(),
+            'published_issues_count' => MagazineIssue::where(function ($query) {
+                $query->where('status', 'published')->orWhere('is_published', true);
+            })->count(),
+            'public_contributors_count' => $primaryAuthorCount + $coAuthorCount,
         ]);
     }
 
