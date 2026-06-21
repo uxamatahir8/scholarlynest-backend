@@ -1058,6 +1058,8 @@ class ArticleController extends Controller
             'published_month' => $article->published_month,
             'page_start' => $article->page_start,
             'page_end' => $article->page_end,
+            'article_type' => $article->article_type,
+            'article_category' => $article->article_category,
             'seo_title' => $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest'),
             'seo_description' => $article->seo_description ?: Str::limit(strip_tags((string) $article->abstract), 160, ''),
             'seo_keywords' => $article->seo_keywords ?: $article->tags->pluck('name')->implode(', '),
