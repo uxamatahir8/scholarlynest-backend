@@ -25,7 +25,7 @@ class AuthController extends Controller
     /**
      * Generate and dispatch a beautiful HTML verification email.
      */
-    private function sendHtmlEmail(string $email, string $subject, string $title, string $description, string $code): void
+    private function sendHtmlEmail(string $email, string $subject, string $title, string $description, string $code, ?array $action = null): void
     {
         $user = User::where('email', $email)->first();
         $userId = $user ? $user->id : null;
@@ -41,7 +41,7 @@ class AuthController extends Controller
             $subject,
             $title,
             $bodyLines,
-            null,
+            $action,
             'high',
             $userId
         );
@@ -698,12 +698,20 @@ class AuthController extends Controller
             ]
         );
 
+        $frontendUrl = env('APP_URL_FRONTEND', 'https://dev.scholarlynest.com');
+        $resetUrl = rtrim($frontendUrl, '/') . '/reset-password?email=' . urlencode($request->email) . '&code=' . urlencode($code);
+        $action = [
+            'text' => 'Reset Your Password',
+            'url' => $resetUrl,
+        ];
+
         $this->sendHtmlEmail(
             $request->email,
             "Reset Your Password",
             "Password Reset Request",
-            "We received a request to reset your password. Use the 6-digit confirmation code below to verify ownership and authorization.",
-            $code
+            "We received a request to reset your password. Use the 6-digit confirmation code below or click the link to verify ownership and authorize.",
+            $code,
+            $action
         );
 
         return response()->json([
