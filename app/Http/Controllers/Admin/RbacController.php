@@ -778,11 +778,11 @@ class RbacController extends Controller
         });
 
         // Generate reset code/token for password creation
-        $code = strval(mt_rand(100000, 999999));
+        $code = strval(random_int(100000, 999999));
         DB::table('password_reset_tokens')->updateOrInsert(
             ['email' => $user->email],
             [
-                'token' => $code,
+                'token' => Hash::make($code),
                 'created_at' => now(),
             ]
         );
