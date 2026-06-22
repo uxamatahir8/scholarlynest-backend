@@ -283,10 +283,11 @@ class MagazineTest extends TestCase
         $response = $this->getJson("/api/magazines/biology-today/table-of-contents");
 
         $response->assertStatus(200)
-                 ->assertJsonCount(1, 'issues')
-                 ->assertJsonCount(2, 'issues.0.articles')
-                 ->assertJsonPath('issues.0.articles.0.slug', 'article-two')
-                 ->assertJsonPath('issues.0.articles.1.slug', 'article-one')
+                 ->assertJsonPath('table_of_contents.2026.year', 2026)
+                 ->assertJsonCount(1, 'table_of_contents.2026.months.10.articles')
+                 ->assertJsonCount(1, 'table_of_contents.2026.months.09.articles')
+                 ->assertJsonPath('table_of_contents.2026.months.10.articles.0.slug', 'article-two')
+                 ->assertJsonPath('table_of_contents.2026.months.09.articles.0.slug', 'article-one')
                  ->assertJsonMissing(['slug' => 'article-pending']);
     }
 
@@ -682,9 +683,9 @@ class MagazineTest extends TestCase
 
         $response->assertStatus(200)
             ->assertJsonPath('magazine.slug', 'biology')
-            ->assertJsonPath('issues.0.issue.volume_number', 2)
-            ->assertJsonPath('issues.0.articles.0.title', 'Published Biology')
-            ->assertJsonPath('issues.0.articles.0.page_start', 11)
+            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.issue.volume_number', 2)
+            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.title', 'Published Biology')
+            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.page_start', 11)
             ->assertJsonMissing(['title' => 'Unpublished Biology'])
             ->assertJsonMissing(['title' => 'Published Chemistry'])
             ->assertJsonMissing(['full_text' => 'Private full text']);
@@ -761,7 +762,7 @@ class MagazineTest extends TestCase
 
         $this->getJson('/api/magazines/empty/table-of-contents')
             ->assertStatus(200)
-            ->assertJsonCount(0, 'issues');
+            ->assertJsonPath('table_of_contents', []);
     }
 
 }
