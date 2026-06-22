@@ -34,6 +34,7 @@ use Illuminate\Support\Facades\Route;
 // Public Dynamic CMS Pages Fetching
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
+Route::get('/public/faqs', [FaqController::class, 'publicIndex']);
 
 // Public Footer & Dynamic Custom Pages
 Route::get('/public/footer', [\App\Http\Controllers\FooterController::class, 'index']);
