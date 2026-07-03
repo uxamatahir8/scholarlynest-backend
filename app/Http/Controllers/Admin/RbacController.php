@@ -8,6 +8,7 @@ use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\Setting;
+use App\Models\Magazine;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,6 +32,13 @@ class RbacController extends Controller
 
     private const REGISTRATION_ELIGIBLE_ROLE_NAMES = [
         'author',
+    ];
+
+    private const MAGAZINE_ASSIGNMENT_ROLE_NAMES = [
+        'editor',
+        'magazine_editor',
+        'publisher',
+        'proofreader',
     ];
 
     public function __construct(NotificationService $notificationService)
@@ -369,6 +377,7 @@ class RbacController extends Controller
         }
 
         $assignedRole = Role::find($request->role_id);
+        $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -405,7 +414,7 @@ class RbacController extends Controller
                 throw new \Exception('Simulated database failure during transaction');
             }
 
-            $user = DB::transaction(function() use ($request, $isSubEditor) {
+            $user = DB::transaction(function() use ($request, $isSubEditor, $assignedRole, $magazineIds) {
                 $user = User::create([
                     'name' => $request->name,
                     'email' => $request->email,
@@ -419,6 +428,14 @@ class RbacController extends Controller
                     $uniqueEditorIds = array_unique($request->editor_ids);
                     $user->assignedEditors()->sync($uniqueEditorIds);
                 }
+
+                $this->syncRoleMagazineAssignments(
+                    $user,
+                    null,
+                    $assignedRole,
+                    $magazineIds,
+                    $request->user()?->id
+                );
 
                 return $user;
             });
@@ -456,7 +473,7 @@ class RbacController extends Controller
         }
 
         try {
-            $user = User::with(['role', 'assignedEditors'])->findOrFail($id);
+            $user = User::with(['role', 'assignedEditors', 'magazines'])->findOrFail($id);
 
             return response()->json([
                 'id' => $user->id,
@@ -476,6 +493,7 @@ class RbacController extends Controller
                     'name' => $e->name,
                     'email' => $e->email
                 ])->values()->all(),
+                'assigned_magazines' => $this->safeAssignedMagazinesForEdit($user),
                 'created_at' => $user->created_at?->toIso8601String(),
             ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
@@ -529,7 +547,9 @@ class RbacController extends Controller
             ], 422);
         }
 
+        $previousRole = $user->role;
         $assignedRole = Role::find($request->role_id);
+        $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -566,7 +586,7 @@ class RbacController extends Controller
                 throw new \Exception('Simulated database failure during update transaction');
             }
 
-            $updatedUser = DB::transaction(function() use ($request, $user, $isSubEditor) {
+            $updatedUser = DB::transaction(function() use ($request, $user, $isSubEditor, $previousRole, $assignedRole, $magazineIds) {
                 $updateData = [
                     'name' => $request->name,
                     'email' => $request->email,
@@ -587,6 +607,14 @@ class RbacController extends Controller
                 } else {
                     $user->assignedEditors()->detach();
                 }
+
+                $this->syncRoleMagazineAssignments(
+                    $user,
+                    $previousRole,
+                    $assignedRole,
+                    $magazineIds,
+                    $request->user()?->id
+                );
 
                 return $user;
             });
@@ -650,6 +678,59 @@ class RbacController extends Controller
         }
 
         return response()->json($users->map(fn (User $user) => $this->userPayload($user))->values());
+    }
+
+    public function magazineAssignmentOptions(Request $request): JsonResponse
+    {
+        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
+        }
+
+        $magazines = Magazine::query()
+            ->select(['id', 'title', 'slug'])
+            ->with(['editors' => function ($query) {
+                $query->select(['users.id', 'users.name', 'users.role_id'])
+                    ->with('role:id,name')
+                    ->whereHas('role', function ($roleQuery) {
+                        $roleQuery->whereIn('name', self::MAGAZINE_ASSIGNMENT_ROLE_NAMES);
+                    })
+                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher', 'proofreader'])
+                    ->orderBy('users.name');
+            }])
+            ->orderBy('title')
+            ->get()
+            ->map(function (Magazine $magazine) {
+                $summary = [
+                    'editors' => [],
+                    'publishers' => [],
+                    'proofreaders' => [],
+                ];
+
+                foreach ($magazine->editors as $user) {
+                    $pivotRole = str_replace('-', '_', (string) $user->pivot?->role);
+                    $roleName = str_replace('-', '_', (string) $user->role?->name);
+
+                    if (in_array($pivotRole, ['editor', 'magazine_editor'], true) || in_array($roleName, ['editor', 'magazine_editor'], true)) {
+                        $summary['editors'][] = ['id' => $user->id, 'name' => $user->name];
+                    } elseif ($pivotRole === 'publisher' || $roleName === 'publisher') {
+                        $summary['publishers'][] = ['id' => $user->id, 'name' => $user->name];
+                    } elseif ($pivotRole === 'proofreader' || $roleName === 'proofreader') {
+                        $summary['proofreaders'][] = ['id' => $user->id, 'name' => $user->name];
+                    }
+                }
+
+                return [
+                    'id' => $magazine->id,
+                    'title' => $magazine->title,
+                    'slug' => $magazine->slug,
+                    'assignment_summary' => collect($summary)
+                        ->map(fn (array $users) => collect($users)->unique('id')->values()->all())
+                        ->all(),
+                ];
+            })
+            ->values();
+
+        return response()->json(['magazines' => $magazines]);
     }
 
     /**
@@ -1016,11 +1097,130 @@ class RbacController extends Controller
     {
         return in_array(str_replace('-', '_', $roleName), [
             'editor',
-            'sub_editor',
-            'reviewer',
             'publisher',
             'magazine_editor',
+            'proofreader',
         ], true);
+    }
+
+    private function validateMagazineAssignmentRequest(Request $request, ?Role $role): array
+    {
+        $requiresMagazineAssignment = $role && $this->roleUsesMagazineAssignments($role->name);
+        $magazineRules = [
+            $requiresMagazineAssignment ? 'required' : 'nullable',
+            'array',
+        ];
+
+        if ($requiresMagazineAssignment) {
+            $magazineRules[] = 'min:1';
+        }
+
+        try {
+            $validated = $request->validate([
+                'magazine_ids' => $magazineRules,
+                'magazine_ids.*' => 'integer|distinct|exists:magazines,id',
+            ], [
+                'magazine_ids.required' => 'At least one journal must be assigned for this role.',
+                'magazine_ids.min' => 'At least one journal must be assigned for this role.',
+                'magazine_ids.*.distinct' => 'Each selected journal may only be assigned once.',
+                'magazine_ids.*.exists' => 'One or more selected journals are no longer available.',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+        }
+
+        if (!$requiresMagazineAssignment) {
+            return [];
+        }
+
+        return collect($validated['magazine_ids'] ?? [])
+            ->map(fn ($magazineId) => (int) $magazineId)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function syncRoleMagazineAssignments(User $user, ?Role $previousRole, ?Role $selectedRole, array $magazineIds, ?int $assignedBy): void
+    {
+        $previousPivotRoles = $previousRole ? $this->pivotRolesForUserRole($previousRole->name) : [];
+        $selectedPivotRoles = $selectedRole ? $this->pivotRolesForUserRole($selectedRole->name) : [];
+        $rolesToReplace = collect($previousPivotRoles)
+            ->merge($selectedPivotRoles)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($rolesToReplace === []) {
+            return;
+        }
+
+        DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where(function ($query) use ($rolesToReplace) {
+                $query->whereIn('role', $rolesToReplace)
+                    ->orWhereNull('role');
+            })
+            ->delete();
+
+        if (!$selectedRole || !$this->roleUsesMagazineAssignments($selectedRole->name)) {
+            return;
+        }
+
+        $pivotRole = $this->pivotRoleForUserRole($selectedRole->name);
+        $now = now();
+        $rows = collect($magazineIds)
+            ->map(fn (int $magazineId) => [
+                'user_id' => $user->id,
+                'magazine_id' => $magazineId,
+                'role' => $pivotRole,
+                'assigned_by' => $assignedBy,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ])
+            ->all();
+
+        if ($rows !== []) {
+            DB::table('magazine_user')->insert($rows);
+        }
+    }
+
+    private function pivotRolesForUserRole(string $roleName): array
+    {
+        $pivotRole = $this->pivotRoleForUserRole($roleName);
+
+        return $pivotRole ? [$pivotRole] : [];
+    }
+
+    private function pivotRoleForUserRole(string $roleName): ?string
+    {
+        $normalizedRole = str_replace('-', '_', $roleName);
+
+        return match ($normalizedRole) {
+            'editor', 'magazine_editor' => 'editor',
+            'publisher' => 'publisher',
+            'proofreader' => 'proofreader',
+            default => null,
+        };
+    }
+
+    private function safeAssignedMagazinesForEdit(User $user): array
+    {
+        $selectedRole = $user->role;
+        if (!$selectedRole || !$this->roleUsesMagazineAssignments($selectedRole->name)) {
+            return [];
+        }
+
+        $selectedPivotRole = $this->pivotRoleForUserRole($selectedRole->name);
+
+        return $user->magazines
+            ->filter(fn ($magazine) => $magazine->pivot?->role === $selectedPivotRole || $magazine->pivot?->role === null)
+            ->map(fn ($magazine) => [
+                'id' => $magazine->id,
+                'title' => $magazine->title,
+                'role' => $magazine->pivot?->role,
+            ])
+            ->values()
+            ->all();
     }
 
     private function rolePayload(Role $role): array

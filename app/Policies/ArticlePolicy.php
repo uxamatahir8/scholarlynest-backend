@@ -65,12 +65,24 @@ class ArticlePolicy
         }
 
         // Production assignment
-        if ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+        if ($user->hasRole('copy_editor')) {
             $isAssignedProduction = DB::table('production_assignments')
                 ->where('article_id', $article->id)
                 ->where('user_id', $user->id)
+                ->where('role', 'copy_editor')
                 ->exists();
             if ($isAssignedProduction) {
+                return true;
+            }
+        }
+
+        if ($user->hasRole('proofreader')) {
+            $isAssignedProduction = DB::table('production_assignments')
+                ->where('article_id', $article->id)
+                ->where('user_id', $user->id)
+                ->where('role', 'proofreader')
+                ->exists();
+            if ($isAssignedProduction && $this->isAssignedMagazineRole($user, $article, ['proofreader'])) {
                 return true;
             }
         }

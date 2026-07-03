@@ -330,7 +330,7 @@ class ArticleController extends Controller
                           ->where('reviewer_id', $user->id);
                   });
             });
-        } elseif ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+        } elseif ($user->hasRole('copy_editor')) {
             $query->where(function ($q) use ($user) {
                 $q->where('user_id', $user->id)
                   ->orWhereIn('id', function ($subQ) use ($user) {
@@ -339,6 +339,14 @@ class ArticleController extends Controller
                           ->where('user_id', $user->id);
                   });
             });
+        } elseif ($user->hasRole('proofreader')) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['proofreader']))
+                ->whereIn('id', function ($subQ) use ($user) {
+                    $subQ->select('article_id')
+                        ->from('production_assignments')
+                        ->where('user_id', $user->id)
+                        ->where('role', 'proofreader');
+                });
         } else {
             $query->where('user_id', $user->id);
         }

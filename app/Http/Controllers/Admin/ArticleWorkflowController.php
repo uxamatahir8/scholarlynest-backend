@@ -240,6 +240,12 @@ class ArticleWorkflowController extends Controller
             ->orderBy('due_date')
             ->latest();
 
+        if (!$this->isGlobal($user) && $allowedRole === 'proofreader') {
+            $query->whereHas('article', function ($articleQuery) use ($user) {
+                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($user, ['proofreader']));
+            });
+        }
+
         if ($this->isGlobal($user)) {
             $perPage = max(5, min(50, $request->integer('per_page', 15)));
             $paginator = $query->paginate($perPage);
@@ -739,6 +745,12 @@ class ArticleWorkflowController extends Controller
 
         if (!$this->isGlobal($user) && (int) $assignment->user_id !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden. Production assignment required.'], 403);
+        }
+
+        if (!$this->isGlobal($user)
+            && $assignment->role === 'proofreader'
+            && !$this->isAssignedToMagazine($user, $assignment->article->magazine_id, ['proofreader'])) {
+            return response()->json(['message' => 'Forbidden. Proofreader magazine assignment required.'], 403);
         }
 
         $storedFile = null;
@@ -1252,7 +1264,13 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if ((in_array('copy_editor', $roles, true) || in_array('proofreader', $roles, true)) && $this->hasProductionAssignment($user, $article)) {
+        if (in_array('copy_editor', $roles, true) && $this->hasProductionAssignment($user, $article, 'copy_editor')) {
+            return $article;
+        }
+
+        if (in_array('proofreader', $roles, true)
+            && $this->hasProductionAssignment($user, $article, 'proofreader')
+            && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader'])) {
             return $article;
         }
 
@@ -1306,7 +1324,9 @@ class ArticleWorkflowController extends Controller
         $canViewEditorial = $this->canViewEditorialInternals($user, $article);
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
-        $canViewProduction = $canViewPublication || $this->hasProductionAssignment($user, $article);
+        $canViewProduction = $canViewPublication
+            || $this->hasProductionAssignment($user, $article, 'copy_editor')
+            || ($this->hasProductionAssignment($user, $article, 'proofreader') && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader']));
 
         $data = [
             'id' => $article->id,
@@ -1560,11 +1580,12 @@ class ArticleWorkflowController extends Controller
             ->exists();
     }
 
-    private function hasProductionAssignment($user, Article $article): bool
+    private function hasProductionAssignment($user, Article $article, ?string $role = null): bool
     {
         return DB::table('production_assignments')
             ->where('article_id', $article->id)
             ->where('user_id', $user->id)
+            ->when($role, fn ($query) => $query->where('role', $role))
             ->exists();
     }
 

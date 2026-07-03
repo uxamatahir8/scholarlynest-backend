@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\ImpersonationSession;
+use App\Models\Magazine;
 use App\Models\Role;
 use App\Models\Setting;
 use App\Models\User;
@@ -231,6 +232,11 @@ class RegistrationSettingsTest extends TestCase
     public function test_existing_create_user_role_flow_is_unaffected(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = Magazine::create([
+            'title' => 'Registration Flow Journal',
+            'slug' => 'registration-flow-journal',
+            'description' => 'Registration flow test journal',
+        ]);
 
         $response = $this->postJson('/api/admin/users', [
             'name' => 'New Editor',
@@ -240,6 +246,7 @@ class RegistrationSettingsTest extends TestCase
             'role_id' => $this->roles['editor']->id,
             'university_name' => 'Scholarly University',
             'status' => 'active',
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertCreated();
