@@ -126,7 +126,7 @@ class ArticleWorkflowController extends Controller
                         });
                 });
             })
-            ->select(['id', 'name', 'email', 'role_id'])
+            ->select(['id', 'name', 'role_id'])
             ->orderBy('name')
             ->get();
 
@@ -1413,7 +1413,7 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $user->id,
             'name' => $user->name,
-            'email' => $user->email,
+            'role' => $user->role?->name,
         ];
     }
 

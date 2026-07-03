@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleFile;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\Permission;
@@ -143,6 +144,35 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         $this->getJson("/api/admin/articles/{$blockedArticle->id}")->assertForbidden();
         $this->getJson("/api/admin/articles/{$blockedArticle->id}/workflow")->assertForbidden();
         $this->postJson("/api/admin/production-assignments/{$blockedAssignment->id}/complete")->assertForbidden();
+    }
+
+    public function test_proofreader_direct_file_access_requires_magazine_assignment(): void
+    {
+        $proofreader = $this->user('proofreader');
+        $proofreader->magazines()->attach($this->magazineA->id, ['role' => 'proofreader']);
+
+        $blockedArticle = $this->article($this->magazineB, ArticleStatus::PROOFREADING, 'proofreader file blocked');
+        ProductionAssignment::create([
+            'article_id' => $blockedArticle->id,
+            'user_id' => $proofreader->id,
+            'role' => 'proofreader',
+            'assigned_by' => $this->superAdmin->id,
+            'status' => 'pending',
+        ]);
+        $file = ArticleFile::create([
+            'article_id' => $blockedArticle->id,
+            'uploaded_by' => $this->superAdmin->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'workflow',
+            'file_path' => 'storage/article-files/blocked/manuscript.pdf',
+            'original_name' => 'manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 1024,
+        ]);
+
+        Sanctum::actingAs($proofreader);
+
+        $this->getJson("/api/articles/files/{$file->id}/download")->assertForbidden();
     }
 
     public function test_removing_magazine_assignment_removes_future_access_without_deleting_history(): void
