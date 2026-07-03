@@ -235,6 +235,7 @@ class ArticleController extends Controller
         $authors = $request->academicAuthors();
         $authorResolution = $this->resolveArticleAuthors($authors, $user, $user->hasRole('super_admin'));
         $articleOwner = $authorResolution['owner'] ?? $user;
+        $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
         $featuredImagePath = null;
         if ($request->hasFile('featured_image')) {
@@ -250,7 +251,7 @@ class ArticleController extends Controller
             'slug' => $slug,
             'pdf_path' => null,
             'featured_image' => $featuredImagePath,
-            'status' => ArticleStatus::SUBMITTED,
+            'status' => $requestedStatus,
         ]);
 
         if ($user->hasPermission('seo.articles')) {
@@ -274,22 +275,26 @@ class ArticleController extends Controller
             $linkedFileIds[] = $manuscriptFile->id;
         }
 
-        $this->versionService->createSnapshot(
-            $article->fresh(['articleAuthors', 'tags', 'files']),
-            $user,
-            'Initial Submission',
-            'Initial manuscript submission.',
-            null,
-            $linkedFileIds
-        );
+        if ($requestedStatus === ArticleStatus::SUBMITTED) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $user,
+                'Initial Submission',
+                'Initial manuscript submission.',
+                null,
+                $linkedFileIds
+            );
 
-        // Dispatch synchronized queued notifications
-        event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
+            // Dispatch synchronized queued notifications
+            event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
+        }
 
         return response()->json([
-            'message' => 'Your research article has been submitted successfully for peer review.',
+            'message' => $requestedStatus === ArticleStatus::DRAFT
+                ? 'Draft manuscript saved.'
+                : 'Your research article has been submitted successfully for peer review.',
             'article' => $article->load(['tags', 'articleAuthors'])
-        ], 211);
+        ], $requestedStatus === ArticleStatus::DRAFT ? 201 : 211);
     }
 
     /**
@@ -638,8 +643,9 @@ class ArticleController extends Controller
                     'message' => "Modifying this manuscript is locked. Current status: {$article->status}."
                 ], 422);
             }
+            $requestedStatus = ArticleStatus::normalize($validated['status'] ?? $article->status);
             $status = ArticleStatus::normalize($article->status) === ArticleStatus::DRAFT
-                ? ArticleStatus::DRAFT
+                ? ($requestedStatus === ArticleStatus::SUBMITTED ? ArticleStatus::SUBMITTED : ArticleStatus::DRAFT)
                 : ArticleStatus::RESUBMITTED;
         } else {
             $status = ArticleStatus::normalize($validated['status'] ?? $article->status);
