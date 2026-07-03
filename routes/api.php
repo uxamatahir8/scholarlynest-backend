@@ -162,6 +162,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/users/{id}', [RbacController::class, 'show'])->middleware('super-admin');
         Route::patch('/users/{id}', [RbacController::class, 'update'])->middleware('super-admin');
         Route::post('/users/{id}/impersonate', [\App\Http\Controllers\Admin\ImpersonationController::class, 'start'])->middleware('super-admin');
+        Route::get('/desk-observer/users', [\App\Http\Controllers\Admin\DeskObserverController::class, 'users'])->middleware('super-admin');
         Route::get('/impersonation/status', [\App\Http\Controllers\Admin\ImpersonationController::class, 'status']);
         Route::post('/impersonation/stop', [\App\Http\Controllers\Admin\ImpersonationController::class, 'stop']);
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);

@@ -138,14 +138,16 @@ class ArticleWorkflowController extends Controller
     public function mySubEditorAssignments(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'sub_editor');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('sub_editor')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('sub_editor')) {
             return response()->json(['message' => 'Forbidden. Sub editor role required.'], 403);
         }
 
         $query = SubEditorAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $user->id))
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $deskUser->id))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
@@ -155,7 +157,7 @@ class ArticleWorkflowController extends Controller
             $perPage = max(5, min(50, $request->integer('per_page', 15)));
             $paginator = $query->paginate($perPage);
             return response()->json([
-                'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
                 'current_page' => $paginator->currentPage(),
                 'last_page'    => $paginator->lastPage(),
                 'total'        => $paginator->total(),
@@ -165,7 +167,7 @@ class ArticleWorkflowController extends Controller
 
         $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user)),
+            'data'         => $assignments->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $deskUser)),
             'current_page' => 1,
             'last_page'    => 1,
             'total'        => $assignments->count(),
@@ -176,14 +178,16 @@ class ArticleWorkflowController extends Controller
     public function myReviewerAssignments(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'reviewer');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('reviewer')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('reviewer')) {
             return response()->json(['message' => 'Forbidden. Reviewer role required.'], 403);
         }
 
         $query = ReviewerAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $user->id))
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
@@ -193,7 +197,7 @@ class ArticleWorkflowController extends Controller
             $perPage = max(5, min(50, $request->integer('per_page', 15)));
             $paginator = $query->paginate($perPage);
             return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
                 'current_page' => $paginator->currentPage(),
                 'last_page'    => $paginator->lastPage(),
                 'total'        => $paginator->total(),
@@ -203,7 +207,7 @@ class ArticleWorkflowController extends Controller
 
         $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user)),
+            'data'         => $assignments->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $deskUser)),
             'current_page' => 1,
             'last_page'    => 1,
             'total'        => $assignments->count(),
@@ -220,12 +224,17 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Invalid production role.'], 422);
         }
 
+        $observerRole = $role ?: ['copy_editor', 'proofreader'];
+        $observedUser = DeskObserverController::resolveObservedUser($request, $observerRole);
+        $deskUser = $observedUser ?: $user;
         $allowedRole = $role ?: null;
-        if (!$this->isGlobal($user)) {
-            if (!$user->hasRole('copy_editor') && !$user->hasRole('proofreader')) {
+        if ($observedUser) {
+            $allowedRole = $role ?: ($deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader');
+        } elseif (!$this->isGlobal($user)) {
+            if (!$deskUser->hasRole('copy_editor') && !$deskUser->hasRole('proofreader')) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
-            $allowedRole = $user->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
+            $allowedRole = $deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
             if ($role && $role !== $allowedRole) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
@@ -233,16 +242,16 @@ class ArticleWorkflowController extends Controller
 
         $query = ProductionAssignment::query()
             ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('user_id', $user->id))
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('user_id', $deskUser->id))
             ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
             ->latest();
 
-        if (!$this->isGlobal($user) && $allowedRole === 'proofreader') {
-            $query->whereHas('article', function ($articleQuery) use ($user) {
-                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($user, ['proofreader']));
+        if (($observedUser || !$this->isGlobal($user)) && $allowedRole === 'proofreader') {
+            $query->whereHas('article', function ($articleQuery) use ($deskUser) {
+                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($deskUser, ['proofreader']));
             });
         }
 
@@ -250,7 +259,7 @@ class ArticleWorkflowController extends Controller
             $perPage = max(5, min(50, $request->integer('per_page', 15)));
             $paginator = $query->paginate($perPage);
             return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user))->values(),
+                'data'         => collect($paginator->items())->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
                 'current_page' => $paginator->currentPage(),
                 'last_page'    => $paginator->lastPage(),
                 'total'        => $paginator->total(),
@@ -260,7 +269,7 @@ class ArticleWorkflowController extends Controller
 
         $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user)),
+            'data'         => $assignments->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $deskUser)),
             'current_page' => 1,
             'last_page'    => 1,
             'total'        => $assignments->count(),
@@ -271,12 +280,14 @@ class ArticleWorkflowController extends Controller
     public function publisherDashboard(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'publisher');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('publisher')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('publisher')) {
             return response()->json(['message' => 'Forbidden. Publisher role required.'], 403);
         }
 
-        $magazineIds = $this->isGlobal($user) ? null : $this->assignedMagazineIds($user, ['publisher']);
+        $magazineIds = ($this->isGlobal($user) && !$observedUser) ? null : $this->assignedMagazineIds($deskUser, ['publisher']);
 
         $magazines = Magazine::query()
             ->select(['id', 'title', 'slug'])
@@ -329,6 +340,7 @@ class ArticleWorkflowController extends Controller
 
     public function screen(ScreenArticleRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -365,6 +377,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignSubEditor(AssignSubEditorRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -427,6 +440,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignReviewer(AssignReviewerRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'sub_editor']);
         $oldStatus = $article->status;
 
@@ -471,6 +485,7 @@ class ArticleWorkflowController extends Controller
 
     public function submitSubEditorRecommendation(SubmitSubEditorRecommendationRequest $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = SubEditorAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -519,6 +534,7 @@ class ArticleWorkflowController extends Controller
 
     public function acceptReviewerAssignment(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -555,6 +571,7 @@ class ArticleWorkflowController extends Controller
 
     public function submitReview(SubmitReviewRequest $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -605,6 +622,7 @@ class ArticleWorkflowController extends Controller
 
     public function reopenReviewer(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor']);
 
@@ -631,6 +649,7 @@ class ArticleWorkflowController extends Controller
 
     public function finalDecision(FinalDecisionRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -694,6 +713,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignProduction(ProductionAssignmentRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher']);
         $oldStatus = $article->status;
         $nextStatus = $request->role === 'copy_editor' ? ArticleStatus::COPY_EDITING : ArticleStatus::PROOFREADING;
@@ -736,6 +756,7 @@ class ArticleWorkflowController extends Controller
 
     public function completeProduction(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $request->validate([
             'production_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
         ]);
@@ -954,6 +975,7 @@ class ArticleWorkflowController extends Controller
 
     public function publish(PublishArticleRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $request->validate([
             'publication_pdf' => 'nullable|file|mimes:pdf|max:25600',
         ]);
@@ -1029,6 +1051,7 @@ class ArticleWorkflowController extends Controller
 
     public function postPublication(PostPublicationActionRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);
         $oldStatus = $article->status;
 
@@ -1532,6 +1555,15 @@ class ArticleWorkflowController extends Controller
     private function isGlobal($user): bool
     {
         return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function rejectObserverMutation(Request $request): void
+    {
+        if ($request->has('observer_user_id')) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Observer mode is read-only. Clear observer mode before performing workflow actions.',
+            ], 422));
+        }
     }
 
     private function isAssignedToMagazine($user, int $magazineId, array $roles): bool

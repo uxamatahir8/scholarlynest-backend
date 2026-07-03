@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Http\Requests\StoreArticleRequest;
 use App\Http\Requests\UpdateArticleRequest;
+use App\Http\Controllers\Admin\DeskObserverController;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
@@ -302,53 +303,55 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $scopeUser = $observedUser ?: $user;
         $status = $request->query('status');
         $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
 
-        if ($this->hasGlobalArticleAccess($user)) {
+        if ($this->hasGlobalArticleAccess($user) && !$observedUser) {
             // Super admins and legacy admins retain global visibility.
-        } elseif ($this->usesPublisherArticleScope($user)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['publisher']))
+        } elseif ($this->usesPublisherArticleScope($scopeUser)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['publisher']))
                 ->whereIn('status', $this->publisherVisibleStatuses());
-        } elseif ($this->usesMagazineArticleScope($user)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'magazine_editor']));
-        } elseif ($user->hasRole('sub_editor')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($this->usesMagazineArticleScope($scopeUser)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']));
+        } elseif ($scopeUser->hasRole('sub_editor')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('sub_editor_assignments')
-                          ->where('sub_editor_id', $user->id);
+                          ->where('sub_editor_id', $scopeUser->id);
                   });
             });
-        } elseif ($user->hasRole('reviewer')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($scopeUser->hasRole('reviewer')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('reviewer_assignments')
-                          ->where('reviewer_id', $user->id);
+                          ->where('reviewer_id', $scopeUser->id);
                   });
             });
-        } elseif ($user->hasRole('copy_editor')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($scopeUser->hasRole('copy_editor')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('production_assignments')
-                          ->where('user_id', $user->id);
+                          ->where('user_id', $scopeUser->id);
                   });
             });
-        } elseif ($user->hasRole('proofreader')) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['proofreader']))
-                ->whereIn('id', function ($subQ) use ($user) {
+        } elseif ($scopeUser->hasRole('proofreader')) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['proofreader']))
+                ->whereIn('id', function ($subQ) use ($scopeUser) {
                     $subQ->select('article_id')
                         ->from('production_assignments')
-                        ->where('user_id', $user->id)
+                        ->where('user_id', $scopeUser->id)
                         ->where('role', 'proofreader');
                 });
         } else {
-            $query->where('user_id', $user->id);
+            $query->where('user_id', $scopeUser->id);
         }
 
         if ($status) {
@@ -377,7 +380,7 @@ class ArticleController extends Controller
         $perPage = $request->integer('per_page', 25);
         $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
 
-        $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $user));
+        $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $scopeUser));
 
         return response()->json($articles);
     }
@@ -943,17 +946,20 @@ class ArticleController extends Controller
     public function adminStats(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$this->hasGlobalArticleAccess($user) && !$this->usesMagazineArticleScope($user))) {
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $scopeUser = $observedUser ?: $user;
+
+        if (!$scopeUser || (!$this->hasGlobalArticleAccess($scopeUser) && !$this->usesMagazineArticleScope($scopeUser))) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
         $magazineIds = null;
         $publisherScoped = false;
-        if (!$this->hasGlobalArticleAccess($user)) {
-            $publisherScoped = $this->usesPublisherArticleScope($user);
+        if (!$this->hasGlobalArticleAccess($scopeUser) || $observedUser) {
+            $publisherScoped = $this->usesPublisherArticleScope($scopeUser);
             $magazineIds = $publisherScoped
-                ? $this->assignedMagazineIds($user, ['publisher'])
-                : $this->assignedMagazineIds($user, ['editor', 'magazine_editor']);
+                ? $this->assignedMagazineIds($scopeUser, ['publisher'])
+                : $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']);
         }
 
         $query = Article::query();
