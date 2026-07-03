@@ -178,6 +178,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/newsletter/send', [NewsletterController::class, 'sendCampaign'])->middleware('permission:newsletters.send');
  
         // CMS Content Management (Restricted to Admin / Super Admin)
+        Route::get('/cms/{slug}', [CmsPageController::class, 'adminShow']);
         Route::put('/cms/{slug}', [CmsPageController::class, 'update'])->middleware('permission:settings.manage');
 
         // FAQ Management (Restricted to Admin / Super Admin)
