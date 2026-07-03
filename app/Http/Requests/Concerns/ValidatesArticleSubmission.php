@@ -180,6 +180,7 @@ trait ValidatesArticleSubmission
             'seo_keywords' => 'nullable|string|max:500',
             'revision_response' => 'nullable|string|max:10000',
             'change_summary' => 'nullable|string|max:10000',
+            'status' => 'nullable|in:' . ArticleStatus::DRAFT . ',' . ArticleStatus::SUBMITTED,
         ];
     }
 
@@ -207,6 +208,14 @@ trait ValidatesArticleSubmission
             $owner = collect($authors)->firstWhere('is_owner', true);
             if (!$owner || ($owner['email'] ?? null) !== $currentEmail) {
                 $validator->errors()->add('authors', 'The submitting author must be the article owner.');
+            }
+        }
+
+        if ($enforceSubmittingOwner && $this->user()?->hasRole('super_admin')) {
+            $currentEmail = strtolower((string) $this->user()?->email);
+            $owner = collect($authors)->firstWhere('is_owner', true);
+            if ($owner && ($owner['email'] ?? null) === $currentEmail) {
+                $validator->errors()->add('authors', 'Super admins must assign manuscript ownership to an article author.');
             }
         }
     }

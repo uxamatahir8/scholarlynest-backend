@@ -34,6 +34,7 @@ use Illuminate\Support\Facades\Route;
 // Public Dynamic CMS Pages Fetching
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
+Route::get('/public/faqs', [FaqController::class, 'publicIndex']);
 
 // Public Footer & Dynamic Custom Pages
 Route::get('/public/footer', [\App\Http\Controllers\FooterController::class, 'index']);
@@ -62,6 +63,7 @@ Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'pu
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
 Route::get('/articles/latest', [ArticleController::class, 'latest']);
+Route::get('/public/homepage-stats', [ArticleController::class, 'publicHomepageStats']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
@@ -155,10 +157,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
         Route::get('/stats', [ArticleController::class, 'adminStats']);
         Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
+        Route::get('/users/magazine-assignment-options', [RbacController::class, 'magazineAssignmentOptions'])->middleware(['super-admin', 'permission:users.view-any']);
         Route::post('/users', [RbacController::class, 'store'])->middleware('super-admin');
         Route::get('/users/{id}', [RbacController::class, 'show'])->middleware('super-admin');
         Route::patch('/users/{id}', [RbacController::class, 'update'])->middleware('super-admin');
         Route::post('/users/{id}/impersonate', [\App\Http\Controllers\Admin\ImpersonationController::class, 'start'])->middleware('super-admin');
+        Route::get('/desk-observer/users', [\App\Http\Controllers\Admin\DeskObserverController::class, 'users'])->middleware('super-admin');
         Route::get('/impersonation/status', [\App\Http\Controllers\Admin\ImpersonationController::class, 'status']);
         Route::post('/impersonation/stop', [\App\Http\Controllers\Admin\ImpersonationController::class, 'stop']);
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
@@ -174,6 +178,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/newsletter/send', [NewsletterController::class, 'sendCampaign'])->middleware('permission:newsletters.send');
  
         // CMS Content Management (Restricted to Admin / Super Admin)
+        Route::get('/cms/{slug}', [CmsPageController::class, 'adminShow']);
         Route::put('/cms/{slug}', [CmsPageController::class, 'update'])->middleware('permission:settings.manage');
 
         // FAQ Management (Restricted to Admin / Super Admin)

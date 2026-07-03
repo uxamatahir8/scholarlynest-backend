@@ -6,8 +6,10 @@ use App\Constants\ArticleStatus;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Http\Requests\StoreArticleRequest;
 use App\Http\Requests\UpdateArticleRequest;
+use App\Http\Controllers\Admin\DeskObserverController;
 use App\Models\Article;
 use App\Models\Magazine;
+use App\Models\MagazineIssue;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\ArticleFile;
@@ -134,6 +136,37 @@ class ArticleController extends Controller
         ]);
     }
 
+
+    /**
+     * GET /api/public/homepage-stats
+     * Safe aggregate counts for public homepage discovery surfaces.
+     */
+    public function publicHomepageStats(): JsonResponse
+    {
+        $publishedArticleIds = Article::where('status', ArticleStatus::PUBLISHED)->pluck('id');
+
+        $primaryAuthorCount = Article::where('status', ArticleStatus::PUBLISHED)
+            ->whereNotNull('user_id')
+            ->distinct('user_id')
+            ->count('user_id');
+
+        $coAuthorCount = \DB::table('article_author')
+            ->whereIn('article_id', $publishedArticleIds)
+            ->whereNotNull('co_author_name')
+            ->where('co_author_name', '!=', '')
+            ->distinct('co_author_name')
+            ->count('co_author_name');
+
+        return response()->json([
+            'published_articles_count' => $publishedArticleIds->count(),
+            'active_magazines_count' => Magazine::count(),
+            'published_issues_count' => MagazineIssue::where(function ($query) {
+                $query->where('status', 'published')->orWhere('is_published', true);
+            })->count(),
+            'public_contributors_count' => $primaryAuthorCount + $coAuthorCount,
+        ]);
+    }
+
     /**
      * POST /api/articles/{id}/click
      * Track a click on an article.
@@ -202,6 +235,7 @@ class ArticleController extends Controller
         $authors = $request->academicAuthors();
         $authorResolution = $this->resolveArticleAuthors($authors, $user, $user->hasRole('super_admin'));
         $articleOwner = $authorResolution['owner'] ?? $user;
+        $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
         $featuredImagePath = null;
         if ($request->hasFile('featured_image')) {
@@ -217,7 +251,7 @@ class ArticleController extends Controller
             'slug' => $slug,
             'pdf_path' => null,
             'featured_image' => $featuredImagePath,
-            'status' => ArticleStatus::SUBMITTED,
+            'status' => $requestedStatus,
         ]);
 
         if ($user->hasPermission('seo.articles')) {
@@ -241,22 +275,26 @@ class ArticleController extends Controller
             $linkedFileIds[] = $manuscriptFile->id;
         }
 
-        $this->versionService->createSnapshot(
-            $article->fresh(['articleAuthors', 'tags', 'files']),
-            $user,
-            'Initial Submission',
-            'Initial manuscript submission.',
-            null,
-            $linkedFileIds
-        );
+        if ($requestedStatus === ArticleStatus::SUBMITTED) {
+            $this->versionService->createSnapshot(
+                $article->fresh(['articleAuthors', 'tags', 'files']),
+                $user,
+                'Initial Submission',
+                'Initial manuscript submission.',
+                null,
+                $linkedFileIds
+            );
 
-        // Dispatch synchronized queued notifications
-        event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
+            // Dispatch synchronized queued notifications
+            event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
+        }
 
         return response()->json([
-            'message' => 'Your research article has been submitted successfully for peer review.',
+            'message' => $requestedStatus === ArticleStatus::DRAFT
+                ? 'Draft manuscript saved.'
+                : 'Your research article has been submitted successfully for peer review.',
             'article' => $article->load(['tags', 'articleAuthors'])
-        ], 211);
+        ], $requestedStatus === ArticleStatus::DRAFT ? 201 : 211);
     }
 
     /**
@@ -270,45 +308,55 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $scopeUser = $observedUser ?: $user;
         $status = $request->query('status');
         $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
 
-        if ($this->hasGlobalArticleAccess($user)) {
+        if ($this->hasGlobalArticleAccess($user) && !$observedUser) {
             // Super admins and legacy admins retain global visibility.
-        } elseif ($this->usesPublisherArticleScope($user)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['publisher']))
+        } elseif ($this->usesPublisherArticleScope($scopeUser)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['publisher']))
                 ->whereIn('status', $this->publisherVisibleStatuses());
-        } elseif ($this->usesMagazineArticleScope($user)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($user, ['editor', 'magazine_editor']));
-        } elseif ($user->hasRole('sub_editor')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($this->usesMagazineArticleScope($scopeUser)) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']));
+        } elseif ($scopeUser->hasRole('sub_editor')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('sub_editor_assignments')
-                          ->where('sub_editor_id', $user->id);
+                          ->where('sub_editor_id', $scopeUser->id);
                   });
             });
-        } elseif ($user->hasRole('reviewer')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($scopeUser->hasRole('reviewer')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('reviewer_assignments')
-                          ->where('reviewer_id', $user->id);
+                          ->where('reviewer_id', $scopeUser->id);
                   });
             });
-        } elseif ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
-            $query->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhereIn('id', function ($subQ) use ($user) {
+        } elseif ($scopeUser->hasRole('copy_editor')) {
+            $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                       $subQ->select('article_id')
                           ->from('production_assignments')
-                          ->where('user_id', $user->id);
+                          ->where('user_id', $scopeUser->id);
                   });
             });
+        } elseif ($scopeUser->hasRole('proofreader')) {
+            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['proofreader']))
+                ->whereIn('id', function ($subQ) use ($scopeUser) {
+                    $subQ->select('article_id')
+                        ->from('production_assignments')
+                        ->where('user_id', $scopeUser->id)
+                        ->where('role', 'proofreader');
+                });
         } else {
-            $query->where('user_id', $user->id);
+            $query->where('user_id', $scopeUser->id);
         }
 
         if ($status) {
@@ -337,7 +385,7 @@ class ArticleController extends Controller
         $perPage = $request->integer('per_page', 25);
         $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
 
-        $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $user));
+        $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $scopeUser));
 
         return response()->json($articles);
     }
@@ -595,8 +643,9 @@ class ArticleController extends Controller
                     'message' => "Modifying this manuscript is locked. Current status: {$article->status}."
                 ], 422);
             }
+            $requestedStatus = ArticleStatus::normalize($validated['status'] ?? $article->status);
             $status = ArticleStatus::normalize($article->status) === ArticleStatus::DRAFT
-                ? ArticleStatus::DRAFT
+                ? ($requestedStatus === ArticleStatus::SUBMITTED ? ArticleStatus::SUBMITTED : ArticleStatus::DRAFT)
                 : ArticleStatus::RESUBMITTED;
         } else {
             $status = ArticleStatus::normalize($validated['status'] ?? $article->status);
@@ -903,17 +952,20 @@ class ArticleController extends Controller
     public function adminStats(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$this->hasGlobalArticleAccess($user) && !$this->usesMagazineArticleScope($user))) {
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $scopeUser = $observedUser ?: $user;
+
+        if (!$scopeUser || (!$this->hasGlobalArticleAccess($scopeUser) && !$this->usesMagazineArticleScope($scopeUser))) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
         $magazineIds = null;
         $publisherScoped = false;
-        if (!$this->hasGlobalArticleAccess($user)) {
-            $publisherScoped = $this->usesPublisherArticleScope($user);
+        if (!$this->hasGlobalArticleAccess($scopeUser) || $observedUser) {
+            $publisherScoped = $this->usesPublisherArticleScope($scopeUser);
             $magazineIds = $publisherScoped
-                ? $this->assignedMagazineIds($user, ['publisher'])
-                : $this->assignedMagazineIds($user, ['editor', 'magazine_editor']);
+                ? $this->assignedMagazineIds($scopeUser, ['publisher'])
+                : $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']);
         }
 
         $query = Article::query();
@@ -1026,6 +1078,8 @@ class ArticleController extends Controller
             'published_month' => $article->published_month,
             'page_start' => $article->page_start,
             'page_end' => $article->page_end,
+            'article_type' => $article->article_type,
+            'article_category' => $article->article_category,
             'seo_title' => $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest'),
             'seo_description' => $article->seo_description ?: Str::limit(strip_tags((string) $article->abstract), 160, ''),
             'seo_keywords' => $article->seo_keywords ?: $article->tags->pluck('name')->implode(', '),

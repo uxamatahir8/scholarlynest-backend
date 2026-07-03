@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\Permission;
+use App\Models\Magazine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -22,7 +23,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['super_admin', 'admin', 'author', 'editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'] as $roleName) {
+        foreach (['super_admin', 'admin', 'author', 'editor', 'magazine_editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'] as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
@@ -34,6 +35,15 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     private function user(string $roleName): User
     {
         return User::factory()->create(['role_id' => $this->roles[$roleName]->id]);
+    }
+
+    private function magazine(string $title = 'Assignment Journal'): Magazine
+    {
+        return Magazine::create([
+            'title' => $title . ' ' . uniqid(),
+            'slug' => Str::slug($title) . '-' . uniqid(),
+            'description' => 'Test journal',
+        ]);
     }
 
     /**
@@ -252,6 +262,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_super_admin_can_create_standard_user(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
 
         $response = $this->postJson('/api/admin/users', [
             'name' => 'New Staff Editor',
@@ -260,7 +271,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'password_confirmation' => 'SecurePass123!',
             'role_id' => $this->roles['editor']->id,
             'university_name' => 'Scholarly University',
-            'status' => 'active'
+            'status' => 'active',
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertStatus(201);
@@ -320,6 +332,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_create_user_password_confirmation_validation(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
 
         $response = $this->postJson('/api/admin/users', [
             'name' => 'Mismatched User',
@@ -339,6 +352,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_created_user_response_excludes_sensitive_fields(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
 
         $response = $this->postJson('/api/admin/users', [
             'name' => 'Safe User',
@@ -346,6 +360,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'password' => 'SecurePass123!',
             'password_confirmation' => 'SecurePass123!',
             'role_id' => $this->roles['editor']->id,
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertStatus(201);
@@ -376,6 +391,110 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         foreach ($sensitiveKeys as $key) {
             $this->assertArrayNotHasKey($key, $userRow);
         }
+    }
+
+    public function test_super_admin_can_assign_valid_magazines_to_role_scoped_users(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+
+        foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
+            $magazine = $this->magazine(Str::headline($roleName) . ' Journal');
+
+            $response = $this->postJson('/api/admin/users', [
+                'name' => Str::headline($roleName) . ' User',
+                'email' => "{$roleName}.assignment@example.com",
+                'password' => 'SecurePass123!',
+                'password_confirmation' => 'SecurePass123!',
+                'role_id' => $this->roles[$roleName]->id,
+                'status' => 'active',
+                'magazine_ids' => [$magazine->id],
+            ]);
+
+            $response->assertStatus(201);
+            $user = User::where('email', "{$roleName}.assignment@example.com")->firstOrFail();
+            $this->assertDatabaseHas('magazine_user', [
+                'user_id' => $user->id,
+                'magazine_id' => $magazine->id,
+                'role' => $roleName === 'magazine_editor' ? 'editor' : $roleName,
+            ]);
+        }
+    }
+
+    public function test_role_scoped_users_require_valid_distinct_magazines(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
+
+        $basePayload = [
+            'name' => 'Scoped Editor',
+            'email' => 'scoped.editor@example.com',
+            'password' => 'SecurePass123!',
+            'password_confirmation' => 'SecurePass123!',
+            'role_id' => $this->roles['editor']->id,
+            'status' => 'active',
+        ];
+
+        $this->postJson('/api/admin/users', $basePayload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('magazine_ids');
+
+        $this->postJson('/api/admin/users', array_merge($basePayload, [
+            'email' => 'invalid.magazine@example.com',
+            'magazine_ids' => [999999],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('magazine_ids.0');
+
+        $this->postJson('/api/admin/users', array_merge($basePayload, [
+            'email' => 'duplicate.magazine@example.com',
+            'magazine_ids' => [$magazine->id, $magazine->id],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('magazine_ids.1');
+    }
+
+    public function test_user_edit_payload_returns_assigned_magazines_safely(): void
+    {
+        Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine('Safe Payload Journal');
+        $targetUser = User::factory()->create(['role_id' => $this->roles['publisher']->id]);
+        $targetUser->magazines()->attach($magazine->id, ['role' => 'publisher', 'assigned_by' => null]);
+
+        $response = $this->getJson("/api/admin/users/{$targetUser->id}");
+
+        $response->assertOk()
+            ->assertJsonPath('assigned_magazines.0.id', $magazine->id)
+            ->assertJsonPath('assigned_magazines.0.title', $magazine->title)
+            ->assertJsonPath('assigned_magazines.0.role', 'publisher');
+
+        $assignedMagazine = $response->json('assigned_magazines.0');
+        foreach (['assigned_by', 'created_at', 'updated_at', 'pivot'] as $key) {
+            $this->assertArrayNotHasKey($key, $assignedMagazine);
+        }
+    }
+
+    public function test_magazine_assignment_options_are_super_admin_only_and_safe(): void
+    {
+        $magazine = $this->magazine('Assignment Context Journal');
+        $editor = User::factory()->create([
+            'name' => 'Visible Editor',
+            'email' => 'hidden.editor@example.com',
+            'role_id' => $this->roles['editor']->id,
+        ]);
+        $editor->magazines()->attach($magazine->id, ['role' => 'editor']);
+
+        Sanctum::actingAs($this->user('author'));
+        $this->getJson('/api/admin/users/magazine-assignment-options')->assertForbidden();
+
+        Sanctum::actingAs($this->user('super_admin'));
+        $response = $this->getJson('/api/admin/users/magazine-assignment-options');
+
+        $response->assertOk()
+            ->assertJsonPath('magazines.0.id', $magazine->id)
+            ->assertJsonPath('magazines.0.assignment_summary.editors.0.name', 'Visible Editor');
+
+        $encoded = json_encode($response->json());
+        $this->assertStringNotContainsString('hidden.editor@example.com', $encoded);
+        $this->assertStringNotContainsString('password', $encoded);
+        $this->assertStringNotContainsString('permissions', $encoded);
     }
 
     /**
@@ -482,6 +601,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_failed_sub_editor_link_does_not_leave_orphan(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
 
         $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
 
@@ -534,6 +654,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_creating_non_sub_editor_does_not_create_pivots(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
 
         $editor = User::factory()->create(['role_id' => $this->roles['editor']->id]);
 
@@ -543,7 +664,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'password' => 'SecurePass123!',
             'password_confirmation' => 'SecurePass123!',
             'role_id' => $this->roles['editor']->id,
-            'editor_ids' => [$editor->id] // Send editor_ids anyway
+            'editor_ids' => [$editor->id], // Send editor_ids anyway
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertStatus(201);
@@ -607,7 +729,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         $userRow = $response->json();
 
         // Verify shape and banned keys
-        $expectedKeys = ['id', 'name', 'email', 'profile_image', 'university', 'organization', 'status', 'roles', 'assigned_editors', 'created_at'];
+        $expectedKeys = ['id', 'name', 'email', 'profile_image', 'university', 'organization', 'status', 'roles', 'assigned_editors', 'assigned_magazines', 'created_at'];
         foreach ($expectedKeys as $key) {
             $this->assertArrayHasKey($key, $userRow);
         }
@@ -638,6 +760,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_super_admin_can_update_user_without_password(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
         $originalPassword = 'Password123!';
         $targetUser = User::factory()->create([
             'role_id' => $this->roles['editor']->id,
@@ -650,7 +773,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'role_id' => $this->roles['editor']->id,
             'status' => 'active',
             'password' => '',
-            'password_confirmation' => ''
+            'password_confirmation' => '',
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertOk();
@@ -671,6 +795,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_super_admin_can_update_user_omitting_password_fields(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
         $originalPassword = 'Password123!';
         $targetUser = User::factory()->create([
             'role_id' => $this->roles['editor']->id,
@@ -682,6 +807,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'email' => 'omitted.pass@example.com',
             'role_id' => $this->roles['editor']->id,
             'status' => 'active',
+            'magazine_ids' => [$magazine->id],
             // password and password_confirmation are completely omitted
         ]);
 
@@ -704,6 +830,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_super_admin_can_update_password_when_valid(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
         $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
 
         $newPassword = 'NewSecurePassword123!';
@@ -713,7 +840,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'role_id' => $this->roles['editor']->id,
             'status' => 'active',
             'password' => $newPassword,
-            'password_confirmation' => $newPassword
+            'password_confirmation' => $newPassword,
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertOk();
@@ -727,6 +855,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_update_mismatched_password_fails(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
         $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
 
         $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
@@ -735,7 +864,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'role_id' => $this->roles['editor']->id,
             'status' => 'active',
             'password' => 'NewPass123!',
-            'password_confirmation' => 'MismatchPass123!'
+            'password_confirmation' => 'MismatchPass123!',
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertStatus(422);
@@ -748,6 +878,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_update_response_excludes_sensitive_fields(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
+        $magazine = $this->magazine();
         $targetUser = User::factory()->create(['role_id' => $this->roles['editor']->id]);
 
         $response = $this->patchJson("/api/admin/users/{$targetUser->id}", [
@@ -755,6 +886,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             'email' => 'safe.edit@example.com',
             'role_id' => $this->roles['editor']->id,
             'status' => 'active',
+            'magazine_ids' => [$magazine->id],
         ]);
 
         $response->assertOk();

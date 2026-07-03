@@ -72,7 +72,7 @@ class SearchController extends Controller
                 if ($user->hasRole('sub_editor')) {
                     $subEditorArticleIds = DB::table('sub_editor_assignments')
                         ->where('sub_editor_id', $user->id)
-                        ->pluck('article_id')
+                        ->pluck('production_assignments.article_id')
                         ->toArray();
                     $q->orWhereIn('id', $subEditorArticleIds);
                 }
@@ -86,10 +86,28 @@ class SearchController extends Controller
                     $q->orWhereIn('id', $reviewerArticleIds);
                 }
 
-                // Production (Copy Editor, Proofreader) Scope
-                if ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+                // Production Copy Editor Scope
+                if ($user->hasRole('copy_editor')) {
                     $productionArticleIds = DB::table('production_assignments')
                         ->where('user_id', $user->id)
+                        ->where('role', 'copy_editor')
+                        ->pluck('article_id')
+                        ->toArray();
+                    $q->orWhereIn('id', $productionArticleIds);
+                }
+
+                // Production Proofreader Scope requires both task assignment and magazine access.
+                if ($user->hasRole('proofreader')) {
+                    $proofreaderMagazineIds = DB::table('magazine_user')
+                        ->where('user_id', $user->id)
+                        ->where('role', 'proofreader')
+                        ->pluck('magazine_id')
+                        ->toArray();
+                    $productionArticleIds = DB::table('production_assignments')
+                        ->join('articles', 'articles.id', '=', 'production_assignments.article_id')
+                        ->where('production_assignments.user_id', $user->id)
+                        ->where('production_assignments.role', 'proofreader')
+                        ->whereIn('articles.magazine_id', $proofreaderMagazineIds)
                         ->pluck('article_id')
                         ->toArray();
                     $q->orWhereIn('id', $productionArticleIds);
