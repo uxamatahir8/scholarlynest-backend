@@ -281,6 +281,7 @@ class RbacController extends Controller
         try {
             $request->validate([
                 'search' => 'nullable|string|max:255',
+                'role' => 'nullable|string|max:120',
                 'page' => 'nullable|integer|min:1',
                 'per_page' => 'nullable|integer|min:10|max:100',
             ]);
@@ -293,6 +294,7 @@ class RbacController extends Controller
 
         try {
             $search = $request->query('search');
+            $roleFilter = $request->query('role');
             $perPage = intval($request->query('per_page', 20));
 
             $query = User::with('role');
@@ -310,6 +312,14 @@ class RbacController extends Controller
                           });
                     });
                 }
+            }
+
+            if ($roleFilter !== null && trim($roleFilter) !== '') {
+                $query->whereHas('role', function ($q) use ($roleFilter) {
+                    $normalizedRole = str_replace('-', '_', trim($roleFilter));
+                    $q->where('name', $normalizedRole)
+                        ->orWhere('name', str_replace('_', '-', $normalizedRole));
+                });
             }
 
             // Exclude logged in user
@@ -651,7 +661,15 @@ class RbacController extends Controller
         }
 
         // If query parameters or path indicate Super Admin user listing/search, direct to index()
-        if (str_contains($request->getPathInfo(), '/rbac/') === false && !$request->has('role')) {
+        if (
+            str_contains($request->getPathInfo(), '/rbac/') === false
+            && (
+                !$request->has('role')
+                || $request->has('page')
+                || $request->has('per_page')
+                || $request->has('search')
+            )
+        ) {
             return $this->index($request);
         }
 
