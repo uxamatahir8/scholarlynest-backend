@@ -1423,7 +1423,17 @@ class ArticleController extends Controller
     private function applyAdminArticleFilters($query, Request $request, bool $includeStatus = true): void
     {
         if ($includeStatus && $request->filled('status') && $request->query('status') !== 'all') {
-            $query->whereIn('status', ArticleStatus::queryValues($request->query('status')));
+            $statuses = collect(explode(',', (string) $request->query('status')))
+                ->map(fn ($status) => trim($status))
+                ->filter()
+                ->flatMap(fn ($status) => ArticleStatus::queryValues($status))
+                ->unique()
+                ->values()
+                ->all();
+
+            if (!empty($statuses)) {
+                $query->whereIn('status', $statuses);
+            }
         }
 
         if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
