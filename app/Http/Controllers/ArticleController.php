@@ -310,77 +310,10 @@ class ArticleController extends Controller
 
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
         $scopeUser = $observedUser ?: $user;
-        $status = $request->query('status');
-        $query = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
+        $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser)
+            ->with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
 
-        if ($this->hasGlobalArticleAccess($user) && !$observedUser) {
-            // Super admins and legacy admins retain global visibility.
-        } elseif ($this->usesPublisherArticleScope($scopeUser)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['publisher']))
-                ->whereIn('status', $this->publisherVisibleStatuses());
-        } elseif ($this->usesMagazineArticleScope($scopeUser)) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']));
-        } elseif ($scopeUser->hasRole('sub_editor')) {
-            $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
-                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
-                      $subQ->select('article_id')
-                          ->from('sub_editor_assignments')
-                          ->where('sub_editor_id', $scopeUser->id);
-                  });
-            });
-        } elseif ($scopeUser->hasRole('reviewer')) {
-            $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
-                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
-                      $subQ->select('article_id')
-                          ->from('reviewer_assignments')
-                          ->where('reviewer_id', $scopeUser->id);
-                  });
-            });
-        } elseif ($scopeUser->hasRole('copy_editor')) {
-            $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
-                  ->orWhereIn('id', function ($subQ) use ($scopeUser) {
-                      $subQ->select('article_id')
-                          ->from('production_assignments')
-                          ->where('user_id', $scopeUser->id);
-                  });
-            });
-        } elseif ($scopeUser->hasRole('proofreader')) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['proofreader']))
-                ->whereIn('id', function ($subQ) use ($scopeUser) {
-                    $subQ->select('article_id')
-                        ->from('production_assignments')
-                        ->where('user_id', $scopeUser->id)
-                        ->where('role', 'proofreader');
-                });
-        } else {
-            $query->where('user_id', $scopeUser->id);
-        }
-
-        if ($status) {
-            $query->whereIn('status', ArticleStatus::queryValues($status));
-        }
-
-        if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
-            $query->where('magazine_id', $request->query('magazine_id'));
-        }
-
-        if ($request->filled('search')) {
-            $search = $request->query('search');
-            $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%")
-                  ->orWhere('abstract', 'like', "%{$search}%")
-                  ->orWhereHas('user', function ($uq) use ($search) {
-                      $uq->where('name', 'like', "%{$search}%")
-                         ->orWhere('email', 'like', "%{$search}%");
-                  })
-                  ->orWhereHas('tags', function ($tq) use ($search) {
-                      $tq->where('name', 'like', "%{$search}%");
-                  });
-            });
-        }
+        $this->applyAdminArticleFilters($query, $request);
 
         $perPage = $request->integer('per_page', 25);
         $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
@@ -388,6 +321,42 @@ class ArticleController extends Controller
         $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $scopeUser));
 
         return response()->json($articles);
+    }
+
+    /**
+     * GET /api/admin/articles/status-options
+     * Status filter options available inside the caller's article scope.
+     */
+    public function adminStatusOptions(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $scopeUser = $observedUser ?: $user;
+        $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser);
+        $this->applyAdminArticleFilters($query, $request, false);
+
+        $order = array_flip(ArticleStatus::ALL);
+        $statuses = $query
+            ->select('status', \DB::raw('count(*) as total'))
+            ->whereNotNull('status')
+            ->groupBy('status')
+            ->get()
+            ->sortBy(fn ($row) => $order[ArticleStatus::normalize($row->status) ?? $row->status] ?? PHP_INT_MAX)
+            ->values()
+            ->map(fn ($row) => [
+                'value' => $row->status,
+                'label' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($row->status) ?? $row->status]
+                    ?? Str::headline(str_replace('_', ' ', (string) $row->status)),
+                'count' => (int) $row->total,
+            ]);
+
+        return response()->json([
+            'data' => $statuses,
+        ]);
     }
 
     /**
@@ -1386,6 +1355,95 @@ class ArticleController extends Controller
     private function hasGlobalArticleAccess($user): bool
     {
         return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function scopedAdminArticleQuery($user, $scopeUser, $observedUser = null)
+    {
+        $query = Article::query();
+
+        if ($this->hasGlobalArticleAccess($user) && !$observedUser) {
+            return $query;
+        }
+
+        if ($this->usesPublisherArticleScope($scopeUser)) {
+            return $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['publisher']))
+                ->whereIn('status', $this->publisherVisibleStatuses());
+        }
+
+        if ($this->usesMagazineArticleScope($scopeUser)) {
+            return $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']));
+        }
+
+        if ($scopeUser->hasRole('sub_editor')) {
+            return $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                    ->orWhereIn('id', function ($subQ) use ($scopeUser) {
+                        $subQ->select('article_id')
+                            ->from('sub_editor_assignments')
+                            ->where('sub_editor_id', $scopeUser->id);
+                    });
+            });
+        }
+
+        if ($scopeUser->hasRole('reviewer')) {
+            return $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                    ->orWhereIn('id', function ($subQ) use ($scopeUser) {
+                        $subQ->select('article_id')
+                            ->from('reviewer_assignments')
+                            ->where('reviewer_id', $scopeUser->id);
+                    });
+            });
+        }
+
+        if ($scopeUser->hasRole('copy_editor')) {
+            return $query->where(function ($q) use ($scopeUser) {
+                $q->where('user_id', $scopeUser->id)
+                    ->orWhereIn('id', function ($subQ) use ($scopeUser) {
+                        $subQ->select('article_id')
+                            ->from('production_assignments')
+                            ->where('user_id', $scopeUser->id);
+                    });
+            });
+        }
+
+        if ($scopeUser->hasRole('proofreader')) {
+            return $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['proofreader']))
+                ->whereIn('id', function ($subQ) use ($scopeUser) {
+                    $subQ->select('article_id')
+                        ->from('production_assignments')
+                        ->where('user_id', $scopeUser->id)
+                        ->where('role', 'proofreader');
+                });
+        }
+
+        return $query->where('user_id', $scopeUser->id);
+    }
+
+    private function applyAdminArticleFilters($query, Request $request, bool $includeStatus = true): void
+    {
+        if ($includeStatus && $request->filled('status') && $request->query('status') !== 'all') {
+            $query->whereIn('status', ArticleStatus::queryValues($request->query('status')));
+        }
+
+        if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
+            $query->where('magazine_id', $request->query('magazine_id'));
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->query('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    ->orWhere('abstract', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('name', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('tags', function ($tq) use ($search) {
+                        $tq->where('name', 'like', "%{$search}%");
+                    });
+            });
+        }
     }
 
     private function usesMagazineArticleScope($user): bool
