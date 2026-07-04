@@ -833,7 +833,7 @@ class ArticleWorkflowController extends Controller
             ->orderByDesc('created_at');
 
         if (!$this->isGlobal($request->user())) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
         }
 
         if ($request->filled('magazine_id')) {
@@ -848,7 +848,7 @@ class ArticleWorkflowController extends Controller
         $query = Magazine::query()->select(['id', 'title', 'slug'])->orderBy('title');
 
         if (!$this->isGlobal($request->user())) {
-            $query->whereIn('id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('id', $this->issueManagerMagazineIds($request->user()));
         }
 
         return response()->json(['data' => $query->get()]);
@@ -862,7 +862,7 @@ class ArticleWorkflowController extends Controller
         ])->withCount('articles')->findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         return response()->json(['issue' => $this->issuePayload($issue)]);
@@ -870,8 +870,13 @@ class ArticleWorkflowController extends Controller
 
     public function storeIssue(MagazineIssueRequest $request): JsonResponse
     {
-        if (!$this->isGlobal($request->user()) && !$this->isAssignedToMagazine($request->user(), $request->magazine_id, ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        if (!$this->isGlobal($request->user()) && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id)) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+        }
+
+        if ($this->requestChangesIssuePublicationState($request)
+            && !$this->canPublishIssueMagazine($request->user(), (int) $request->magazine_id)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for publication state changes.'], 403);
         }
 
         $issue = MagazineIssue::create($this->issueData($request));
@@ -887,13 +892,18 @@ class ArticleWorkflowController extends Controller
         $issue = MagazineIssue::findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         if ((int) $issue->magazine_id !== (int) $request->integer('magazine_id')
             && !$this->isGlobal($request->user())
-            && !$this->isAssignedToMagazine($request->user(), $request->integer('magazine_id'), ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required for target magazine.'], 403);
+            && !$this->canManageIssueMagazine($request->user(), $request->integer('magazine_id'))) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required for target magazine.'], 403);
+        }
+
+        if ($this->requestChangesIssuePublicationState($request)
+            && !$this->canPublishIssueMagazine($request->user(), $request->integer('magazine_id'))) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for publication state changes.'], 403);
         }
 
         $issue->update($this->issueData($request, $issue));
@@ -908,7 +918,7 @@ class ArticleWorkflowController extends Controller
     {
         $issue = MagazineIssue::findOrFail($issueId);
 
-        if (!$this->canManageIssue($request->user(), $issue)) {
+        if (!$this->canPublishIssue($request->user(), $issue)) {
             return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
         }
 
@@ -928,7 +938,7 @@ class ArticleWorkflowController extends Controller
     {
         $issue = MagazineIssue::findOrFail($issueId);
 
-        if (!$this->canManageIssue($request->user(), $issue)) {
+        if (!$this->canPublishIssue($request->user(), $issue)) {
             return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
         }
 
@@ -955,11 +965,11 @@ class ArticleWorkflowController extends Controller
         if ($request->filled('issue_id')) {
             $issue = MagazineIssue::findOrFail($request->integer('issue_id'));
             if (!$this->canManageIssue($request->user(), $issue)) {
-                return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+                return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
             }
             $magazineId = $issue->magazine_id;
-        } elseif (!$this->isGlobal($request->user()) && $magazineId && !$this->isAssignedToMagazine($request->user(), $magazineId, ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        } elseif (!$this->isGlobal($request->user()) && $magazineId && !$this->canManageIssueMagazine($request->user(), $magazineId)) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         $query = Article::with(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title'])
@@ -973,7 +983,7 @@ class ArticleWorkflowController extends Controller
         if ($magazineId) {
             $query->where('magazine_id', $magazineId);
         } elseif (!$this->isGlobal($request->user())) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
         }
 
         return response()->json(['data' => $query->limit(100)->get()->map(fn (Article $article) => $this->publicationArticlePayload($article))->values()]);
@@ -1241,7 +1251,36 @@ class ArticleWorkflowController extends Controller
 
     private function canManageIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $issue->magazine_id, ['publisher']);
+        return $this->isGlobal($user) || $this->canManageIssueMagazine($user, $issue->magazine_id);
+    }
+
+    private function canPublishIssue($user, MagazineIssue $issue): bool
+    {
+        return $this->isGlobal($user) || $this->canPublishIssueMagazine($user, $issue->magazine_id);
+    }
+
+    private function canPublishIssueMagazine($user, int $magazineId): bool
+    {
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
+    }
+
+    private function canManageIssueMagazine($user, int $magazineId): bool
+    {
+        return $this->isAssignedToMagazine($user, $magazineId, ['publisher', 'editor', 'magazine_editor']);
+    }
+
+    private function issueManagerMagazineIds($user): array
+    {
+        return $this->assignedMagazineIds($user, ['publisher', 'editor', 'magazine_editor']);
+    }
+
+    private function requestChangesIssuePublicationState(Request $request): bool
+    {
+        if ($request->has('is_published') || $request->has('published_at')) {
+            return true;
+        }
+
+        return in_array($request->input('status'), ['published', 'unpublished'], true);
     }
 
     private function assignedMagazineIds($user, array $roles): array
