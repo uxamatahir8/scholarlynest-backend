@@ -224,6 +224,11 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Invalid production role.'], 422);
         }
 
+        $status = $request->query('status');
+        if ($status && !in_array($status, ['active', 'completed', 'pending'], true)) {
+            return response()->json(['message' => 'Invalid assignment status.'], 422);
+        }
+
         $observerRole = $role ?: ['copy_editor', 'proofreader'];
         $observedUser = DeskObserverController::resolveObservedUser($request, $observerRole);
         $deskUser = $observedUser ?: $user;
@@ -241,13 +246,19 @@ class ArticleWorkflowController extends Controller
         }
 
         $query = ProductionAssignment::query()
-            ->with($this->assignmentRelations())
+            ->with(['article:id,magazine_id,title,status,created_at,updated_at', 'article.magazine:id,title,slug'])
             ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('user_id', $deskUser->id))
             ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(function ($query) {
+                $query->whereNotNull('completed_at')->orWhere('status', 'completed');
+            }))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
-            ->latest();
+            ->orderByDesc('updated_at')
+            ->orderByDesc('created_at');
 
         if (($observedUser || !$this->isGlobal($user)) && $allowedRole === 'proofreader') {
             $query->whereHas('article', function ($articleQuery) use ($deskUser) {
@@ -255,25 +266,14 @@ class ArticleWorkflowController extends Controller
             });
         }
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
-        }
-
-        $assignments = $query->get();
+        $perPage = max(5, min(50, $request->integer('per_page', 15)));
+        $assignments = $query->paginate($perPage);
         return response()->json([
-            'data'         => $assignments->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $deskUser)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($assignments->items())->map(fn (ProductionAssignment $a) => $this->productionAssignmentListPayload($a))->values(),
+            'current_page' => $assignments->currentPage(),
+            'last_page'    => $assignments->lastPage(),
+            'total'        => $assignments->total(),
+            'per_page'     => $assignments->perPage(),
         ]);
     }
 
@@ -766,6 +766,12 @@ class ArticleWorkflowController extends Controller
 
         if (!$this->isGlobal($user) && (int) $assignment->user_id !== (int) $user->id) {
             return response()->json(['message' => 'Forbidden. Production assignment required.'], 403);
+        }
+
+        if (!$this->isGlobal($user)
+            && (($user->hasRole('copy_editor') && $assignment->role !== 'copy_editor')
+                || ($user->hasRole('proofreader') && $assignment->role !== 'proofreader'))) {
+            return response()->json(['message' => 'Forbidden. Production assignment role mismatch.'], 403);
         }
 
         if (!$this->isGlobal($user)
@@ -1550,6 +1556,37 @@ class ArticleWorkflowController extends Controller
             && !in_array($assignment->status, ['completed'], true);
 
         return $assignmentData;
+    }
+
+    private function productionAssignmentListPayload(ProductionAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'role' => $assignment->role,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => $assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true),
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
     }
 
     private function isGlobal($user): bool
