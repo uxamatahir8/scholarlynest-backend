@@ -29,6 +29,14 @@ class ArticleAssetController extends Controller
         }
 
         // Authorize using the update policy of the article
+        if ($user->cannot('view', $article)) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
+        }
+
         if ($user->cannot('update', $article)) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
         }
@@ -94,7 +102,15 @@ class ArticleAssetController extends Controller
         }
 
         $article = $asset->article;
-        if (!$article || $user->cannot('update', $article)) {
+        if (!$article || $user->cannot('view', $article)) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
+        }
+
+        if ($user->cannot('update', $article)) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
         }
 

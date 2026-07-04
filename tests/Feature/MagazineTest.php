@@ -6,8 +6,10 @@ use App\Models\Magazine;
 use App\Models\MagazinePage;
 use App\Models\MagazineIssue;
 use App\Models\Article;
+use App\Models\Permission;
 use App\Models\User;
 use App\Models\Role;
+use App\Constants\ArticleStatus;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
@@ -26,8 +28,18 @@ class MagazineTest extends TestCase
         app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         // Seed roles
-        Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
-        Role::create(['name' => 'author', 'guard_name' => 'web']);
+        $superAdminRole = Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
+        $authorRole = Role::create(['name' => 'author', 'guard_name' => 'web']);
+
+        foreach (['articles.create', 'articles.view-own', 'articles.edit-own', 'articles.approve'] as $permissionName) {
+            Permission::firstOrCreate(['name' => $permissionName], [
+                'module' => 'articles',
+                'description' => $permissionName,
+            ]);
+        }
+
+        $superAdminRole->permissions()->sync(Permission::pluck('id'));
+        $authorRole->permissions()->sync(Permission::whereIn('name', ['articles.create', 'articles.view-own', 'articles.edit-own'])->pluck('id'));
     }
 
     /**
@@ -276,7 +288,7 @@ class MagazineTest extends TestCase
             'slug' => 'article-pending',
             'abstract' => 'Abstract P',
             'full_text' => 'Full text P',
-            'status' => 'pending',
+            'status' => ArticleStatus::DRAFT,
             'published_at' => \Carbon\Carbon::parse('2026-10-22 12:00:00'),
         ]);
 
@@ -492,7 +504,7 @@ class MagazineTest extends TestCase
             'slug' => 'original-title',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
-            'status' => 'pending',
+            'status' => ArticleStatus::DRAFT,
             'featured_image' => 'storage/articles/old_image.png'
         ]);
 
@@ -542,7 +554,7 @@ class MagazineTest extends TestCase
             'slug' => 'original-title',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
-            'status' => 'pending',
+            'status' => ArticleStatus::DRAFT,
             'featured_image' => 'storage/articles/old_image.png'
         ]);
 

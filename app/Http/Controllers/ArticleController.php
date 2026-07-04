@@ -537,6 +537,26 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
+        if ($request->query('view_context') === 'edit') {
+            if (
+                $request->boolean('observer_readonly')
+                || $request->filled('observer_user')
+                || $request->filled('observer_user_id')
+            ) {
+                return response()->json(['message' => 'Observer mode is read-only.'], 403);
+            }
+
+            if (!ArticleStatus::isEditableStatus($article->status)) {
+                return response()->json([
+                    'message' => 'This manuscript cannot be edited at its current workflow stage.',
+                ], 422);
+            }
+
+            if ($user->cannot('update', $article)) {
+                return response()->json(['message' => 'Forbidden.'], 403);
+            }
+        }
+
         // first-read trigger: transition 'submitted' to 'under_review' on admin/editor view
         if (ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED) {
             $isAdminOrEditor = $this->hasGlobalArticleAccess($user)
@@ -577,9 +597,13 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED) {
+        if ($user->cannot('view', $article)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if (!ArticleStatus::isEditableStatus($article->status)) {
             return response()->json([
-                'message' => 'Published articles are locked from normal editing. Use the post-publication action workflow for changes.',
+                'message' => 'This manuscript cannot be edited at its current workflow stage.',
             ], 422);
         }
 
@@ -589,14 +613,6 @@ class ArticleController extends Controller
 
         // Authorize via ArticlePolicy
         if ($user->cannot('update', $article)) {
-            if (!$isEditorial && !ArticleStatus::authorCanEdit($article->status)) {
-                return response()->json([
-                    'message' => 'The given data was invalid.',
-                    'errors' => [
-                        'status' => ["You cannot edit this article because it is currently {$article->status}."]
-                    ]
-                ], 422);
-            }
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -637,16 +653,12 @@ class ArticleController extends Controller
             || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
 
         if (!$isEditorial) {
-            // Authors saving allowed revisions resubmit the manuscript for editorial review.
-            if (!ArticleStatus::authorCanEdit($article->status)) {
-                return response()->json([
-                    'message' => "Modifying this manuscript is locked. Current status: {$article->status}."
-                ], 422);
-            }
+            // Authors saving requested revisions resubmit the manuscript for editorial review.
             $requestedStatus = ArticleStatus::normalize($validated['status'] ?? $article->status);
-            $status = ArticleStatus::normalize($article->status) === ArticleStatus::DRAFT
+            $normalizedOldStatus = ArticleStatus::normalize($article->status);
+            $status = $normalizedOldStatus === ArticleStatus::DRAFT
                 ? ($requestedStatus === ArticleStatus::SUBMITTED ? ArticleStatus::SUBMITTED : ArticleStatus::DRAFT)
-                : ArticleStatus::RESUBMITTED;
+                : (ArticleStatus::isRevisionRequired($normalizedOldStatus) ? ArticleStatus::RESUBMITTED : $normalizedOldStatus);
         } else {
             $status = ArticleStatus::normalize($validated['status'] ?? $article->status);
             if (!ArticleStatus::canTransition($oldStatus, $status)) {
@@ -1145,6 +1157,7 @@ class ArticleController extends Controller
             'abstract' => $article->abstract,
             'status' => $article->status,
             'author_status' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? $article->status,
+            'can_edit_article' => $viewer->can('update', $article),
             'featured_image' => $article->featured_image,
             'doi' => $article->doi,
             'published_at' => $article->published_at,
@@ -1339,6 +1352,12 @@ class ArticleController extends Controller
         }
 
         $article = Article::findOrFail($id);
+
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return response()->json([
+                'message' => 'This manuscript cannot be edited at its current workflow stage.',
+            ], 422);
+        }
 
         // Ownership-aware scoping:
         // If user has edit-own (but NOT edit-any), they can only update SEO on their own articles.

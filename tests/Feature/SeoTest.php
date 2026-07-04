@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\Permission;
@@ -80,7 +81,7 @@ class SeoTest extends TestCase
             'magazine_id' => $magazine->id,
             'abstract' => 'Original Abstract',
             'full_text' => 'Original Content',
-            'status' => 'approved',
+            'status' => ArticleStatus::READY_FOR_PUBLICATION,
         ]);
 
         Sanctum::actingAs($user);
@@ -129,7 +130,7 @@ class SeoTest extends TestCase
             'magazine_id' => $magazine->id,
             'abstract' => 'My Abstract',
             'full_text' => 'My Content',
-            'status' => 'approved',
+            'status' => ArticleStatus::DRAFT,
         ]);
 
         Sanctum::actingAs($user);
@@ -183,7 +184,7 @@ class SeoTest extends TestCase
             'magazine_id' => $magazine->id,
             'abstract' => 'Others Abstract',
             'full_text' => 'Others Content',
-            'status' => 'approved',
+            'status' => ArticleStatus::DRAFT,
         ]);
 
         Sanctum::actingAs($user);
@@ -234,7 +235,7 @@ class SeoTest extends TestCase
             'magazine_id' => $magazine->id,
             'abstract' => 'Some Abstract',
             'full_text' => 'Some Content',
-            'status' => 'approved',
+            'status' => ArticleStatus::READY_FOR_PUBLICATION,
         ]);
 
         Sanctum::actingAs($user);

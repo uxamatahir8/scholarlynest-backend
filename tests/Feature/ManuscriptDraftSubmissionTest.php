@@ -115,7 +115,7 @@ class ManuscriptDraftSubmissionTest extends TestCase
             'title' => 'Locked Update',
             'status' => ArticleStatus::SUBMITTED,
         ]))->assertStatus(422)
-            ->assertJsonValidationErrors('status');
+            ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
 
         $this->assertDatabaseHas('articles', [
             'id' => $article->id,

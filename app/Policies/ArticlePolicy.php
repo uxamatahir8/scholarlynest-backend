@@ -102,6 +102,10 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return false;
+        }
+
         // Super admins and legacy admins can edit any article.
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
@@ -109,11 +113,6 @@ class ArticlePolicy
 
         // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
         // Normal article content edits stay limited to authors during editable statuses.
-
-        // Authors and editing co-authors can only modify drafts or requested revisions.
-        if (!ArticleStatus::authorCanEdit($article->status)) {
-            return false;
-        }
 
         // Primary author can edit
         if ($article->user_id === $user->id) {

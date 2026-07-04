@@ -25,6 +25,13 @@ class ArticleFileController extends Controller
             'assignment_id' => 'nullable|integer|min:1',
         ]);
 
+        if (
+            in_array($validated['file_type'], [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
+            && !ArticleStatus::isEditableStatus($article->status)
+        ) {
+            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
+        }
+
         if (!$this->canUpload($user, $article, $validated['file_type'], $validated['assignment_type'] ?? null, $validated['assignment_id'] ?? null)) {
             return response()->json(['message' => 'Forbidden. You cannot upload this file type for this article.'], 403);
         }
@@ -201,6 +208,13 @@ class ArticleFileController extends Controller
 
     private function canUpload($user, Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
+        if (
+            in_array($fileType, [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
+            && !ArticleStatus::isEditableStatus($article->status)
+        ) {
+            return false;
+        }
+
         if ($this->isGlobal($user)) {
             return true;
         }

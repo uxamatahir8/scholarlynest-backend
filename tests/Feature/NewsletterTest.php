@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Models\Role;
+use App\Models\Permission;
 use App\Models\NewsletterSubscriber;
 use App\Models\NewsletterCampaign;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -24,9 +25,19 @@ class NewsletterTest extends TestCase
         app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         // Seed roles
-        Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
-        Role::create(['name' => 'admin', 'guard_name' => 'web']);
+        $superAdminRole = Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
+        $adminRole = Role::create(['name' => 'admin', 'guard_name' => 'web']);
         Role::create(['name' => 'author', 'guard_name' => 'web']);
+
+        foreach (['newsletters.view-any', 'newsletters.send'] as $permissionName) {
+            Permission::firstOrCreate(['name' => $permissionName], [
+                'module' => 'newsletters',
+                'description' => $permissionName,
+            ]);
+        }
+
+        $superAdminRole->permissions()->sync(Permission::pluck('id'));
+        $adminRole->permissions()->sync(Permission::whereIn('name', ['newsletters.view-any', 'newsletters.send'])->pluck('id'));
     }
 
     public function test_can_subscribe_to_newsletter(): void
