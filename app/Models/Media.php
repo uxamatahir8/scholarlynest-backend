@@ -13,12 +13,22 @@ class Media extends Model
 
     protected $fillable = [
         'filename',
+        'safe_original_name',
         'url',
+        'storage_key',
         'disk',
         'mime_type',
         'size',
+        'checksum_sha256',
+        'scan_status',
+        'scan_engine',
+        'scanned_at',
         'model_type',
         'model_id'
+    ];
+
+    protected $casts = [
+        'scanned_at' => 'datetime',
     ];
 
     /**

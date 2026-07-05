@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Models\ArticleFile;
 use App\Models\Article;
 use App\Models\ArticleAsset;
+use App\Services\Media\DirectS3UploadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -68,9 +69,13 @@ class ArticleAssetController extends Controller
         $asset = ArticleAsset::create([
             'article_id' => $article->id,
             'file_path' => 'storage/' . $path,
+            'disk' => 'public',
             'original_filename' => $safeOriginalName,
+            'safe_original_filename' => $safeOriginalName,
             'file_size' => $fileSize,
             'mime_type' => $mimeType,
+            'scan_status' => 'clean',
+            'scanned_at' => now(),
         ]);
 
         app(ArticleFileController::class)->storeUploadedFile($article, $file, ArticleFile::SUPPLEMENTARY, $user->id, [
@@ -115,9 +120,11 @@ class ArticleAssetController extends Controller
         }
 
         // Unlink physical file from storage
-        $relativePath = str_replace('storage/', '', $asset->file_path);
-        if (Storage::disk('public')->exists($relativePath)) {
-            Storage::disk('public')->delete($relativePath);
+        if (($asset->disk ?? 'public') === 'public') {
+            $relativePath = str_replace('storage/', '', $asset->file_path);
+            if (Storage::disk('public')->exists($relativePath)) {
+                Storage::disk('public')->delete($relativePath);
+            }
         }
 
         $asset->delete();
@@ -150,6 +157,22 @@ class ArticleAssetController extends Controller
             }
         }
 
+        if (($asset->scan_status ?? 'clean') !== 'clean') {
+            return response()->json(['message' => 'The requested file is not available.'], 404);
+        }
+
+        if (($asset->disk ?? 'public') !== 'public') {
+            $key = $asset->storage_key ?: $asset->file_path;
+            if (!$key || !Storage::disk($asset->disk)->exists($key)) {
+                return response()->json(['message' => 'The requested file is not available.'], 404);
+            }
+
+            return response()->json([
+                'url' => app(DirectS3UploadService::class)->temporaryDownloadUrl($asset->disk, $key, $asset->safe_original_filename ?: $asset->original_filename),
+                'expires_in_seconds' => config('media_uploads.download_url_ttl_minutes') * 60,
+            ]);
+        }
+
         $relativePath = str_replace('storage/', '', $asset->file_path);
         if (!Storage::disk('public')->exists($relativePath)) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
@@ -173,6 +196,8 @@ class ArticleAssetController extends Controller
             'original_filename' => $asset->original_filename,
             'file_size' => $asset->file_size,
             'mime_type' => $asset->mime_type,
+            'scan_status' => $asset->scan_status ?? 'clean',
+            'available' => ($asset->scan_status ?? 'clean') === 'clean',
         ];
     }
 }
