@@ -7,6 +7,7 @@ use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\MediaUploadSession;
 use App\Services\Media\DirectS3UploadService;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -87,7 +88,7 @@ class ArticleFileController extends Controller
 
     public function storeUploadedFile(Article $article, \Illuminate\Http\UploadedFile $uploadedFile, string $fileType, int $uploadedBy, array $extra = []): ArticleFile
     {
-        $path = $uploadedFile->store("article-files/{$article->id}/{$fileType}", 'public');
+        $path = app(MediaStorageService::class)->storeUploadedFile($uploadedFile, "article-files/{$article->id}/{$fileType}");
 
         return ArticleFile::create([
             'article_id' => $article->id,
@@ -98,12 +99,13 @@ class ArticleFileController extends Controller
             'assignment_id' => $extra['assignment_id'] ?? null,
             'file_type' => $fileType,
             'visibility' => $this->defaultVisibility($fileType),
-            'file_path' => 'storage/' . $path,
+            'file_path' => $path,
+            'storage_key' => $path,
             'original_name' => basename($uploadedFile->getClientOriginalName()),
             'safe_original_name' => basename($uploadedFile->getClientOriginalName()),
             'mime_type' => $uploadedFile->getMimeType(),
             'size' => $uploadedFile->getSize(),
-            'disk' => 'public',
+            'disk' => config('media_uploads.disk'),
             'scan_status' => 'clean',
             'scanned_at' => now(),
             'metadata' => $extra['metadata'] ?? null,

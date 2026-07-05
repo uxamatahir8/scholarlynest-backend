@@ -147,8 +147,8 @@ class ArticleAssetTest extends TestCase
         ]);
 
         $asset = ArticleAsset::first();
-        $relativePath = str_replace('storage/', '', $asset->file_path);
-        Storage::disk('public')->assertExists($relativePath);
+        $this->assertSame('s3', $asset->disk);
+        Storage::disk('s3')->assertExists($asset->storage_key);
     }
 
     /**

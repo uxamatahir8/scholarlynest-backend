@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\Storage;
+use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
 
 class Magazine extends Model
@@ -81,8 +81,6 @@ class Magazine extends Model
             return str_starts_with($path, '/') ? $path : '/' . $path;
         }
 
-        $relativePath = preg_replace('#^/?storage/#', '', $path);
-
-        return Storage::disk('public')->url($relativePath);
+        return app(MediaStorageService::class)->publicOrTemporaryUrl($path);
     }
 }

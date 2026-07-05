@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Services\Media\MediaStorageService;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,10 +13,12 @@ use Illuminate\Support\Str;
 class MagazineController extends Controller
 {
     protected NotificationService $notificationService;
+    protected MediaStorageService $mediaStorage;
 
-    public function __construct(NotificationService $notificationService)
+    public function __construct(NotificationService $notificationService, MediaStorageService $mediaStorage)
     {
         $this->notificationService = $notificationService;
+        $this->mediaStorage = $mediaStorage;
     }
     /**
      * GET /api/magazines
@@ -326,8 +329,7 @@ class MagazineController extends Controller
 
         $coverImagePath = null;
         if ($request->hasFile('cover_image')) {
-            $path = $request->file('cover_image')->store('covers', 'public');
-            $coverImagePath = 'storage/' . $path;
+            $coverImagePath = $this->mediaStorage->storeUploadedFile($request->file('cover_image'), 'covers');
         } elseif (is_string($request->input('cover_image'))) {
             $coverImagePath = $request->input('cover_image');
         }
@@ -374,8 +376,8 @@ class MagazineController extends Controller
                     'We are pleased to announce the publication of our latest issue: <strong>' . e($magazine->title) . '</strong>.',
                 ];
 
-                if ($magazine->cover_image) {
-                    $bodyLines[] = '<div style="text-align: center; margin-bottom: 24px;"><img src="' . $frontendUrl . '/' . $magazine->cover_image . '" alt="Cover Image" style="max-width: 200px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"></div>';
+                if ($magazine->cover_image_url) {
+                    $bodyLines[] = '<div style="text-align: center; margin-bottom: 24px;"><img src="' . e($magazine->cover_image_url) . '" alt="Cover Image" style="max-width: 200px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"></div>';
                 }
 
                 if ($magazine->description) {
@@ -485,12 +487,8 @@ class MagazineController extends Controller
 
         $coverImagePath = $magazine->cover_image;
         if ($request->hasFile('cover_image')) {
-            if ($coverImagePath && strpos($coverImagePath, 'storage/') === 0) {
-                $oldPath = str_replace('storage/', '', $coverImagePath);
-                \Illuminate\Support\Facades\Storage::disk('public')->delete($oldPath);
-            }
-            $path = $request->file('cover_image')->store('covers', 'public');
-            $coverImagePath = 'storage/' . $path;
+            $this->mediaStorage->delete($coverImagePath);
+            $coverImagePath = $this->mediaStorage->storeUploadedFile($request->file('cover_image'), 'covers');
         } elseif ($request->has('cover_image')) {
             $coverImagePath = $request->input('cover_image');
         }
@@ -645,11 +643,12 @@ class MagazineController extends Controller
             'title' => $magazine->title,
             'slug' => $magazine->slug,
             'cover_image' => $magazine->cover_image,
+            'cover_image_url' => $magazine->cover_image_url,
             'description' => $magazine->description,
             'seo_title' => $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest',
             'seo_description' => $magazine->seo_description ?: Str::limit(strip_tags((string) $magazine->description), 160, ''),
             'seo_keywords' => $magazine->seo_keywords ?: '',
-            'og_image' => $magazine->cover_image,
+            'og_image' => $magazine->cover_image_url,
         ];
     }
 
@@ -670,7 +669,7 @@ class MagazineController extends Controller
             'title' => $section . ' | ' . ($magazine->seo_title ?: $magazine->title . ' | ScholarlyNest'),
             'description' => $magazine->seo_description ?: Str::limit(strip_tags((string) ($magazine->about_text ?: $magazine->description)), 160, ''),
             'keywords' => $magazine->seo_keywords ?: '',
-            'og_image' => $magazine->cover_image,
+            'og_image' => $magazine->cover_image_url,
         ];
     }
 

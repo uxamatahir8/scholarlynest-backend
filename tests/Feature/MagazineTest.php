@@ -81,11 +81,11 @@ class MagazineTest extends TestCase
 
         $response->assertStatus(211)
             ->assertJsonPath('magazine.title', 'Cover Upload Journal')
-            ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/storage/covers/'));
+            ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'));
 
         $magazine = Magazine::where('title', 'Cover Upload Journal')->firstOrFail();
-        $this->assertStringStartsWith('storage/covers/', $magazine->cover_image);
-        Storage::disk('public')->assertExists(str_replace('storage/', '', $magazine->cover_image));
+        $this->assertStringStartsWith('covers/', $magazine->cover_image);
+        Storage::disk('s3')->assertExists($magazine->cover_image);
     }
 
     /**
@@ -203,7 +203,7 @@ class MagazineTest extends TestCase
         // Check if a PDF path was generated on the database record
         $article->refresh();
         $this->assertNotNull($article->pdf_path);
-        $this->assertStringContainsString('storage/articles/scholarlynest_article_', $article->pdf_path);
+        $this->assertStringContainsString('articles/scholarlynest_article_', $article->pdf_path);
     }
 
     /**
@@ -501,11 +501,10 @@ class MagazineTest extends TestCase
         $article = Article::where('title', 'Quantum Logic Theory with Image')->first();
         $this->assertNotNull($article);
         $this->assertNotNull($article->featured_image);
-        $this->assertStringContainsString('storage/articles/', $article->featured_image);
+        $this->assertStringContainsString('articles/', $article->featured_image);
 
         // Check file exists in fake storage
-        $storedFilename = str_replace('storage/articles/', '', $article->featured_image);
-        Storage::disk('public')->assertExists('articles/' . $storedFilename);
+        Storage::disk('s3')->assertExists($article->featured_image);
     }
 
     /**
@@ -554,8 +553,7 @@ class MagazineTest extends TestCase
 
         // Old file deleted, new file exists
         Storage::disk('public')->assertMissing('articles/old_image.png');
-        $newStoredFilename = str_replace('storage/articles/', '', $article->featured_image);
-        Storage::disk('public')->assertExists('articles/' . $newStoredFilename);
+        Storage::disk('s3')->assertExists($article->featured_image);
     }
 
     /**

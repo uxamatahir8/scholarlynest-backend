@@ -16,22 +16,24 @@ use App\Models\ArticleFile;
 use App\Services\PdfGeneratorService;
 use App\Services\NotificationService;
 use App\Services\ArticleVersionService;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Storage;
 
 class ArticleController extends Controller
 {
     protected PdfGeneratorService $pdfService;
     protected NotificationService $notificationService;
     protected ArticleVersionService $versionService;
+    protected MediaStorageService $mediaStorage;
 
-    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService)
+    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage)
     {
         $this->pdfService = $pdfService;
         $this->notificationService = $notificationService;
         $this->versionService = $versionService;
+        $this->mediaStorage = $mediaStorage;
     }
 
     public function show(string $idOrSlug): JsonResponse
@@ -239,8 +241,7 @@ class ArticleController extends Controller
 
         $featuredImagePath = null;
         if ($request->hasFile('featured_image')) {
-            $path = $request->file('featured_image')->store('articles', 'public');
-            $featuredImagePath = 'storage/' . $path;
+            $featuredImagePath = $this->mediaStorage->storeUploadedFile($request->file('featured_image'), 'articles');
         }
 
         $slug = Str::slug($validated['title']);
@@ -595,18 +596,15 @@ class ArticleController extends Controller
         $featuredImagePath = $article->featured_image;
         if ($request->input('delete_featured_image') === 'true' || $request->input('delete_featured_image') === '1') {
             if ($featuredImagePath) {
-                $oldPath = str_replace('storage/', '', $featuredImagePath);
-                Storage::disk('public')->delete($oldPath);
+                $this->mediaStorage->delete($featuredImagePath);
                 $featuredImagePath = null;
             }
         }
         if ($request->hasFile('featured_image')) {
             if ($featuredImagePath) {
-                $oldPath = str_replace('storage/', '', $featuredImagePath);
-                Storage::disk('public')->delete($oldPath);
+                $this->mediaStorage->delete($featuredImagePath);
             }
-            $path = $request->file('featured_image')->store('articles', 'public');
-            $featuredImagePath = 'storage/' . $path;
+            $featuredImagePath = $this->mediaStorage->storeUploadedFile($request->file('featured_image'), 'articles');
         }
 
         $slug = $article->slug;
@@ -1029,18 +1027,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
-        $path = str_replace('storage/', '', $article->pdf_path);
-
-        if (!Storage::disk('public')->exists($path)) {
-            return response()->json(['message' => 'The requested file is not available.'], 404);
-        }
-
-        $absolutePath = Storage::disk('public')->path($path);
-
-        return response()->file($absolutePath, [
-            'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'inline; filename="' . basename($article->pdf_path) . '"'
-        ]);
+        return $this->mediaStorage->downloadResponse($article->pdf_path, basename($article->pdf_path), 'application/pdf', 'inline');
     }
 
     private function publicArticlePayload(Article $article, bool $includeBody = false): array
@@ -1052,6 +1039,7 @@ class ArticleController extends Controller
             'slug' => $article->slug,
             'abstract' => $article->abstract,
             'featured_image' => $article->featured_image,
+            'featured_image_url' => $article->featured_image_url,
             'doi' => $article->doi,
             'published_at' => $article->published_at,
             'created_at' => $article->created_at,
@@ -1064,13 +1052,15 @@ class ArticleController extends Controller
             'seo_title' => $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest'),
             'seo_description' => $article->seo_description ?: Str::limit(strip_tags((string) $article->abstract), 160, ''),
             'seo_keywords' => $article->seo_keywords ?: $article->tags->pluck('name')->implode(', '),
-            'og_image' => $article->magazine?->cover_image,
+            'og_image' => $article->magazine?->cover_image_url,
             'has_pdf' => !empty($article->pdf_path),
+            'pdf_url' => !empty($article->pdf_path) ? url("/api/articles/{$article->id}/download-pdf") : null,
             'magazine' => $article->magazine ? [
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
                 'cover_image' => $article->magazine->cover_image,
+                'cover_image_url' => $article->magazine->cover_image_url,
             ] : null,
             'user' => $article->user ? [
                 'id' => $article->user->id,
@@ -1102,6 +1092,8 @@ class ArticleController extends Controller
                     'original_filename' => $asset->original_filename,
                     'file_size' => $asset->file_size,
                     'mime_type' => $asset->mime_type,
+                    'scan_status' => $asset->scan_status ?? 'clean',
+                    'available' => ($asset->scan_status ?? 'clean') === 'clean',
                 ])
                 ->values(),
         ];
@@ -1128,6 +1120,7 @@ class ArticleController extends Controller
             'author_status' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? $article->status,
             'can_edit_article' => $viewer->can('update', $article),
             'featured_image' => $article->featured_image,
+            'featured_image_url' => $article->featured_image_url,
             'doi' => $article->doi,
             'published_at' => $article->published_at,
             'published_year' => $article->published_year,
@@ -1140,6 +1133,7 @@ class ArticleController extends Controller
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
                 'cover_image' => $article->magazine->cover_image,
+                'cover_image_url' => $article->magazine->cover_image_url,
             ] : null,
             'user' => $article->user ? [
                 'id' => $article->user->id,

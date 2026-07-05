@@ -7,6 +7,7 @@ use App\Models\ArticleFile;
 use App\Models\Article;
 use App\Models\ArticleAsset;
 use App\Services\Media\DirectS3UploadService;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -64,12 +65,13 @@ class ArticleAssetController extends Controller
         $mimeType = $file->getMimeType();
 
         // 3. Unique hashing filename storage outside web root (stored inside private/public disk, served conditionally)
-        $path = $file->store('assets', 'public');
+        $path = app(MediaStorageService::class)->storeUploadedFile($file, 'assets');
 
         $asset = ArticleAsset::create([
             'article_id' => $article->id,
-            'file_path' => 'storage/' . $path,
-            'disk' => 'public',
+            'file_path' => $path,
+            'storage_key' => $path,
+            'disk' => config('media_uploads.disk'),
             'original_filename' => $safeOriginalName,
             'safe_original_filename' => $safeOriginalName,
             'file_size' => $fileSize,
@@ -120,12 +122,7 @@ class ArticleAssetController extends Controller
         }
 
         // Unlink physical file from storage
-        if (($asset->disk ?? 'public') === 'public') {
-            $relativePath = str_replace('storage/', '', $asset->file_path);
-            if (Storage::disk('public')->exists($relativePath)) {
-                Storage::disk('public')->delete($relativePath);
-            }
-        }
+        app(MediaStorageService::class)->delete($asset->storage_key ?: $asset->file_path);
 
         $asset->delete();
 

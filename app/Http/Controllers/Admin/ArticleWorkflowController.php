@@ -30,6 +30,7 @@ use App\Models\User;
 use App\Services\PdfGeneratorService;
 use App\Services\ArticleVersionService;
 use App\Services\CitationService;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -1138,9 +1139,9 @@ class ArticleWorkflowController extends Controller
 
         if ($request->hasFile('cover_image')) {
             if ($coverImage) {
-                Storage::disk('public')->delete(str_replace('storage/', '', $coverImage));
+                app(MediaStorageService::class)->delete($coverImage);
             }
-            $coverImage = 'storage/' . $request->file('cover_image')->store('magazine-issues', 'public');
+            $coverImage = app(MediaStorageService::class)->storeUploadedFile($request->file('cover_image'), 'magazine-issues');
         }
 
         return [
@@ -1173,6 +1174,7 @@ class ArticleWorkflowController extends Controller
             'special_title' => $issue->special_title,
             'description' => $issue->description,
             'cover_image' => $issue->cover_image,
+            'cover_image_url' => $issue->cover_image_url,
             'status' => $issue->status ?: ($issue->is_published ? 'published' : 'draft'),
             'is_published' => $issue->is_published,
             'published_at' => $issue->published_at,
@@ -1219,6 +1221,7 @@ class ArticleWorkflowController extends Controller
             'published_at' => $article->published_at,
             'has_pdf' => !empty($article->pdf_path),
             'pdf_url' => $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'featured_image_url' => $article->featured_image_url,
             'article_url' => $this->articleUrl($article),
             'article_authors' => $article->articleAuthors
                 ->sortBy('author_order')

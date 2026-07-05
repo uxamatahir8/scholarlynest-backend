@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\EditorSubEditorController;
 use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\MediaController;
+use App\Http\Controllers\MediaObjectController;
 use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
@@ -71,6 +72,7 @@ Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShare
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
 Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
     $query = \App\Models\Magazine::orderBy('created_at', 'desc');

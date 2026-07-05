@@ -7,11 +7,17 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
 
 class Article extends Model
 {
     use HasFactory, Auditable;
+
+    protected $appends = [
+        'featured_image_url',
+        'pdf_url',
+    ];
 
     protected $fillable = [
         'magazine_id',
@@ -157,5 +163,15 @@ class Article extends Model
     public function auditLogs(): HasMany
     {
         return $this->hasMany(ArticleAuditLog::class);
+    }
+
+    public function getFeaturedImageUrlAttribute(): ?string
+    {
+        return app(MediaStorageService::class)->publicOrTemporaryUrl($this->featured_image);
+    }
+
+    public function getPdfUrlAttribute(): ?string
+    {
+        return app(MediaStorageService::class)->temporaryUrl($this->pdf_path);
     }
 }

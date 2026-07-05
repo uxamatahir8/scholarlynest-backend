@@ -3,9 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Media;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class MediaController extends Controller
@@ -25,19 +25,19 @@ class MediaController extends Controller
         $extension = $file->getClientOriginalExtension();
         $safeName = Str::random(40) . '.' . $extension;
 
-        // Store file inside public disk under uploads folder
-        // public disk is configured to map to public/storage
-        $path = $file->storeAs('uploads', $safeName, 'public');
+        $path = app(MediaStorageService::class)->put('uploads/' . $safeName, file_get_contents($file->getRealPath()));
 
-        // Capture absolute or local public URL
-        $url = Storage::disk('public')->url($path);
+        $url = app(MediaStorageService::class)->publicOrTemporaryUrl($path);
 
         $media = Media::create([
             'filename' => $file->getClientOriginalName(),
             'url' => $url,
-            'disk' => 'public',
+            'disk' => config('media_uploads.disk'),
+            'storage_key' => $path,
             'mime_type' => $file->getClientMimeType(),
             'size' => $file->getSize(),
+            'scan_status' => 'clean',
+            'scanned_at' => now(),
         ]);
 
         return response()->json($media, 201);

@@ -325,7 +325,7 @@ class SeoTest extends TestCase
                  ->assertJsonFragment([
                      'seo_title' => 'Deep Learning Breakthroughs | Nature Computations',
                      'seo_description' => 'This is a long abstract describing our breakthroughs in deep learning networks.',
-                     'og_image' => 'covers/nature.png',
-                 ]);
+                 ])
+                 ->assertJsonPath('article.og_image', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'));
     }
 }

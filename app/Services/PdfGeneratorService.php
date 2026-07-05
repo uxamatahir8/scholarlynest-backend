@@ -4,7 +4,7 @@ namespace App\Services;
 
 use App\Models\Article;
 use Barryvdh\DomPDF\Facade\Pdf;
-use Illuminate\Support\Facades\Storage;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Support\Str;
 
 class PdfGeneratorService
@@ -21,17 +21,10 @@ class PdfGeneratorService
         $pdf = Pdf::loadHTML($html);
         $pdf->setPaper('a4', 'portrait');
 
-        // 3. Define path and store the PDF file
+        // 3. Define path and store the PDF file on the configured media disk
         $fileName = 'articles/scholarlynest_article_' . $article->id . '_' . Str::slug($article->title) . '.pdf';
-        
-        // Ensure parent directory exists in the public disk
-        Storage::disk('public')->makeDirectory('articles');
-        
-        // Put the file
-        Storage::disk('public')->put($fileName, $pdf->output());
 
-        // Return the relative URL/path accessible via public storage link
-        return 'storage/' . $fileName;
+        return app(MediaStorageService::class)->put($fileName, $pdf->output());
     }
 
     /**

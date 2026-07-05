@@ -5,9 +5,14 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Services\Media\MediaStorageService;
 
 class MagazineIssue extends Model
 {
+    protected $appends = [
+        'cover_image_url',
+    ];
+
     protected $fillable = [
         'magazine_id',
         'volume_number',
@@ -35,5 +40,10 @@ class MagazineIssue extends Model
     public function articles(): HasMany
     {
         return $this->hasMany(Article::class);
+    }
+
+    public function getCoverImageUrlAttribute(): ?string
+    {
+        return app(MediaStorageService::class)->publicOrTemporaryUrl($this->cover_image);
     }
 }
