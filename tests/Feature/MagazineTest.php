@@ -14,6 +14,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\UploadedFile;
 use Spatie\Permission\PermissionRegistrar;
 
 class MagazineTest extends TestCase
@@ -62,6 +63,29 @@ class MagazineTest extends TestCase
                      'title' => 'Test Medical Magazine',
                      'slug' => 'test-medical-magazine'
                  ]);
+    }
+
+    public function test_admin_can_create_magazine_with_uploaded_cover_image(): void
+    {
+        Storage::fake('public');
+
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $response = $this->post('/api/admin/magazines', [
+            'title' => 'Cover Upload Journal',
+            'description' => 'A journal with a local cover.',
+            'cover_image' => UploadedFile::fake()->image('cover.png', 320, 240),
+        ]);
+
+        $response->assertStatus(211)
+            ->assertJsonPath('magazine.title', 'Cover Upload Journal')
+            ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/storage/covers/'));
+
+        $magazine = Magazine::where('title', 'Cover Upload Journal')->firstOrFail();
+        $this->assertStringStartsWith('storage/covers/', $magazine->cover_image);
+        Storage::disk('public')->assertExists(str_replace('storage/', '', $magazine->cover_image));
     }
 
     /**
