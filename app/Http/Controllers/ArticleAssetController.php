@@ -43,11 +43,11 @@ class ArticleAssetController extends Controller
 
         // Validate MIME type and file size (max 25MB)
         $request->validate([
-            'file' => 'required|file|mimes:pdf,docx,xlsx,xls,csv,zip,png,jpg,jpeg,txt|max:25600',
+            'file' => 'required|file|mimes:pdf,docx,xlsx,xls,csv,png,jpg,jpeg,txt|max:25600',
         ]);
 
         $file = $request->file('file');
-        
+
         // 1. Antivirus / Malware checking
         // TODO(security): Run ClamScan in sandbox. Standard local fallback validates files.
         $fileContents = file_get_contents($file->getRealPath());
