@@ -7,6 +7,10 @@ use Illuminate\Support\Facades\Storage;
 
 class MediaStorageService
 {
+    public function __construct(private readonly S3MediaKeyResolver $keys)
+    {
+    }
+
     public function disk(): string
     {
         return config('media_uploads.disk', 's3');
@@ -14,11 +18,12 @@ class MediaStorageService
 
     public function storeUploadedFile(UploadedFile $file, string $directory): string
     {
-        return $file->store($directory, $this->disk());
+        return $file->store($this->keys->withPrefix($directory), $this->disk());
     }
 
     public function put(string $path, string $contents): string
     {
+        $path = $this->keys->withPrefix($path);
         Storage::disk($this->disk())->put($path, $contents);
 
         return $path;
@@ -142,7 +147,7 @@ class MediaStorageService
             return ['disk' => 'public', 'path' => substr($path, strlen('/storage/'))];
         }
 
-        return ['disk' => $this->disk(), 'path' => ltrim($path, '/')];
+        return ['disk' => $this->disk(), 'path' => $this->keys->withPrefix($path)];
     }
 
     public function publicOrTemporaryUrl(?string $path): ?string

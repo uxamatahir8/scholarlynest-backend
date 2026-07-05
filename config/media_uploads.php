@@ -4,6 +4,7 @@ use App\Models\Article;
 
 return [
     'disk' => env('MEDIA_S3_DISK', 's3'),
+    's3_prefix' => trim((string) env('MEDIA_S3_PREFIX', ''), '/'),
     'multipart_threshold_bytes' => (int) env('MEDIA_UPLOAD_MULTIPART_THRESHOLD_BYTES', 16 * 1024 * 1024),
     'part_size_bytes' => max(5 * 1024 * 1024, (int) env('MEDIA_UPLOAD_PART_SIZE_BYTES', 8 * 1024 * 1024)),
     'session_ttl_minutes' => (int) env('MEDIA_UPLOAD_SESSION_TTL_MINUTES', 60),

@@ -84,7 +84,7 @@ class MagazineTest extends TestCase
             ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'));
 
         $magazine = Magazine::where('title', 'Cover Upload Journal')->firstOrFail();
-        $this->assertStringStartsWith('covers/', $magazine->cover_image);
+        $this->assertStringStartsWith(config('media_uploads.s3_prefix') . '/covers/', $magazine->cover_image);
         Storage::disk('s3')->assertExists($magazine->cover_image);
     }
 

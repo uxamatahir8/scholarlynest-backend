@@ -9,6 +9,7 @@ use App\Models\MediaUploadSession;
 use App\Services\Media\AntivirusScannerContract;
 use App\Services\Media\DirectS3UploadService;
 use App\Services\Media\MediaContentInspector;
+use App\Services\Media\S3MediaKeyResolver;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -188,7 +189,7 @@ class ScanPendingMedia implements ShouldQueue
             Media::whereKey($metadata['media_id'])->update(['scan_status' => 'rejected']);
         }
 
-        $quarantineKey = config('media_uploads.prefixes.quarantine') . $session->id;
+        $quarantineKey = app(S3MediaKeyResolver::class)->quarantine($session);
         if (Storage::disk($session->disk)->exists($session->s3_incoming_key)) {
             Storage::disk($session->disk)->copy($session->s3_incoming_key, $quarantineKey);
             Storage::disk($session->disk)->delete($session->s3_incoming_key);

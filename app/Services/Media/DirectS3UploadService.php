@@ -6,22 +6,21 @@ use App\Models\MediaUploadSession;
 use Aws\S3\S3Client;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 class DirectS3UploadService
 {
+    public function __construct(private readonly S3MediaKeyResolver $keys)
+    {
+    }
+
     public function incomingKey(string $purpose, string $extension): string
     {
-        $suffix = $extension ? ".{$extension}" : '';
-        return config('media_uploads.prefixes.incoming') . $purpose . '/' . now()->format('Y/m/d') . '/' . (string) Str::uuid() . $suffix;
+        return $this->keys->incoming($purpose, $extension);
     }
 
     public function cleanKey(MediaUploadSession $session, array $purposeConfig): string
     {
-        $extension = pathinfo($session->safe_display_filename, PATHINFO_EXTENSION);
-        $suffix = $extension ? ".{$extension}" : '';
-
-        return rtrim($purposeConfig['clean_prefix'], '/') . '/' . $session->id . $suffix;
+        return $this->keys->clean($session, $purposeConfig);
     }
 
     public function createMultipartUpload(MediaUploadSession $session): string
@@ -159,7 +158,7 @@ class DirectS3UploadService
 
     public function temporaryDownloadUrl(string $disk, string $key, string $filename): string
     {
-        return Storage::disk($disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
+        return Storage::disk($disk)->temporaryUrl($this->keys->withPrefix($key), now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
             'ResponseContentDisposition' => 'attachment; filename="' . addslashes($filename) . '"',
         ]);
     }

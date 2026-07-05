@@ -14,7 +14,9 @@ use App\Models\Role;
 use App\Models\User;
 use App\Services\Media\AntivirusScanResult;
 use App\Services\Media\AntivirusScannerContract;
+use App\Services\Media\S3MediaKeyResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
@@ -34,6 +36,7 @@ class MediaUploadPipelineTest extends TestCase
 
         config([
             'media_uploads.disk' => 's3',
+            'media_uploads.s3_prefix' => 'dev',
             'queue.default' => 'sync',
         ]);
 
@@ -84,6 +87,35 @@ class MediaUploadPipelineTest extends TestCase
         ])->assertStatus(422);
     }
 
+    public function test_direct_upload_keys_are_server_generated_under_configured_prefix(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_supplementary',
+            'attachable_id' => $this->article->id,
+            'original_filename' => '../../chosen/prefix.pdf',
+            'size_bytes' => 1024,
+            'declared_mime_type' => 'application/pdf',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+
+        $this->assertStringStartsWith('dev/incoming/article_supplementary/', $session->s3_incoming_key);
+        $this->assertStringNotContainsString('chosen/prefix', $session->s3_incoming_key);
+        $this->assertArrayNotHasKey('s3_incoming_key', $response->json('upload'));
+    }
+
+    public function test_generic_raw_media_upload_endpoint_is_disabled(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->post('/api/media', [
+            'file' => UploadedFile::fake()->image('raw.jpg'),
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled. Use the media upload-session direct S3 flow.');
+    }
+
     public function test_pending_scan_file_cannot_be_downloaded(): void
     {
         $file = app(ArticleFileController::class)->createPendingDirectUploadFile($this->article, $this->uploadSession(), [
@@ -121,6 +153,7 @@ class MediaUploadPipelineTest extends TestCase
 
         $this->assertDatabaseHas('media_upload_sessions', ['id' => $session->id, 'status' => 'clean']);
         $this->assertDatabaseHas('article_files', ['id' => $file->id, 'scan_status' => 'clean']);
+        $this->assertStringStartsWith('dev/clean/articles/supplementary/', $session->fresh()->s3_clean_key);
         Storage::disk('s3')->assertMissing($session->s3_incoming_key);
     }
 
@@ -150,6 +183,7 @@ class MediaUploadPipelineTest extends TestCase
 
         $this->assertDatabaseHas('media_upload_sessions', ['id' => $session->id, 'status' => 'rejected']);
         $this->assertDatabaseHas('article_files', ['id' => $file->id, 'scan_status' => 'rejected']);
+        Storage::disk('s3')->assertExists(app(S3MediaKeyResolver::class)->quarantine($session));
     }
 
     private function uploadSession(): MediaUploadSession
@@ -164,7 +198,7 @@ class MediaUploadPipelineTest extends TestCase
             'expected_size_bytes' => 37,
             'declared_mime_type' => 'application/pdf',
             'disk' => 's3',
-            's3_incoming_key' => 'incoming/article_supplementary/test.pdf',
+            's3_incoming_key' => app(S3MediaKeyResolver::class)->incoming('article_supplementary', 'pdf'),
             'upload_mode' => 'single',
             'status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
             'expires_at' => now()->addHour(),
