@@ -28,6 +28,10 @@ class MediaContentInspector
             return ['ok' => false, 'reason' => 'extension_not_allowed', 'mime' => $detectedMime];
         }
 
+        if (!$this->extensionMatchesMime($extension, $detectedMime)) {
+            return ['ok' => false, 'reason' => 'extension_mime_mismatch', 'mime' => $detectedMime];
+        }
+
         if (!$this->validSignature($path, $detectedMime, $extension)) {
             return ['ok' => false, 'reason' => 'signature_mismatch', 'mime' => $detectedMime];
         }
@@ -79,5 +83,28 @@ class MediaContentInspector
         }
 
         return false;
+    }
+
+    private function extensionMatchesMime(string $extension, string $mime): bool
+    {
+        if ($extension === '') {
+            return true;
+        }
+
+        $allowed = [
+            'pdf' => ['application/pdf'],
+            'png' => ['image/png'],
+            'jpg' => ['image/jpeg'],
+            'jpeg' => ['image/jpeg'],
+            'webp' => ['image/webp'],
+            'txt' => ['text/plain'],
+            'csv' => ['text/plain', 'text/csv'],
+            'doc' => ['application/msword', 'application/octet-stream'],
+            'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip'],
+            'xls' => ['application/vnd.ms-excel', 'application/octet-stream'],
+            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/zip'],
+        ];
+
+        return !isset($allowed[$extension]) || in_array($mime, $allowed[$extension], true);
     }
 }

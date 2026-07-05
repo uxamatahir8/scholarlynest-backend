@@ -98,7 +98,17 @@ class ScanPendingMedia implements ShouldQueue
             }
 
             $cleanKey = $s3->cleanKey($session, $purposeConfig);
-            Storage::disk($session->disk)->copy($session->s3_incoming_key, $cleanKey);
+            $cleanSource = Storage::disk($session->disk)->readStream($session->s3_incoming_key);
+            if (!$cleanSource || !Storage::disk($session->disk)->writeStream($cleanKey, $cleanSource)) {
+                if (is_resource($cleanSource)) {
+                    fclose($cleanSource);
+                }
+
+                throw new \RuntimeException('clean_copy_failed');
+            }
+            if (is_resource($cleanSource)) {
+                fclose($cleanSource);
+            }
             if (!Storage::disk($session->disk)->exists($cleanKey)) {
                 throw new \RuntimeException('clean_copy_verification_failed');
             }
@@ -191,7 +201,13 @@ class ScanPendingMedia implements ShouldQueue
 
         $quarantineKey = app(S3MediaKeyResolver::class)->quarantine($session);
         if (Storage::disk($session->disk)->exists($session->s3_incoming_key)) {
-            Storage::disk($session->disk)->copy($session->s3_incoming_key, $quarantineKey);
+            $quarantineSource = Storage::disk($session->disk)->readStream($session->s3_incoming_key);
+            if ($quarantineSource) {
+                Storage::disk($session->disk)->writeStream($quarantineKey, $quarantineSource);
+                if (is_resource($quarantineSource)) {
+                    fclose($quarantineSource);
+                }
+            }
             Storage::disk($session->disk)->delete($session->s3_incoming_key);
         }
     }

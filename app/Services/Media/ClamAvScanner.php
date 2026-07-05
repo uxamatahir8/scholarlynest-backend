@@ -13,7 +13,13 @@ class ClamAvScanner implements AntivirusScannerContract
         }
 
         $binary = config('media_uploads.clamav_binary', env('CLAMAV_SCAN_BINARY', 'clamdscan'));
-        $process = new Process([$binary, '--no-summary', $path]);
+        $arguments = [$binary, '--no-summary'];
+        if (str_ends_with(basename($binary), 'clamdscan')) {
+            $arguments[] = '--fdpass';
+        }
+        $arguments[] = $path;
+
+        $process = new Process($arguments);
         $process->setTimeout((int) env('CLAMAV_SCAN_TIMEOUT_SECONDS', 120));
         $process->run();
 

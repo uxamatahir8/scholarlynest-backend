@@ -11,6 +11,7 @@ return [
     'download_url_ttl_minutes' => (int) env('MEDIA_DOWNLOAD_URL_TTL_MINUTES', 5),
     'scan_fail_closed' => filter_var(env('MEDIA_SCAN_FAIL_CLOSED', true), FILTER_VALIDATE_BOOL),
     'scan_driver' => env('MEDIA_SCAN_DRIVER', 'clamav'),
+    'clamav_binary' => env('CLAMAV_SCAN_BINARY', '/usr/bin/clamdscan'),
     'max_active_sessions_per_user' => (int) env('MEDIA_UPLOAD_MAX_ACTIVE_SESSIONS_PER_USER', 10),
     'presign_ttl_minutes' => min(5, (int) env('MEDIA_UPLOAD_PRESIGN_TTL_MINUTES', 5)),
     'queues' => [

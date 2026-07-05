@@ -6,7 +6,6 @@ use App\Constants\ArticleStatus;
 use App\Models\ArticleFile;
 use App\Models\Article;
 use App\Models\ArticleAsset;
-use App\Services\Media\DirectS3UploadService;
 use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -164,10 +163,12 @@ class ArticleAssetController extends Controller
                 return response()->json(['message' => 'The requested file is not available.'], 404);
             }
 
-            return response()->json([
-                'url' => app(DirectS3UploadService::class)->temporaryDownloadUrl($asset->disk, $key, $asset->safe_original_filename ?: $asset->original_filename),
-                'expires_in_seconds' => config('media_uploads.download_url_ttl_minutes') * 60,
-            ]);
+            return redirect()->away(
+                Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
+                    'ResponseContentDisposition' => 'attachment; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
+                    'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
+                ])
+            );
         }
 
         $relativePath = str_replace('storage/', '', $asset->file_path);

@@ -119,7 +119,7 @@ class ArticleFileWorkflowTest extends TestCase
         $file = ArticleFile::where('file_type', ArticleFile::REVIEWED_MANUSCRIPT)->firstOrFail();
 
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertStatus(200);
+            ->assertRedirect();
 
         Sanctum::actingAs($this->author);
         $this->getJson("/api/articles/files/{$file->id}/download")
