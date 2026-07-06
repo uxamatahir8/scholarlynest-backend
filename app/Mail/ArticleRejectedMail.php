@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
@@ -33,9 +34,10 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
      */
     public function envelope(): Envelope
     {
-        $subject = $this->rejectionType === 'fully_rejected' 
-            ? 'Manuscript Decision: Fully Rejected' 
-            : 'Manuscript Decision: Revisions Required (Minor Review)';
+        $normalizedType = ArticleStatus::normalize($this->rejectionType);
+        $subject = $normalizedType === ArticleStatus::REJECTED
+            ? 'Manuscript Decision: Rejected'
+            : 'Manuscript Decision: Revisions Required';
 
         return new Envelope(
             subject: $subject,
@@ -47,9 +49,10 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
      */
     public function content(): Content
     {
-        $typeLabel = $this->rejectionType === 'fully_rejected' 
-            ? 'Fully Rejected (editing locked)' 
-            : 'Minor Review (revisions required)';
+        $normalizedType = ArticleStatus::normalize($this->rejectionType);
+        $typeLabel = $normalizedType === ArticleStatus::REJECTED
+            ? 'Rejected (editing locked)'
+            : ArticleStatus::AUTHOR_VISIBLE[$normalizedType] ?? 'Revisions required';
 
         $bodyLines = [
             "We have completed the editorial review of your manuscript: <strong>" . e($this->article->title) . "</strong>.",
@@ -61,7 +64,7 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
             $bodyLines[] = "<div style='background-color: #fafafa; border-left: 4px solid #e4e4e7; padding: 16px; font-style: italic; color: #52525b; margin: 16px 0;'>" . nl2br(e($this->feedbackNotes)) . "</div>";
         }
 
-        if ($this->rejectionType === 'minor_review_rejected') {
+        if (ArticleStatus::isRevisionRequired($this->rejectionType)) {
             $bodyLines[] = "Your manuscript remains open for edits. You may modify the details and click save to automatically resubmit your manuscript for re-evaluation.";
         } else {
             $bodyLines[] = "This manuscript decision is final. Modifying this manuscript is now locked.";

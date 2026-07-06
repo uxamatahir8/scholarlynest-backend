@@ -38,12 +38,47 @@ class CmsPageController extends Controller
             ], 404);
         }
 
-        $pageData = $page->toArray();
-        $pageData['seo_title'] = $page->seo_title ?: $page->title . ' | ScholarlyNest';
-        $pageData['seo_description'] = $page->seo_description ?: \Illuminate\Support\Str::limit(strip_tags($page->content_html), 160, '');
-        $pageData['seo_keywords'] = $page->seo_keywords ?: '';
+        return response()->json([
+            'id' => $page->id,
+            'title' => $page->title,
+            'slug' => $page->slug,
+            'content_html' => $page->content_html,
+            'content_text' => $page->content_text,
+            'seo_title' => $page->seo_title ?: $page->title . ' | ScholarlyNest',
+            'seo_description' => $page->seo_description ?: \Illuminate\Support\Str::limit(strip_tags($page->content_html), 160, ''),
+            'seo_keywords' => $page->seo_keywords ?: '',
+            'updated_at' => $page->updated_at,
+        ]);
+    }
 
-        return response()->json($pageData);
+    /**
+     * Get a CMS page for authenticated internal management, including inactive pages.
+     */
+    public function adminShow(Request $request, string $slug): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user || (
+            !$user->hasRole('super_admin')
+            && !$user->hasRole('admin')
+            && !$user->hasPermission('settings.manage')
+            && !$user->hasPermission('seo.cms-pages')
+        )) {
+            return response()->json([
+                'message' => 'Unauthorized. CMS management privileges are required.'
+            ], 403);
+        }
+
+        $page = CmsPage::where('slug', $slug)->first();
+
+        if (!$page) {
+            return response()->json([
+                'message' => 'Requested page content could not be located.'
+            ], 404);
+        }
+
+        return response()->json([
+            'page' => $this->cmsPagePayload($page),
+        ]);
     }
 
     /**
@@ -118,7 +153,7 @@ class CmsPageController extends Controller
 
         return response()->json([
             'message' => 'CMS Page Content updated successfully.',
-            'page' => $page
+            'page' => $this->cmsPagePayload($page),
         ]);
     }
 
@@ -153,7 +188,23 @@ class CmsPageController extends Controller
 
         return response()->json([
             'message' => 'CMS Page SEO metadata updated successfully.',
-            'page' => $page,
+            'page' => $this->cmsPagePayload($page),
         ]);
+    }
+
+    private function cmsPagePayload(CmsPage $page): array
+    {
+        return [
+            'id' => $page->id,
+            'title' => $page->title,
+            'slug' => $page->slug,
+            'content_html' => $page->content_html,
+            'content_text' => $page->content_text,
+            'is_active' => (bool) $page->is_active,
+            'seo_title' => $page->seo_title,
+            'seo_description' => $page->seo_description,
+            'seo_keywords' => $page->seo_keywords,
+            'updated_at' => $page->updated_at,
+        ];
     }
 }

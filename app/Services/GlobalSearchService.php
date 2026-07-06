@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Constants\ArticleStatus;
 use App\Models\Magazine;
 use App\Models\Article;
 use App\Models\MagazinePage;
@@ -47,10 +48,10 @@ class GlobalSearchService
             }
         }
 
-        // 2. Articles (Search title, abstract, tags - status must be approved)
+        // 2. Articles (Search title, abstract, tags - accepted/legacy approved compatibility)
         if ($type === 'all' || $type === 'article') {
             $articles = Article::with(['magazine', 'tags', 'user'])
-                ->where('status', 'approved')
+                ->whereIn('status', ArticleStatus::queryValues(ArticleStatus::ACCEPTED))
                 ->where(function ($q) use ($query) {
                     $q->where('title', 'like', "%{$query}%")
                         ->orWhere('abstract', 'like', "%{$query}%")

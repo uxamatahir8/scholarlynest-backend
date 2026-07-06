@@ -5,11 +5,16 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
 
 class Magazine extends Model
 {
     use HasFactory, Auditable;
+
+    protected $appends = [
+        'cover_image_url',
+    ];
 
     protected $fillable = [
         'title',
@@ -38,6 +43,11 @@ class Magazine extends Model
         return $this->hasMany(Article::class);
     }
 
+    public function issues(): HasMany
+    {
+        return $this->hasMany(MagazineIssue::class);
+    }
+
     /**
      * Get the tags associated with this magazine.
      */
@@ -51,7 +61,26 @@ class Magazine extends Model
      */
     public function editors(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
-        return $this->belongsToMany(User::class, 'magazine_user', 'magazine_id', 'user_id');
+        return $this->belongsToMany(User::class, 'magazine_user', 'magazine_id', 'user_id')
+            ->withPivot(['role', 'assigned_by'])
+            ->withTimestamps();
+    }
+
+    public function getCoverImageUrlAttribute(): ?string
+    {
+        $path = $this->cover_image;
+        if (!$path) {
+            return null;
+        }
+
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://') || str_starts_with($path, 'data:')) {
+            return $path;
+        }
+
+        if (str_starts_with($path, '/images/') || str_starts_with($path, 'images/')) {
+            return str_starts_with($path, '/') ? $path : '/' . $path;
+        }
+
+        return app(MediaStorageService::class)->publicOrTemporaryUrl($path);
     }
 }
-

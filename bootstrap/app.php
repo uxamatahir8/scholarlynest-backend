@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Exceptions\ThrottleRequestsException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -14,8 +15,18 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'permission' => \App\Http\Middleware\AuthorizePermission::class,
+            'super-admin' => \App\Http\Middleware\RequireSuperAdmin::class,
+            'super-admin-delete' => \App\Http\Middleware\RequireSuperAdminForDeletes::class,
+        ]);
+        $middleware->appendToGroup('api', [
+            \App\Http\Middleware\ValidateImpersonationSession::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->render(function (ThrottleRequestsException $e) {
+            return response()->json([
+                'message' => 'Too many requests. Please try again later.',
+                'code' => 'rate_limit_exceeded',
+            ], 429, $e->getHeaders());
+        });
     })->create();

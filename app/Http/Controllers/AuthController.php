@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\Role;
+use App\Models\Setting;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,7 +25,7 @@ class AuthController extends Controller
     /**
      * Generate and dispatch a beautiful HTML verification email.
      */
-    private function sendHtmlEmail(string $email, string $subject, string $title, string $description, string $code): void
+    private function sendHtmlEmail(string $email, string $subject, string $title, string $description, string $code, ?array $action = null): void
     {
         $user = User::where('email', $email)->first();
         $userId = $user ? $user->id : null;
@@ -39,7 +41,7 @@ class AuthController extends Controller
             $subject,
             $title,
             $bodyLines,
-            null,
+            $action,
             'high',
             $userId
         );
@@ -51,6 +53,10 @@ class AuthController extends Controller
      */
     public function register(Request $request): JsonResponse
     {
+        if (!$this->publicRegistrationEnabled()) {
+            return response()->json(['message' => 'Registration is currently closed.'], 403);
+        }
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
@@ -64,7 +70,8 @@ class AuthController extends Controller
             ],
         ]);
 
-        $code = strval(mt_rand(100000, 999999));
+        $defaultRole = $this->defaultRegistrationRole();
+        $code = strval(random_int(100000, 999999));
 
         $user = User::create([
             'name' => $request->name,
@@ -73,15 +80,8 @@ class AuthController extends Controller
             'university_name' => $request->university_name,
             'verification_code' => $code,
             'verification_code_expires_at' => now()->addMinutes(15),
+            'role_id' => $defaultRole?->id,
         ]);
-
-        // Dynamically assign the default registration role from settings
-        $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
-        $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
-        if ($defaultRole) {
-            $user->role_id = $defaultRole->id;
-            $user->save();
-        }
 
         if ($request->boolean('subscribe_newsletter')) {
             \App\Models\NewsletterSubscriber::firstOrCreate([
@@ -145,7 +145,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Email verified successfully.',
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -170,7 +170,7 @@ class AuthController extends Controller
             return response()->json(['message' => 'Email is already verified.'], 400);
         }
 
-        $code = strval(mt_rand(100000, 999999));
+        $code = strval(random_int(100000, 999999));
         $user->update([
             'verification_code' => $code,
             'verification_code_expires_at' => now()->addMinutes(15),
@@ -210,7 +210,7 @@ class AuthController extends Controller
         // If email is not verified, return verification required status
         if (!$user->email_verified_at) {
             if (!$user->verification_code || now()->gt($user->verification_code_expires_at)) {
-                $code = strval(mt_rand(100000, 999999));
+                $code = strval(random_int(100000, 999999));
                 $user->update([
                     'verification_code' => $code,
                     'verification_code_expires_at' => now()->addMinutes(15),
@@ -231,7 +231,7 @@ class AuthController extends Controller
 
         // If Two-Factor Authentication is enabled, trigger the validation workflow
         if ($user->two_factor_enabled) {
-            $code = strval(mt_rand(100000, 999999));
+            $code = strval(random_int(100000, 999999));
             $user->update([
                 'two_factor_code' => $code,
                 'two_factor_code_expires_at' => now()->addMinutes(15),
@@ -253,7 +253,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -293,7 +293,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -320,7 +320,7 @@ class AuthController extends Controller
     public function request2FaDisableCode(Request $request): JsonResponse
     {
         $user = $request->user();
-        $code = strval(mt_rand(100000, 999999));
+        $code = strval(random_int(100000, 999999));
 
         $user->update([
             'two_factor_code' => $code,
@@ -377,7 +377,7 @@ class AuthController extends Controller
     public function requestPasswordChangeCode(Request $request): JsonResponse
     {
         $user = $request->user();
-        $code = strval(mt_rand(100000, 999999));
+        $code = strval(random_int(100000, 999999));
 
         $user->update([
             'password_change_code' => $code,
@@ -464,7 +464,7 @@ class AuthController extends Controller
     public function verifyPasswordResetCode(Request $request): JsonResponse
     {
         $request->validate([
-            'email' => 'required|string|email|exists:users,email',
+            'email' => 'required|string|email',
             'code' => 'required|string|size:6',
         ]);
 
@@ -472,7 +472,7 @@ class AuthController extends Controller
             ->where('email', $request->email)
             ->first();
 
-        if (!$reset || $reset->token !== $request->code) {
+        if (!$reset || !Hash::check($request->code, $reset->token)) {
             return response()->json(['message' => 'Invalid password reset code.'], 400);
         }
 
@@ -509,7 +509,7 @@ class AuthController extends Controller
     public function me(Request $request): JsonResponse
     {
         return response()->json([
-            'user' => $request->user()->load('role.permissions')
+            'user' => $this->authUserPayload($request->user())
         ]);
     }
 
@@ -562,7 +562,7 @@ class AuthController extends Controller
 
         // If Two-Factor Authentication is enabled, trigger the validation workflow
         if ($user->two_factor_enabled) {
-            $code = strval(mt_rand(100000, 999999));
+            $code = strval(random_int(100000, 999999));
             $user->update([
                 'two_factor_code' => $code,
                 'two_factor_code_expires_at' => now()->addMinutes(15),
@@ -584,7 +584,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ]);
@@ -595,6 +595,10 @@ class AuthController extends Controller
      */
     public function googleSignUp(Request $request): JsonResponse
     {
+        if (!$this->publicRegistrationEnabled()) {
+            return response()->json(['message' => 'Registration is currently closed.'], 403);
+        }
+
         $request->validate([
             'credential' => 'required|string',
         ]);
@@ -626,6 +630,8 @@ class AuthController extends Controller
             ], 422);
         }
 
+        $defaultRole = $this->defaultRegistrationRole();
+
         // Create new user
         $user = User::create([
             'name' => $name,
@@ -634,15 +640,8 @@ class AuthController extends Controller
             'university_name' => null,
             'password' => null, // Password is null for social logins
             'email_verified_at' => now(), // Auto-verified via Google
+            'role_id' => $defaultRole?->id,
         ]);
-
-        // Dynamically assign the default registration role from settings
-        $defaultRoleName = \App\Models\Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
-        $defaultRole = \App\Models\Role::where('name', $defaultRoleName)->first();
-        if ($defaultRole) {
-            $user->role_id = $defaultRole->id;
-            $user->save();
-        }
 
         if ($request->boolean('subscribe_newsletter')) {
             \App\Models\NewsletterSubscriber::firstOrCreate([
@@ -652,7 +651,7 @@ class AuthController extends Controller
 
         // If Two-Factor Authentication is enabled, trigger the validation workflow
         if ($user->two_factor_enabled) {
-            $code = strval(mt_rand(100000, 999999));
+            $code = strval(random_int(100000, 999999));
             $user->update([
                 'two_factor_code' => $code,
                 'two_factor_code_expires_at' => now()->addMinutes(15),
@@ -674,7 +673,7 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'user' => $user->load('role.permissions'),
+            'user' => $this->authUserPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ], 201);
@@ -686,26 +685,39 @@ class AuthController extends Controller
     public function forgotPassword(Request $request): JsonResponse
     {
         $request->validate([
-            'email' => 'required|string|email|exists:users,email',
+            'email' => 'required|string|email',
         ]);
 
-        $code = strval(mt_rand(100000, 999999));
+        $user = User::where('email', $request->email)->first();
 
-        DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $request->email],
-            [
-                'token' => $code,
-                'created_at' => now(),
-            ]
-        );
+        // Account-enumeration-safe messaging
+        if ($user) {
+            $code = strval(random_int(100000, 999999));
 
-        $this->sendHtmlEmail(
-            $request->email,
-            "Reset Your Password",
-            "Password Reset Request",
-            "We received a request to reset your password. Use the 6-digit confirmation code below to verify ownership and authorization.",
-            $code
-        );
+            DB::table('password_reset_tokens')->updateOrInsert(
+                ['email' => $request->email],
+                [
+                    'token' => Hash::make($code),
+                    'created_at' => now(),
+                ]
+            );
+
+            $frontendUrl = env('APP_URL_FRONTEND', 'https://dev.scholarlynest.com');
+            $resetUrl = rtrim($frontendUrl, '/') . '/reset-password?email=' . urlencode($request->email) . '&code=' . urlencode($code);
+            $action = [
+                'text' => 'Reset Your Password',
+                'url' => $resetUrl,
+            ];
+
+            $this->sendHtmlEmail(
+                $request->email,
+                "Reset Your Password",
+                "Password Reset Request",
+                "We received a request to reset your password. Use the 6-digit confirmation code below or click the link to verify ownership and authorize.",
+                $code,
+                $action
+            );
+        }
 
         return response()->json([
             'message' => 'Password reset code sent successfully.',
@@ -718,7 +730,7 @@ class AuthController extends Controller
     public function resetPassword(Request $request): JsonResponse
     {
         $request->validate([
-            'email' => 'required|string|email|exists:users,email',
+            'email' => 'required|string|email',
             'code' => 'required|string|size:6',
             'password' => [
                 'required',
@@ -733,7 +745,7 @@ class AuthController extends Controller
             ->where('email', $request->email)
             ->first();
 
-        if (!$reset || $reset->token !== $request->code) {
+        if (!$reset || !Hash::check($request->code, $reset->token)) {
             return response()->json(['message' => 'Invalid password reset code.'], 400);
         }
 
@@ -742,6 +754,10 @@ class AuthController extends Controller
         }
 
         $user = User::where('email', $request->email)->first();
+        if (!$user) {
+            return response()->json(['message' => 'Invalid password reset code.'], 400);
+        }
+
         $user->update([
             'password' => Hash::make($request->password),
         ]);
@@ -816,7 +832,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Password updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
     }
 
@@ -841,7 +857,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Profile updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
     }
 
@@ -851,7 +867,7 @@ class AuthController extends Controller
     public function requestCurrentEmailCode(Request $request): JsonResponse
     {
         $user = $request->user();
-        $code = sprintf("%06d", mt_rand(100000, 999999));
+        $code = sprintf("%06d", random_int(100000, 999999));
 
         $user->update([
             'email_change_code' => $code,
@@ -925,7 +941,7 @@ class AuthController extends Controller
             'email' => 'required|string|email|max:255|unique:users,email',
         ]);
 
-        $code = sprintf("%06d", mt_rand(100000, 999999));
+        $code = sprintf("%06d", random_int(100000, 999999));
 
         $user->update([
             'pending_email' => $request->email,
@@ -994,7 +1010,125 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Email updated successfully.',
-            'user' => $user->load('role.permissions')
+            'user' => $this->authUserPayload($user)
         ]);
+    }
+
+    private function publicRegistrationEnabled(): bool
+    {
+        $value = Setting::where('key', 'registration_enabled')->value('value');
+        if ($value === null) {
+            return true;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function defaultRegistrationRole(): ?Role
+    {
+        $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
+        $role = Role::where('name', $roleName)->first();
+
+        if (!$this->isRegistrationEligibleRole($role)) {
+            $role = Role::where('name', 'author')->first();
+        }
+
+        return $role;
+    }
+
+    private function isRegistrationEligibleRole(?Role $role): bool
+    {
+        return $role && $role->name === 'author';
+    }
+
+    private function authUserPayload(User $user): array
+    {
+        $user->loadMissing('role.permissions');
+        $role = $user->role;
+        $permissionNames = $role?->permissions
+            ? $role->permissions->pluck('name')->values()->all()
+            : [];
+        $isRbacAdmin = $user->hasRole('super_admin') || $user->hasRole('admin');
+
+        $payload = [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'profile_image' => $user->profile_image,
+            'university_name' => $user->university_name,
+            'email_verified_at' => $user->email_verified_at,
+            'needs_password_reset' => (bool) $user->needs_password_reset,
+            'two_factor_enabled' => (bool) $user->two_factor_enabled,
+            'role_id' => $user->role_id,
+            'role' => $role ? [
+                'id' => $role->id,
+                'name' => $role->name,
+                'display_name' => $role->display_name,
+            ] : null,
+            'roles' => $role ? [[
+                'id' => $role->id,
+                'name' => $role->name,
+                'display_name' => $role->display_name,
+            ]] : [],
+            'capabilities' => $this->capabilityPayload($permissionNames, $user),
+        ];
+
+        if ($isRbacAdmin) {
+            $payload['permissions'] = $role?->permissions
+                ? $role->permissions->map(fn ($permission) => [
+                    'id' => $permission->id,
+                    'name' => $permission->name,
+                    'module' => $permission->module,
+                ])->values()->all()
+                : [];
+        }
+
+        return $payload;
+    }
+
+    private function capabilityPayload(array $permissionNames, User $user): array
+    {
+        $permissions = array_fill_keys($permissionNames, true);
+        $isSuperAdmin = $user->hasRole('super_admin');
+        $allowList = [
+            'articles.view-any',
+            'articles.view-own',
+            'articles.create',
+            'articles.edit-own',
+            'articles.approve',
+            'articles.auto-approve',
+            'articles.manage-assets',
+            'magazines.view-any',
+            'magazines.view-own',
+            'magazines.create',
+            'magazines.edit',
+            'magazines.delete',
+            'seo.articles',
+            'seo.magazines',
+            'seo.cms-pages',
+            'roles.view-any',
+            'settings.view-any',
+            'settings.manage',
+            'footer.manage',
+            'newsletters.view-any',
+            'newsletters.send',
+        ];
+
+        $capabilities = [];
+        foreach ($allowList as $permission) {
+            $capabilities[$permission] = $isSuperAdmin || isset($permissions[$permission]);
+        }
+
+        $capabilities['can_view_author_dashboard'] = $user->hasRole('author') || ($capabilities['articles.view-own'] ?? false);
+        $capabilities['can_view_editor_dashboard'] = $user->hasRole('editor') || ($capabilities['articles.approve'] ?? false);
+        $capabilities['can_view_sub_editor_dashboard'] = $user->hasRole('sub_editor');
+        $capabilities['can_view_reviewer_dashboard'] = $user->hasRole('reviewer');
+        $capabilities['can_view_publisher_dashboard'] = $user->hasRole('publisher');
+        $capabilities['can_view_copy_editor_dashboard'] = $user->hasRole('copy_editor');
+        $capabilities['can_view_proofreader_dashboard'] = $user->hasRole('proofreader');
+        $capabilities['can_manage_assigned_magazines'] = ($capabilities['magazines.view-any'] ?? false) || ($capabilities['magazines.view-own'] ?? false);
+        $capabilities['can_manage_rbac'] = $isSuperAdmin || ($capabilities['roles.view-any'] ?? false);
+
+        return $capabilities;
     }
 }

@@ -170,6 +170,42 @@ class AuthorizePermission
                     if ($resource->user_id === $user->id) {
                         return $next($request);
                     }
+                    $isMagazineAssigned = \DB::table('magazine_user')
+                        ->where('user_id', $user->id)
+                        ->where('magazine_id', $resource->magazine_id)
+                        ->where(function ($query) {
+                            $query->whereIn('role', [
+                                'editor',
+                                'magazine_editor',
+                                'sub_editor',
+                                'reviewer',
+                                'publisher',
+                                'copy_editor',
+                                'proofreader',
+                            ])->orWhereNull('role');
+                        })
+                        ->exists();
+                    if ($isMagazineAssigned) {
+                        return $next($request);
+                    }
+                    if ($user->hasRole('sub_editor') && \DB::table('sub_editor_assignments')
+                        ->where('article_id', $resource->id)
+                        ->where('sub_editor_id', $user->id)
+                        ->exists()) {
+                        return $next($request);
+                    }
+                    if ($user->hasRole('reviewer') && \DB::table('reviewer_assignments')
+                        ->where('article_id', $resource->id)
+                        ->where('reviewer_id', $user->id)
+                        ->exists()) {
+                        return $next($request);
+                    }
+                    if (($user->hasRole('copy_editor') || $user->hasRole('proofreader')) && \DB::table('production_assignments')
+                        ->where('article_id', $resource->id)
+                        ->where('user_id', $user->id)
+                        ->exists()) {
+                        return $next($request);
+                    }
                     $isCoAuthorEditor = \DB::table('article_author')
                         ->where('article_id', $resource->id)
                         ->where('user_id', $user->id)

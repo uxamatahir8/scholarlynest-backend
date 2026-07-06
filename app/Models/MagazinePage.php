@@ -17,6 +17,14 @@ class MagazinePage extends Model
         'slug',
         'content',
         'sort_order',
+        'status',
+        'created_by',
+        'created_by_role',
+        'is_editor_created',
+    ];
+
+    protected $casts = [
+        'is_editor_created' => 'boolean',
     ];
 
     /**
@@ -25,5 +33,10 @@ class MagazinePage extends Model
     public function magazine(): BelongsTo
     {
         return $this->belongsTo(Magazine::class);
+    }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 }

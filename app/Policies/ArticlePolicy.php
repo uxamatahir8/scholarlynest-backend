@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Constants\ArticleStatus;
 use App\Models\User;
 use App\Models\Article;
 use Illuminate\Auth\Access\HandlesAuthorization;
@@ -17,7 +18,7 @@ class ArticlePolicy
     public function view(?User $user, Article $article): bool
     {
         // Publicly published articles can be viewed by anyone
-        if ($article->status === 'published') {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED) {
             return true;
         }
 
@@ -26,25 +27,64 @@ class ArticlePolicy
             return false;
         }
 
-        // Super admins, admins, and editors can view any article
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        // Super admins and legacy admins can view any article.
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        // Assigned magazine editors can view
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            $isAssigned = DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->where('magazine_id', $article->magazine_id)
-                ->exists();
-            if ($isAssigned) {
-                return true;
-            }
+        // Editors and legacy magazine editors can view assigned magazines.
+        if ($this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor'])) {
+            return true;
         }
 
         // Primary author can view
         if ($article->user_id === $user->id) {
             return true;
+        }
+
+        // Sub Editor assignment
+        if ($user->hasRole('sub_editor')) {
+            $isAssignedSubEditor = DB::table('sub_editor_assignments')
+                ->where('article_id', $article->id)
+                ->where('sub_editor_id', $user->id)
+                ->exists();
+            if ($isAssignedSubEditor) {
+                return true;
+            }
+        }
+
+        // Reviewer assignment
+        if ($user->hasRole('reviewer')) {
+            $isAssignedReviewer = DB::table('reviewer_assignments')
+                ->where('article_id', $article->id)
+                ->where('reviewer_id', $user->id)
+                ->exists();
+            if ($isAssignedReviewer) {
+                return true;
+            }
+        }
+
+        // Production assignment
+        if ($user->hasRole('copy_editor')) {
+            $isAssignedProduction = DB::table('production_assignments')
+                ->where('article_id', $article->id)
+                ->where('user_id', $user->id)
+                ->where('role', 'copy_editor')
+                ->exists();
+            if ($isAssignedProduction) {
+                return true;
+            }
+        }
+
+        if ($user->hasRole('proofreader')) {
+            $isAssignedProduction = DB::table('production_assignments')
+                ->where('article_id', $article->id)
+                ->where('user_id', $user->id)
+                ->where('role', 'proofreader')
+                ->exists();
+            if ($isAssignedProduction && $this->isAssignedMagazineRole($user, $article, ['proofreader'])) {
+                return true;
+            }
         }
 
         // Co-authors linked by user_id or email can view
@@ -62,22 +102,17 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
-        // Super admins, admins, and editors can edit any article
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return false;
+        }
+
+        // Super admins and legacy admins can edit any article.
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        // Assigned magazine editors CANNOT edit (returns false unconditionally)
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            return false;
-        }
-
-        // Authors (and editing co-authors) must be blocked from modifying their manuscript
-
-        // if status is not explicitly 'minor_review_rejected'
-        if ($article->status !== 'minor_review_rejected') {
-            return false;
-        }
+        // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
+        // Normal article content edits stay limited to authors during editable statuses.
 
         // Primary author can edit
         if ($article->user_id === $user->id) {
@@ -97,18 +132,29 @@ class ArticlePolicy
      */
     public function approve(User $user, Article $article): bool
     {
-        if ($user->hasRole('super_admin') || $user->hasRole('admin') || $user->hasRole('editor')) {
+        if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }
 
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            return DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->where('magazine_id', $article->magazine_id)
-                ->exists();
-        }
+        return $this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor']);
+    }
 
-        return false;
+    private function isAssignedMagazineRole(User $user, Article $article, array $roles): bool
+    {
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
+            ->unique()
+            ->values()
+            ->all();
+
+        return DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where('magazine_id', $article->magazine_id)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->exists();
     }
 }
-

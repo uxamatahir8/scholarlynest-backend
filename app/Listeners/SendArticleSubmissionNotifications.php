@@ -3,8 +3,11 @@
 namespace App\Listeners;
 
 use App\Events\ArticleSubmitted;
+use App\Models\ArticleAuditLog;
+use App\Models\User;
 use App\Services\NotificationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Collection;
 
 class SendArticleSubmissionNotifications implements ShouldQueue
 {
@@ -24,11 +27,12 @@ class SendArticleSubmissionNotifications implements ShouldQueue
     public function handle(ArticleSubmitted $event): void
     {
         $article = $event->article;
-        $article->load('user');
+        $article->load(['user', 'magazine']);
         $primaryAuthor = $article->user;
         $coAuthorsData = $event->coAuthorsData;
 
         $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
+        $recipientCount = 0;
 
         // 1. Send to the Primary Author
         if ($primaryAuthor) {
@@ -38,7 +42,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
             $bodyLines = [
                 'We are pleased to confirm that your manuscript titled "' . $article->title . '" has been successfully submitted to ScholarlyNest.',
                 'Submission Reference Token: <strong>' . $trackingToken . '</strong>',
-                'Your manuscript is currently in "pending" status and will proceed through the editorial and peer-review workflows. You can monitor the progress of your submission directly from your Author Dashboard.',
+                'Your manuscript is currently in "submitted" status and will proceed through the editorial and peer-review workflows. You can monitor the progress of your submission directly from your Author Dashboard.',
                 'Thank you for publishing your research with ScholarlyNest.'
             ];
             $action = [
@@ -55,6 +59,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 'default',
                 $primaryAuthor->id
             );
+            $recipientCount++;
         }
 
         // 2. Send to Co-Authors
@@ -89,6 +94,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                     'high',
                     $coAuthor['user_id'] ?? null
                 );
+                $recipientCount++;
             } else {
                 // Text-only informational notification email (for existing account or create_account = false)
                 $subject = 'Notification: Co-Author Designation';
@@ -107,7 +113,76 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                     'default',
                     $coAuthor['user_id'] ?? null
                 );
+                $recipientCount++;
             }
         }
+
+        $staffRecipients = $this->staffRecipients($article);
+        foreach ($staffRecipients as $recipient) {
+            $this->notificationService->send(
+                $recipient['email'],
+                'New Manuscript Submitted: ' . $article->title,
+                $recipient['name'] ? 'Dear ' . $recipient['name'] . ',' : 'Hello,',
+                [
+                    'A new manuscript titled "' . $article->title . '" has been submitted to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
+                    'Please open the admin article board to begin editorial screening and assignment.',
+                ],
+                [
+                    'text' => 'Open Article Board',
+                    'url' => $frontendUrl . '/admin/articles',
+                ],
+                'default',
+                $recipient['user_id'] ?? null
+            );
+            $recipientCount++;
+        }
+
+        ArticleAuditLog::create([
+            'article_id' => $article->id,
+            'actor_id' => $primaryAuthor?->id,
+            'event' => 'notification.sent',
+            'from_status' => $article->status,
+            'to_status' => $article->status,
+            'payload' => [
+                'workflow_event' => 'article.submitted',
+                'recipient_count' => $recipientCount,
+                'recipient_types' => ['article_owner', 'corresponding_author', 'editor', 'super_admin'],
+            ],
+        ]);
+    }
+
+    private function staffRecipients($article): Collection
+    {
+        $editors = collect(User::query()
+            ->whereHas('magazines', function ($query) use ($article) {
+                $query->where('magazines.id', $article->magazine_id)
+                    ->where(function ($pivotQuery) {
+                        $pivotQuery->whereIn('magazine_user.role', ['editor', 'magazine_editor'])
+                            ->orWhereNull('magazine_user.role');
+                    });
+            })
+            ->get()
+            ->map(fn (User $user) => [
+                'email' => $user->email,
+                'name' => $user->name,
+                'user_id' => $user->id,
+            ])
+            ->all());
+
+        $superAdmins = collect(User::query()
+            ->whereHas('role', fn ($query) => $query->where('name', 'super_admin'))
+            ->get()
+            ->map(fn (User $user) => [
+                'email' => $user->email,
+                'name' => $user->name,
+                'user_id' => $user->id,
+            ])
+            ->all());
+
+        return $editors
+            ->merge($superAdmins)
+            ->filter(fn ($recipient) => !empty($recipient['email']))
+            ->unique(fn ($recipient) => strtolower($recipient['email']))
+            ->values();
     }
 }

@@ -116,34 +116,15 @@ class ArticleAssetTest extends TestCase
     {
         Sanctum::actingAs($this->author);
 
-        $file = UploadedFile::fake()->create('dataset.xlsx', 500, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-
         $response = $this->postJson("/api/articles/{$this->article->id}/assets", [
-            'file' => $file,
+            'file' => UploadedFile::fake()->create('dataset.xlsx', 500, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
         ]);
 
-        $response->assertStatus(201)
-                 ->assertJsonStructure([
-                     'message',
-                     'asset' => [
-                         'id',
-                         'article_id',
-                         'file_path',
-                         'original_filename',
-                         'file_size',
-                         'mime_type',
-                     ]
-                 ]);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
 
-        $this->assertDatabaseHas('article_assets', [
-            'article_id' => $this->article->id,
-            'original_filename' => 'dataset.xlsx',
-            'mime_type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        ]);
-
-        $asset = ArticleAsset::first();
-        $relativePath = str_replace('storage/', '', $asset->file_path);
-        Storage::disk('public')->assertExists($relativePath);
+        $this->assertDatabaseEmpty('article_assets');
+        $this->assertDatabaseEmpty('article_files');
     }
 
     /**
@@ -161,10 +142,8 @@ class ArticleAssetTest extends TestCase
             'file' => $file,
         ]);
 
-        $response->assertStatus(422)
-                 ->assertJsonFragment([
-                     'message' => 'Malware scan failed: Infected file detected.'
-                 ]);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
 
         $this->assertDatabaseEmpty('article_assets');
     }
@@ -182,14 +161,15 @@ class ArticleAssetTest extends TestCase
             'file' => $file,
         ]);
 
-        $response->assertStatus(403);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
         $this->assertDatabaseEmpty('article_assets');
     }
 
     /**
-     * Test author can delete supplementary assets.
+     * Test only Super Admin can delete supplementary assets.
      */
-    public function test_author_can_delete_article_assets(): void
+    public function test_only_super_admin_can_delete_article_assets(): void
     {
         Sanctum::actingAs($this->author);
 
@@ -206,24 +186,65 @@ class ArticleAssetTest extends TestCase
 
         Storage::disk('public')->assertExists($path);
 
-        $response = $this->deleteJson("/api/articles/assets/{$asset->id}");
+        $this->deleteJson("/api/articles/assets/{$asset->id}")->assertForbidden();
+        $this->assertDatabaseHas('article_assets', ['id' => $asset->id]);
+        Storage::disk('public')->assertExists($path);
 
-        $response->assertStatus(200)
-                 ->assertJsonFragment([
-                     'message' => 'Asset deleted successfully.'
-                 ]);
+        $superRole = Role::create([
+            'name' => 'super_admin',
+            'display_name' => 'Super Admin',
+            'is_system' => true,
+        ]);
+        $superRole->permissions()->sync(Permission::pluck('id'));
+        $superAdmin = User::create([
+            'name' => 'Super Admin',
+            'email' => 'super@test.com',
+            'password' => Hash::make('password123'),
+            'role_id' => $superRole->id,
+            'email_verified_at' => now(),
+        ]);
+
+        Sanctum::actingAs($superAdmin);
+
+        $this->deleteJson("/api/articles/assets/{$asset->id}")
+            ->assertOk()
+            ->assertJsonFragment(['message' => 'Asset deleted successfully.']);
 
         $this->assertDatabaseMissing('article_assets', ['id' => $asset->id]);
         Storage::disk('public')->assertMissing($path);
     }
 
     /**
-     * Test public user can download assets for approved articles.
+     * Test public user cannot download assets for approved articles until published.
      */
-    public function test_public_user_can_download_assets_for_approved_articles(): void
+    public function test_public_user_cannot_download_assets_for_approved_articles(): void
     {
         // Approve the article
         $this->article->update(['status' => 'approved']);
+
+        // Create a fake file in disk
+        $path = Storage::disk('public')->putFile('assets', UploadedFile::fake()->create('supplement.pdf'));
+
+        $asset = ArticleAsset::create([
+            'article_id' => $this->article->id,
+            'file_path' => 'storage/' . $path,
+            'original_filename' => 'supplement.pdf',
+            'file_size' => 4567,
+            'mime_type' => 'application/pdf',
+        ]);
+
+        $response = $this->get("/api/articles/assets/{$asset->id}/download");
+
+        $response->assertStatus(403);
+    }
+
+    /**
+     * Test public user can download assets for published articles.
+     */
+    public function test_public_user_can_download_assets_for_published_articles(): void
+    {
+        // Publish the article
+        $this->article->update(['status' => 'published']);
 
         // Create a fake file in disk
         $path = Storage::disk('public')->putFile('assets', UploadedFile::fake()->create('supplement.pdf'));
