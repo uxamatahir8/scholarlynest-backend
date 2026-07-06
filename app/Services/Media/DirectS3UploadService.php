@@ -45,10 +45,6 @@ class DirectS3UploadService
             'Bucket' => $this->bucket(),
             'Key' => $session->s3_incoming_key,
             'ContentType' => $session->declared_mime_type ?: 'application/octet-stream',
-            'Metadata' => [
-                'upload-session-id' => $session->id,
-                'purpose' => $session->purpose,
-            ],
         ]);
 
         $request = $this->client()->createPresignedRequest($command, $this->expiry());
