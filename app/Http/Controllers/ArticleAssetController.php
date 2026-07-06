@@ -19,76 +19,9 @@ class ArticleAssetController extends Controller
      */
     public function store(Request $request, int $id): JsonResponse
     {
-        $user = $request->user();
-        if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
-
-        $article = Article::find($id);
-        if (!$article) {
-            return response()->json(['message' => 'Article not found.'], 404);
-        }
-
-        // Authorize using the update policy of the article
-        if ($user->cannot('view', $article)) {
-            return response()->json(['message' => 'This action is unauthorized.'], 403);
-        }
-
-        if (!ArticleStatus::isEditableStatus($article->status)) {
-            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
-        }
-
-        if ($user->cannot('update', $article)) {
-            return response()->json(['message' => 'This action is unauthorized.'], 403);
-        }
-
-        // Validate MIME type and file size (max 25MB)
-        $request->validate([
-            'file' => 'required|file|mimes:pdf,docx,xlsx,xls,csv,png,jpg,jpeg,txt|max:25600',
-        ]);
-
-        $file = $request->file('file');
-
-        // 1. Antivirus / Malware checking
-        // TODO(security): Run ClamScan in sandbox. Standard local fallback validates files.
-        $fileContents = file_get_contents($file->getRealPath());
-        if (str_contains($fileContents, 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE')) {
-            return response()->json(['message' => 'Malware scan failed: Infected file detected.'], 422);
-        }
-
-        // 2. Input/filename sanitization
-        $originalName = $file->getClientOriginalName();
-        $safeOriginalName = basename($originalName); // Strip path traversal attempts
-
-        $fileSize = $file->getSize();
-        $mimeType = $file->getMimeType();
-
-        // 3. Unique hashing filename storage outside web root (stored inside private/public disk, served conditionally)
-        $path = app(MediaStorageService::class)->storeUploadedFile($file, 'assets');
-
-        $asset = ArticleAsset::create([
-            'article_id' => $article->id,
-            'file_path' => $path,
-            'storage_key' => $path,
-            'disk' => config('media_uploads.disk'),
-            'original_filename' => $safeOriginalName,
-            'safe_original_filename' => $safeOriginalName,
-            'file_size' => $fileSize,
-            'mime_type' => $mimeType,
-            'scan_status' => 'clean',
-            'scanned_at' => now(),
-        ]);
-
-        app(ArticleFileController::class)->storeUploadedFile($article, $file, ArticleFile::SUPPLEMENTARY, $user->id, [
-            'article_version_id' => $article->versions()->latest('version_number')->value('id'),
-            'source_asset_id' => $asset->id,
-            'metadata' => ['compatibility_bridge' => 'article_assets'],
-        ]);
-
         return response()->json([
-            'message' => 'Asset uploaded successfully.',
-            'asset' => $this->serializeAsset($asset),
-        ], 201);
+            'message' => 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.',
+        ], 410);
     }
 
     /**

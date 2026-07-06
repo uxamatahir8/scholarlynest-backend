@@ -140,6 +140,11 @@ class ScanPendingMedia implements ShouldQueue
 
                 if (!empty($metadata['article_file_id'])) {
                     ArticleFile::whereKey($metadata['article_file_id'])->update($updates);
+
+                    $file = ArticleFile::find($metadata['article_file_id']);
+                    if ($file && $file->file_type === ArticleFile::MANUSCRIPT) {
+                        $file->article?->update(['pdf_path' => $cleanKey]);
+                    }
                 }
 
                 if (!empty($metadata['article_asset_id'])) {

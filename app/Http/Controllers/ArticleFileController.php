@@ -6,47 +6,18 @@ use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\MediaUploadSession;
-use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 
 class ArticleFileController extends Controller
 {
     public function store(Request $request, int $articleId): JsonResponse
     {
-        $article = Article::findOrFail($articleId);
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'file' => 'required|file|mimes:pdf,doc,docx,xlsx,xls,csv,zip,png,jpg,jpeg,txt|max:25600',
-            'file_type' => ['required', Rule::in(ArticleFile::TYPES)],
-            'assignment_type' => 'nullable|string|max:80',
-            'assignment_id' => 'nullable|integer|min:1',
-        ]);
-
-        if (
-            in_array($validated['file_type'], [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
-            && !ArticleStatus::isEditableStatus($article->status)
-        ) {
-            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
-        }
-
-        if (!$this->canUpload($user, $article, $validated['file_type'], $validated['assignment_type'] ?? null, $validated['assignment_id'] ?? null)) {
-            return response()->json(['message' => 'Forbidden. You cannot upload this file type for this article.'], 403);
-        }
-
-        $file = $this->storeUploadedFile($article, $request->file('file'), $validated['file_type'], $user->id, [
-            'assignment_type' => $validated['assignment_type'] ?? null,
-            'assignment_id' => $validated['assignment_id'] ?? null,
-        ]);
-
         return response()->json([
-            'message' => 'Article file uploaded.',
-            'file' => $this->serializeFile($file),
-        ], 201);
+            'message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.',
+        ], 410);
     }
 
     public function download(Request $request, int $fileId)
@@ -87,32 +58,6 @@ class ArticleFileController extends Controller
         ]);
     }
 
-    public function storeUploadedFile(Article $article, \Illuminate\Http\UploadedFile $uploadedFile, string $fileType, int $uploadedBy, array $extra = []): ArticleFile
-    {
-        $path = app(MediaStorageService::class)->storeUploadedFile($uploadedFile, "article-files/{$article->id}/{$fileType}");
-
-        return ArticleFile::create([
-            'article_id' => $article->id,
-            'article_version_id' => $extra['article_version_id'] ?? null,
-            'source_asset_id' => $extra['source_asset_id'] ?? null,
-            'uploaded_by' => $uploadedBy,
-            'assignment_type' => $extra['assignment_type'] ?? null,
-            'assignment_id' => $extra['assignment_id'] ?? null,
-            'file_type' => $fileType,
-            'visibility' => $this->defaultVisibility($fileType),
-            'file_path' => $path,
-            'storage_key' => $path,
-            'original_name' => basename($uploadedFile->getClientOriginalName()),
-            'safe_original_name' => basename($uploadedFile->getClientOriginalName()),
-            'mime_type' => $uploadedFile->getMimeType(),
-            'size' => $uploadedFile->getSize(),
-            'disk' => config('media_uploads.disk'),
-            'scan_status' => 'clean',
-            'scanned_at' => now(),
-            'metadata' => $extra['metadata'] ?? null,
-        ]);
-    }
-
     public function createPendingDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig): ArticleFile
     {
         $metadata = $upload->metadata ?: [];
@@ -138,6 +83,34 @@ class ArticleFileController extends Controller
                 'upload_session_id' => $upload->id,
                 'direct_s3_upload' => true,
             ],
+        ]);
+    }
+
+    public function createCleanDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $extra = []): ArticleFile
+    {
+        return ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $extra['article_version_id'] ?? $article->versions()->latest('version_number')->value('id'),
+            'uploaded_by' => $upload->user_id,
+            'assignment_type' => $extra['assignment_type'] ?? ($upload->metadata['assignment_type'] ?? null),
+            'assignment_id' => $extra['assignment_id'] ?? ($upload->metadata['assignment_id'] ?? null),
+            'file_type' => $purposeConfig['article_file_type'],
+            'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
+            'disk' => $upload->disk,
+            'file_path' => $upload->s3_clean_key,
+            'storage_key' => $upload->s3_clean_key,
+            'original_name' => $upload->safe_display_filename,
+            'safe_original_name' => $upload->safe_display_filename,
+            'mime_type' => $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'size' => $upload->expected_size_bytes,
+            'checksum_sha256' => $upload->checksum_sha256,
+            'scan_status' => 'clean',
+            'scan_engine' => $upload->scan_engine,
+            'scanned_at' => $upload->scanned_at,
+            'metadata' => array_merge([
+                'upload_session_id' => $upload->id,
+                'direct_s3_upload' => true,
+            ], $extra['metadata'] ?? []),
         ]);
     }
 

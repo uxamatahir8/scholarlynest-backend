@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Magazine;
 use App\Models\MagazinePage;
 use App\Services\Media\MediaStorageService;
+use App\Services\Media\CleanUploadResolver;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -317,6 +318,7 @@ class MagazineController extends Controller
         $validated = $request->validate([
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable', // can be file or string
+            'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -329,7 +331,9 @@ class MagazineController extends Controller
 
         $coverImagePath = null;
         if ($request->hasFile('cover_image')) {
-            $coverImagePath = $this->mediaStorage->storeUploadedFile($request->file('cover_image'), 'covers');
+            return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['cover_image_upload_id'])) {
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
         } elseif (is_string($request->input('cover_image'))) {
             $coverImagePath = $request->input('cover_image');
         }
@@ -478,6 +482,7 @@ class MagazineController extends Controller
         $validated = $request->validate([
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable',
+            'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -487,8 +492,10 @@ class MagazineController extends Controller
 
         $coverImagePath = $magazine->cover_image;
         if ($request->hasFile('cover_image')) {
+            return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['cover_image_upload_id'])) {
             $this->mediaStorage->delete($coverImagePath);
-            $coverImagePath = $this->mediaStorage->storeUploadedFile($request->file('cover_image'), 'covers');
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
         } elseif ($request->has('cover_image')) {
             $coverImagePath = $request->input('cover_image');
         }

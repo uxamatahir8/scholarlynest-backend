@@ -16,6 +16,7 @@ use App\Models\ArticleFile;
 use App\Services\PdfGeneratorService;
 use App\Services\NotificationService;
 use App\Services\ArticleVersionService;
+use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -233,16 +234,18 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
+        if ($request->hasFile('featured_image') || $request->hasFile('pdf_file')) {
+            return response()->json(['message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.'], 410);
+        }
+
         $validated = $request->validated();
         $authors = $request->academicAuthors();
         $authorResolution = $this->resolveArticleAuthors($authors, $user, $user->hasRole('super_admin'));
         $articleOwner = $authorResolution['owner'] ?? $user;
         $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
-        $featuredImagePath = null;
-        if ($request->hasFile('featured_image')) {
-            $featuredImagePath = $this->mediaStorage->storeUploadedFile($request->file('featured_image'), 'articles');
-        }
+        $featuredImagePath = app(CleanUploadResolver::class)
+            ->cleanKey($user, $validated['featured_image_upload_id'] ?? null, 'article_featured_image');
 
         $slug = Str::slug($validated['title']);
 
@@ -270,8 +273,9 @@ class ArticleController extends Controller
         });
 
         $linkedFileIds = [];
-        if ($request->hasFile('pdf_file')) {
-            $manuscriptFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('pdf_file'), ArticleFile::MANUSCRIPT, $user->id);
+        if (!empty($validated['pdf_upload_id'])) {
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], 'article_manuscript');
+            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_manuscript'));
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $linkedFileIds[] = $manuscriptFile->id;
         }
@@ -571,6 +575,10 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
+        if ($request->hasFile('featured_image') || $request->hasFile('pdf_file')) {
+            return response()->json(['message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.'], 410);
+        }
+
         if (!ArticleStatus::isEditableStatus($article->status)) {
             return response()->json([
                 'message' => 'This manuscript cannot be edited at its current workflow stage.',
@@ -600,11 +608,12 @@ class ArticleController extends Controller
                 $featuredImagePath = null;
             }
         }
-        if ($request->hasFile('featured_image')) {
+        if (!empty($validated['featured_image_upload_id'])) {
             if ($featuredImagePath) {
                 $this->mediaStorage->delete($featuredImagePath);
             }
-            $featuredImagePath = $this->mediaStorage->storeUploadedFile($request->file('featured_image'), 'articles');
+            $featuredImagePath = app(CleanUploadResolver::class)
+                ->cleanKey($user, $validated['featured_image_upload_id'], 'article_featured_image');
         }
 
         $slug = $article->slug;
@@ -700,8 +709,10 @@ class ArticleController extends Controller
         });
 
         $linkedFileIds = [];
-        if ($request->hasFile('pdf_file')) {
-            $manuscriptFile = app(ArticleFileController::class)->storeUploadedFile($article->fresh(), $request->file('pdf_file'), ArticleFile::MANUSCRIPT, $user->id);
+        if (!empty($validated['pdf_upload_id'])) {
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision']);
+            $purposeConfig = config('media_uploads.purposes.' . $upload->purpose);
+            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $upload, $purposeConfig);
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $pdfPath = $manuscriptFile->file_path;
             $linkedFileIds[] = $manuscriptFile->id;

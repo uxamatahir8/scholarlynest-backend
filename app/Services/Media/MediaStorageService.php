@@ -2,7 +2,6 @@
 
 namespace App\Services\Media;
 
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 
 class MediaStorageService
@@ -14,11 +13,6 @@ class MediaStorageService
     public function disk(): string
     {
         return config('media_uploads.disk', 's3');
-    }
-
-    public function storeUploadedFile(UploadedFile $file, string $directory): string
-    {
-        return $file->store($this->keys->withPrefix($directory), $this->disk());
     }
 
     public function put(string $path, string $contents): string

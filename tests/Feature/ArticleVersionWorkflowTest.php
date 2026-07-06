@@ -7,6 +7,7 @@ use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
 use App\Models\Magazine;
+use App\Models\MediaUploadSession;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -59,7 +60,7 @@ class ArticleVersionWorkflowTest extends TestCase
             'title' => 'Versioned Submission',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
-            'pdf_file' => UploadedFile::fake()->create('manuscript.pdf', 64, 'application/pdf'),
+            'pdf_upload_id' => $this->cleanUpload($this->author, 'article_manuscript', 'manuscript.pdf')->id,
         ])->assertStatus(211)->json('article.id');
 
         $this->assertDatabaseHas('article_versions', [
@@ -100,7 +101,7 @@ class ArticleVersionWorkflowTest extends TestCase
             'full_text' => $article->full_text,
             'revision_response' => 'We addressed every reviewer comment.',
             'change_summary' => 'Updated methods and discussion.',
-            'pdf_file' => UploadedFile::fake()->create('revised.pdf', 64, 'application/pdf'),
+            'pdf_upload_id' => $this->cleanUpload($this->author, 'article_revision', 'revised.pdf', $article)->id,
         ])->assertOk()
             ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
 
@@ -147,6 +148,34 @@ class ArticleVersionWorkflowTest extends TestCase
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'status' => $status,
+        ]);
+    }
+
+    private function cleanUpload(User $user, string $purpose, string $filename, ?Article $article = null): MediaUploadSession
+    {
+        $key = 'dev/clean/test/' . $purpose . '/' . $filename;
+        Storage::disk('s3')->put($key, "%PDF-1.4\n%%EOF");
+
+        return MediaUploadSession::create([
+            'user_id' => $user->id,
+            'purpose' => $purpose,
+            'attachable_type' => $article ? Article::class : null,
+            'attachable_id' => $article?->id,
+            'original_filename' => $filename,
+            'safe_display_filename' => $filename,
+            'expected_size_bytes' => 14,
+            'declared_mime_type' => 'application/pdf',
+            'disk' => 's3',
+            's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,
+            's3_clean_key' => $key,
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_CLEAN,
+            'detected_mime_type' => 'application/pdf',
+            'checksum_sha256' => str_repeat('b', 64),
+            'scan_engine' => 'fake-clamav',
+            'scan_status' => 'clean',
+            'scanned_at' => now(),
+            'expires_at' => now()->addHour(),
         ]);
     }
 }

@@ -116,6 +116,37 @@ class MediaUploadPipelineTest extends TestCase
             ->assertJsonPath('message', 'Raw browser uploads are disabled. Use the media upload-session direct S3 flow.');
     }
 
+    public function test_raw_article_asset_upload_endpoint_is_disabled(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->post("/api/articles/{$this->article->id}/assets", [
+            'file' => UploadedFile::fake()->create('raw.pdf', 16, 'application/pdf'),
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
+    }
+
+    public function test_clean_direct_upload_session_can_be_attached_as_article_file(): void
+    {
+        $session = $this->uploadSession();
+        $session->forceFill([
+            'status' => MediaUploadSession::STATUS_CLEAN,
+            's3_clean_key' => 'dev/clean/articles/original/' . $session->id . '.pdf',
+            'detected_mime_type' => 'application/pdf',
+            'checksum_sha256' => str_repeat('a', 64),
+            'scan_engine' => 'fake-clamav',
+            'scanned_at' => now(),
+        ])->save();
+
+        $file = app(ArticleFileController::class)->createCleanDirectUploadFile($this->article, $session, [
+            'article_file_type' => ArticleFile::MANUSCRIPT,
+        ]);
+
+        $this->assertSame('clean', $file->scan_status);
+        $this->assertSame($session->s3_clean_key, $file->storage_key);
+        $this->assertSame($session->id, $file->metadata['upload_session_id']);
+    }
+
     public function test_pending_scan_file_cannot_be_downloaded(): void
     {
         $file = app(ArticleFileController::class)->createPendingDirectUploadFile($this->article, $this->uploadSession(), [

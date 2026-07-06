@@ -26,6 +26,10 @@ class MediaUploadPolicy
         $config = $this->configForPurpose($purpose);
         if (($config['target'] ?? null) === 'article') {
             if (!$targetId) {
+                if (!empty($config['allow_detached'])) {
+                    return null;
+                }
+
                 throw ValidationException::withMessages(['attachable_id' => 'An article target is required.']);
             }
 
@@ -53,6 +57,24 @@ class MediaUploadPolicy
             if (!$allowed) {
                 abort(403, 'This action is unauthorized.');
             }
+
+            return;
+        }
+
+        if (in_array($purpose, ['magazine_cover', 'issue_cover'], true)) {
+            if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
+        }
+
+        if ($purpose === 'article_featured_image') {
+            if (!$user || (!$user->hasRole('author') && !$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
         }
     }
 

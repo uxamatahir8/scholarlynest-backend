@@ -9,6 +9,7 @@ use App\Models\ArticleFile;
 use App\Models\Media;
 use App\Models\MediaUploadSession;
 use App\Services\Media\DirectS3UploadService;
+use App\Services\Media\MediaStorageService;
 use App\Services\Media\MediaUploadPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -280,6 +281,11 @@ class MediaUploadController extends Controller
     private function uploadPayload(MediaUploadSession $upload): array
     {
         $metadata = $upload->metadata ?: [];
+        $mediaUrl = null;
+        if ($upload->status === MediaUploadSession::STATUS_CLEAN && !empty($metadata['media_id'])) {
+            $media = Media::find($metadata['media_id']);
+            $mediaUrl = $media?->storage_key ? app(MediaStorageService::class)->publicOrTemporaryUrl($media->storage_key) : null;
+        }
 
         return [
             'id' => $upload->id,
@@ -297,6 +303,7 @@ class MediaUploadController extends Controller
                 'article_file_id' => $metadata['article_file_id'] ?? null,
                 'article_asset_id' => $metadata['article_asset_id'] ?? null,
                 'media_id' => $metadata['media_id'] ?? null,
+                'media_url' => $mediaUrl,
             ],
         ];
     }
