@@ -104,6 +104,11 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertStringStartsWith('dev/incoming/article_supplementary/', $session->s3_incoming_key);
         $this->assertStringNotContainsString('chosen/prefix', $session->s3_incoming_key);
         $this->assertArrayNotHasKey('s3_incoming_key', $response->json('upload'));
+        $this->assertSame('application/pdf', $response->json('put.headers.Content-Type'));
+        $this->assertArrayNotHasKey('x-amz-meta-upload-session-id', $response->json('put.headers'));
+        $this->assertArrayNotHasKey('x-amz-meta-purpose', $response->json('put.headers'));
+        $this->assertStringNotContainsString('x-amz-meta-upload-session-id', urldecode($response->json('put.url')));
+        $this->assertStringNotContainsString('x-amz-meta-purpose', urldecode($response->json('put.url')));
     }
 
     public function test_generic_raw_media_upload_endpoint_is_disabled(): void
