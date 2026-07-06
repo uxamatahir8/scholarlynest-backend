@@ -147,33 +147,35 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Sub editor role required.'], 403);
         }
 
+        $status = $request->query('status');
+        $search = trim((string) $request->query('search'));
+
         $query = SubEditorAssignment::query()
-            ->with($this->assignmentRelations())
+            ->with([
+                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+            ])
             ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $deskUser->id))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(fn ($sub) => $sub->whereNotNull('completed_at')->orWhere('status', 'completed')))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
+            ->when($search !== '', function ($q) use ($search) {
+                $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
+            })
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
             ->latest();
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
-        }
+        $perPage = max(5, min(50, $request->integer('per_page', 20)));
+        $paginator = $query->paginate($perPage);
 
-        $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $deskUser)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->subEditorAssignmentListPayload($a))->values(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'total'        => $paginator->total(),
+            'per_page'     => $paginator->perPage(),
         ]);
     }
 
@@ -187,33 +189,36 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Reviewer role required.'], 403);
         }
 
+        $status = $request->query('status');
+        $search = trim((string) $request->query('search'));
+
         $query = ReviewerAssignment::query()
-            ->with($this->assignmentRelations())
+            ->with([
+                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+            ])
             ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(fn ($sub) => $sub->whereNotNull('completed_at')->orWhere('status', 'completed')))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
+            ->when($status === 'accepted', fn ($q) => $q->where('status', 'accepted'))
+            ->when($search !== '', function ($q) use ($search) {
+                $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
+            })
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
             ->latest();
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $deskUser))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
-        }
+        $perPage = max(5, min(50, $request->integer('per_page', 20)));
+        $paginator = $query->paginate($perPage);
 
-        $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $deskUser)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->reviewerAssignmentListPayload($a))->values(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'total'        => $paginator->total(),
+            'per_page'     => $paginator->perPage(),
         ]);
     }
 
@@ -1641,6 +1646,94 @@ class ArticleWorkflowController extends Controller
             && !in_array($assignment->status, ['completed'], true);
 
         return $assignmentData;
+    }
+
+    private function subEditorAssignmentListPayload(SubEditorAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        $primaryAction = match (ArticleStatus::normalize($article?->status ?? '')) {
+            ArticleStatus::ASSIGNED_TO_SUB_EDITOR => 'continue_screening',
+            ArticleStatus::UNDER_REVIEW => 'manage_reviewers',
+            ArticleStatus::REVIEWER_ASSIGNED, ArticleStatus::REVIEW_IN_PROGRESS => 'review_reviewer_progress',
+            ArticleStatus::SUB_EDITOR_RECOMMENDED => 'submit_recommendation',
+            default => 'open_workspace',
+        };
+        if ($assignment->status === 'completed') {
+            $primaryAction = 'view_recommendation';
+        }
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'sub_editor_id' => $assignment->sub_editor_id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            'recommendation' => $assignment->recommendation,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => (bool) ($assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true)),
+            'primary_action' => $primaryAction,
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'slug' => $article->slug,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
+    }
+
+    private function reviewerAssignmentListPayload(ReviewerAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        $primaryAction = match ($assignment->status) {
+            'pending' => 'accept_decline',
+            'accepted' => 'start_review',
+            'in_progress' => 'continue_review',
+            'completed' => 'view_submitted_review',
+            'reopened' => 'continue_review',
+            default => 'start_review',
+        };
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'reviewer_id' => $assignment->reviewer_id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'accepted_at' => $assignment->accepted_at,
+            'completed_at' => $assignment->completed_at,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => (bool) ($assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true)),
+            'primary_action' => $primaryAction,
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'slug' => $article->slug,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
     }
 
     private function productionAssignmentListPayload(ProductionAssignment $assignment): array
