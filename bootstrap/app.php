@@ -26,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->render(function (ThrottleRequestsException $e) {
             return response()->json([
                 'message' => 'Too many requests. Please try again later.',
-            ], 429);
+                'code' => 'rate_limit_exceeded',
+            ], 429, $e->getHeaders());
         });
     })->create();

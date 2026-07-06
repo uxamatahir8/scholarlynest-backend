@@ -47,19 +47,21 @@ class MediaUploadController extends Controller
             return response()->json(['message' => 'The selected file exceeds the configured size limit.'], 422);
         }
 
+        $this->expireStaleActiveSessions($request->user()->id);
+
         $activeCount = MediaUploadSession::query()
             ->where('user_id', $request->user()->id)
-            ->whereIn('status', [
-                MediaUploadSession::STATUS_INITIATED,
-                MediaUploadSession::STATUS_UPLOADING,
-                MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
-                MediaUploadSession::STATUS_SCANNING,
-            ])
+            ->whereIn('status', $this->activeSessionLimitStatuses())
             ->where('expires_at', '>', now())
             ->count();
 
         if ($activeCount >= config('media_uploads.max_active_sessions_per_user')) {
-            return response()->json(['message' => 'Too many active uploads. Please finish or abort an existing upload first.'], 429);
+            return response()->json([
+                'message' => 'Finish, abort, or wait for existing upload sessions to expire.',
+                'code' => 'active_upload_session_limit_reached',
+                'active_uploads' => $activeCount,
+                'limit' => (int) config('media_uploads.max_active_sessions_per_user'),
+            ], 409);
         }
 
         $safeName = $this->policy->sanitizeFilename($validated['original_filename']);
@@ -313,6 +315,26 @@ class MediaUploadController extends Controller
         if ($upload->user_id !== $request->user()->id) {
             abort(403, 'This action is unauthorized.');
         }
+    }
+
+    private function expireStaleActiveSessions(int $userId): void
+    {
+        MediaUploadSession::query()
+            ->where('user_id', $userId)
+            ->whereIn('status', $this->activeSessionLimitStatuses())
+            ->where('expires_at', '<=', now())
+            ->update([
+                'status' => MediaUploadSession::STATUS_EXPIRED,
+                'failure_reason' => 'upload_session_expired',
+            ]);
+    }
+
+    private function activeSessionLimitStatuses(): array
+    {
+        return [
+            MediaUploadSession::STATUS_INITIATED,
+            MediaUploadSession::STATUS_UPLOADING,
+        ];
     }
 
     private function expectedPartCount(MediaUploadSession $upload): int

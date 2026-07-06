@@ -18,6 +18,7 @@ use App\Services\Media\S3MediaKeyResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -109,6 +110,76 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertArrayNotHasKey('x-amz-meta-purpose', $response->json('put.headers'));
         $this->assertStringNotContainsString('x-amz-meta-upload-session-id', urldecode($response->json('put.url')));
         $this->assertStringNotContainsString('x-amz-meta-purpose', urldecode($response->json('put.url')));
+    }
+
+    public function test_active_upload_session_limit_returns_conflict_not_rate_limit(): void
+    {
+        config(['media_uploads.max_active_sessions_per_user' => 2]);
+        Sanctum::actingAs($this->author);
+
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADING]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_INITIATED]);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'active_upload_session_limit_reached')
+            ->assertJsonPath('active_uploads', 2)
+            ->assertJsonPath('limit', 2);
+    }
+
+    public function test_expired_aborted_and_scan_stage_sessions_do_not_block_initiation(): void
+    {
+        config(['media_uploads.max_active_sessions_per_user' => 1]);
+        Sanctum::actingAs($this->author);
+
+        $expired = $this->uploadSession([
+            'status' => MediaUploadSession::STATUS_UPLOADING,
+            'expires_at' => now()->subMinute(),
+        ]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_ABORTED]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_SCANNING]);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $expired->id,
+            'status' => MediaUploadSession::STATUS_EXPIRED,
+            'failure_reason' => 'upload_session_expired',
+        ]);
+    }
+
+    public function test_one_initiate_request_creates_one_upload_session(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+
+        $this->assertDatabaseCount('media_upload_sessions', 1);
+    }
+
+    public function test_actual_initiate_rate_limit_returns_structured_429(): void
+    {
+        RateLimiter::for('media-upload-initiate', function ($request) {
+            return \Illuminate\Cache\RateLimiting\Limit::perMinute(1)
+                ->by($request->user()->id . '|' . $request->ip());
+        });
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'file_fingerprint' => 'first.pdf:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'original_filename' => 'second.pdf',
+            'file_fingerprint' => 'second.pdf:1024:2',
+        ]))
+            ->assertStatus(429)
+            ->assertHeader('Retry-After')
+            ->assertHeader('X-RateLimit-Limit', '1')
+            ->assertJsonPath('code', 'rate_limit_exceeded');
     }
 
     public function test_generic_raw_media_upload_endpoint_is_disabled(): void
@@ -222,9 +293,21 @@ class MediaUploadPipelineTest extends TestCase
         Storage::disk('s3')->assertExists(app(S3MediaKeyResolver::class)->quarantine($session));
     }
 
-    private function uploadSession(): MediaUploadSession
+    private function initiatePayload(array $overrides = []): array
     {
-        return MediaUploadSession::create([
+        return array_merge([
+            'purpose' => 'article_supplementary',
+            'attachable_id' => $this->article->id,
+            'original_filename' => 'supplement.pdf',
+            'size_bytes' => 1024,
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'supplement.pdf:1024:1',
+        ], $overrides);
+    }
+
+    private function uploadSession(array $overrides = []): MediaUploadSession
+    {
+        return MediaUploadSession::create(array_merge([
             'user_id' => $this->author->id,
             'purpose' => 'article_supplementary',
             'attachable_type' => Article::class,
@@ -238,6 +321,6 @@ class MediaUploadPipelineTest extends TestCase
             'upload_mode' => 'single',
             'status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
             'expires_at' => now()->addHour(),
-        ]);
+        ], $overrides));
     }
 }
