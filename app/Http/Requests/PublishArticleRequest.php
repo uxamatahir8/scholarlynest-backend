@@ -20,6 +20,7 @@ class PublishArticleRequest extends FormRequest
             'published_month' => 'required|string|max:50',
             'page_start' => 'nullable|integer|min:1',
             'page_end' => 'nullable|integer|min:1|gte:page_start',
+            'publication_pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ];
     }
 }

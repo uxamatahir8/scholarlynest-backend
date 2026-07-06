@@ -8,6 +8,7 @@ use App\Models\ArticleAsset;
 use App\Models\ArticleFile;
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Models\MagazineIssue;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -153,6 +154,68 @@ class PublicDataExposureTest extends TestCase
         $this->getJson("/api/articles/files/{$acceptedFile->id}/download")->assertForbidden();
         $this->getJson("/api/articles/{$accepted->id}/download-pdf")->assertNotFound()
             ->assertJsonPath('message', 'The requested file is not available.');
+    }
+
+    public function test_public_homepage_stats_return_safe_published_aggregates_only(): void
+    {
+        $secondMagazine = Magazine::create([
+            'title' => 'Second Public Journal',
+            'slug' => 'second-public-journal',
+        ]);
+
+        $publishedIssue = MagazineIssue::create([
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => '1',
+            'issue_number' => '1',
+            'issue_month' => 'June',
+            'issue_year' => '2026',
+            'status' => 'published',
+            'is_published' => true,
+            'published_at' => now(),
+        ]);
+
+        MagazineIssue::create([
+            'magazine_id' => $secondMagazine->id,
+            'volume_number' => '1',
+            'issue_number' => '2',
+            'issue_month' => 'July',
+            'issue_year' => '2026',
+            'status' => 'draft',
+            'is_published' => false,
+        ]);
+
+        $published = $this->publishedArticle([
+            'title' => 'Published Aggregate Article',
+            'magazine_issue_id' => $publishedIssue->id,
+        ]);
+
+        $this->publishedArticle([
+            'title' => 'Unpublished Aggregate Article',
+            'status' => ArticleStatus::ACCEPTED,
+            'magazine_id' => $secondMagazine->id,
+        ]);
+
+        DB::table('article_author')->insert([
+            'article_id' => $published->id,
+            'user_id' => $this->author->id,
+            'co_author_name' => 'Aggregate Coauthor',
+            'co_author_email' => 'aggregate-private@example.test',
+            'can_edit' => true,
+            'author_order' => 2,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/public/homepage-stats');
+
+        $response->assertOk()
+            ->assertJsonPath('published_articles_count', 1)
+            ->assertJsonPath('active_magazines_count', 2)
+            ->assertJsonPath('published_issues_count', 1)
+            ->assertJsonPath('public_contributors_count', 2)
+            ->assertJsonMissing(['Unpublished Aggregate Article'])
+            ->assertJsonMissing(['aggregate-private@example.test'])
+            ->assertJsonMissing(['can_edit']);
     }
 
     public function test_public_custom_page_response_excludes_internal_page_metadata(): void

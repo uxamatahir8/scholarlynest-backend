@@ -30,6 +30,8 @@ use App\Models\User;
 use App\Services\PdfGeneratorService;
 use App\Services\ArticleVersionService;
 use App\Services\CitationService;
+use App\Services\Media\CleanUploadResolver;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -126,7 +128,7 @@ class ArticleWorkflowController extends Controller
                         });
                 });
             })
-            ->select(['id', 'name', 'email', 'role_id'])
+            ->select(['id', 'name', 'role_id'])
             ->orderBy('name')
             ->get();
 
@@ -138,76 +140,85 @@ class ArticleWorkflowController extends Controller
     public function mySubEditorAssignments(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'sub_editor');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('sub_editor')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('sub_editor')) {
             return response()->json(['message' => 'Forbidden. Sub editor role required.'], 403);
         }
 
+        $status = $request->query('status');
+        $search = trim((string) $request->query('search'));
+
         $query = SubEditorAssignment::query()
-            ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $user->id))
+            ->with([
+                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+            ])
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $deskUser->id))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(fn ($sub) => $sub->whereNotNull('completed_at')->orWhere('status', 'completed')))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
+            ->when($search !== '', function ($q) use ($search) {
+                $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
+            })
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
             ->latest();
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
-        }
+        $perPage = max(5, min(50, $request->integer('per_page', 20)));
+        $paginator = $query->paginate($perPage);
 
-        $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (SubEditorAssignment $a) => $this->assignmentPayload($a, $user)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($paginator->items())->map(fn (SubEditorAssignment $a) => $this->subEditorAssignmentListPayload($a))->values(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'total'        => $paginator->total(),
+            'per_page'     => $paginator->perPage(),
         ]);
     }
 
     public function myReviewerAssignments(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'reviewer');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('reviewer')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('reviewer')) {
             return response()->json(['message' => 'Forbidden. Reviewer role required.'], 403);
         }
 
+        $status = $request->query('status');
+        $search = trim((string) $request->query('search'));
+
         $query = ReviewerAssignment::query()
-            ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $user->id))
+            ->with([
+                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+            ])
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(fn ($sub) => $sub->whereNotNull('completed_at')->orWhere('status', 'completed')))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
+            ->when($status === 'accepted', fn ($q) => $q->where('status', 'accepted'))
+            ->when($search !== '', function ($q) use ($search) {
+                $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
+            })
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
             ->latest();
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
-        }
+        $perPage = max(5, min(50, $request->integer('per_page', 20)));
+        $paginator = $query->paginate($perPage);
 
-        $assignments = $query->get();
         return response()->json([
-            'data'         => $assignments->map(fn (ReviewerAssignment $a) => $this->assignmentPayload($a, $user)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->reviewerAssignmentListPayload($a))->values(),
+            'current_page' => $paginator->currentPage(),
+            'last_page'    => $paginator->lastPage(),
+            'total'        => $paginator->total(),
+            'per_page'     => $paginator->perPage(),
         ]);
     }
 
@@ -220,57 +231,70 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Invalid production role.'], 422);
         }
 
+        $status = $request->query('status');
+        if ($status && !in_array($status, ['active', 'completed', 'pending'], true)) {
+            return response()->json(['message' => 'Invalid assignment status.'], 422);
+        }
+
+        $observerRole = $role ?: ['copy_editor', 'proofreader'];
+        $observedUser = DeskObserverController::resolveObservedUser($request, $observerRole);
+        $deskUser = $observedUser ?: $user;
         $allowedRole = $role ?: null;
-        if (!$this->isGlobal($user)) {
-            if (!$user->hasRole('copy_editor') && !$user->hasRole('proofreader')) {
+        if ($observedUser) {
+            $allowedRole = $role ?: ($deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader');
+        } elseif (!$this->isGlobal($user)) {
+            if (!$deskUser->hasRole('copy_editor') && !$deskUser->hasRole('proofreader')) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
-            $allowedRole = $user->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
+            $allowedRole = $deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
             if ($role && $role !== $allowedRole) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
         }
 
         $query = ProductionAssignment::query()
-            ->with($this->assignmentRelations())
-            ->when(!$this->isGlobal($user), fn ($q) => $q->where('user_id', $user->id))
+            ->with(['article:id,magazine_id,title,status,created_at,updated_at', 'article.magazine:id,title,slug'])
+            ->when($observedUser || !$this->isGlobal($user), fn ($q) => $q->where('user_id', $deskUser->id))
             ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
+            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'completed', fn ($q) => $q->where(function ($query) {
+                $query->whereNotNull('completed_at')->orWhere('status', 'completed');
+            }))
+            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
             ->orderByRaw('completed_at IS NOT NULL')
             ->orderByRaw('due_date IS NULL')
             ->orderBy('due_date')
-            ->latest();
+            ->orderByDesc('updated_at')
+            ->orderByDesc('created_at');
 
-        if ($this->isGlobal($user)) {
-            $perPage = max(5, min(50, $request->integer('per_page', 15)));
-            $paginator = $query->paginate($perPage);
-            return response()->json([
-                'data'         => collect($paginator->items())->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user))->values(),
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'total'        => $paginator->total(),
-                'per_page'     => $paginator->perPage(),
-            ]);
+        if (($observedUser || !$this->isGlobal($user)) && $allowedRole === 'proofreader') {
+            $query->whereHas('article', function ($articleQuery) use ($deskUser) {
+                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($deskUser, ['proofreader']));
+            });
         }
 
-        $assignments = $query->get();
+        $perPage = max(5, min(50, $request->integer('per_page', 15)));
+        $assignments = $query->paginate($perPage);
         return response()->json([
-            'data'         => $assignments->map(fn (ProductionAssignment $a) => $this->assignmentPayload($a, $user)),
-            'current_page' => 1,
-            'last_page'    => 1,
-            'total'        => $assignments->count(),
-            'per_page'     => $assignments->count(),
+            'data'         => collect($assignments->items())->map(fn (ProductionAssignment $a) => $this->productionAssignmentListPayload($a))->values(),
+            'current_page' => $assignments->currentPage(),
+            'last_page'    => $assignments->lastPage(),
+            'total'        => $assignments->total(),
+            'per_page'     => $assignments->perPage(),
         ]);
     }
 
     public function publisherDashboard(Request $request): JsonResponse
     {
         $user = $request->user();
+        $observedUser = DeskObserverController::resolveObservedUser($request, 'publisher');
+        $deskUser = $observedUser ?: $user;
 
-        if (!$this->isGlobal($user) && !$user->hasRole('publisher')) {
+        if (!$observedUser && !$this->isGlobal($user) && !$user->hasRole('publisher')) {
             return response()->json(['message' => 'Forbidden. Publisher role required.'], 403);
         }
 
-        $magazineIds = $this->isGlobal($user) ? null : $this->assignedMagazineIds($user, ['publisher']);
+        $magazineIds = ($this->isGlobal($user) && !$observedUser) ? null : $this->assignedMagazineIds($deskUser, ['publisher']);
 
         $magazines = Magazine::query()
             ->select(['id', 'title', 'slug'])
@@ -323,6 +347,7 @@ class ArticleWorkflowController extends Controller
 
     public function screen(ScreenArticleRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -334,7 +359,14 @@ class ArticleWorkflowController extends Controller
                 : ArticleStatus::UNDER_REVIEW;
 
             if ($request->hasFile('plagiarism_report')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('plagiarism_report'), ArticleFile::PLAGIARISM_REPORT, $request->user()->id);
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('plagiarism_report_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->plagiarism_report_upload_id, 'article_plagiarism_report');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_plagiarism_report'));
             }
 
             $article->update([
@@ -359,6 +391,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignSubEditor(AssignSubEditorRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -421,6 +454,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignReviewer(AssignReviewerRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'sub_editor']);
         $oldStatus = $article->status;
 
@@ -465,6 +499,7 @@ class ArticleWorkflowController extends Controller
 
     public function submitSubEditorRecommendation(SubmitSubEditorRecommendationRequest $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = SubEditorAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -478,7 +513,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
             if ($request->hasFile('annotated_manuscript')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('annotated_manuscript'), ArticleFile::ANNOTATED_MANUSCRIPT, $request->user()->id, [
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('annotated_manuscript_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->annotated_manuscript_upload_id, 'article_annotated_manuscript');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($assignment->article, $upload, config('media_uploads.purposes.article_annotated_manuscript'), [
                     'assignment_type' => 'sub_editor_assignment',
                     'assignment_id' => $assignment->id,
                 ]);
@@ -513,6 +555,7 @@ class ArticleWorkflowController extends Controller
 
     public function acceptReviewerAssignment(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -549,6 +592,7 @@ class ArticleWorkflowController extends Controller
 
     public function submitReview(SubmitReviewRequest $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -562,7 +606,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
             if ($request->hasFile('reviewed_manuscript')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('reviewed_manuscript'), ArticleFile::REVIEWED_MANUSCRIPT, $request->user()->id, [
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('reviewed_manuscript_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->reviewed_manuscript_upload_id, 'article_reviewed_manuscript');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($assignment->article, $upload, config('media_uploads.purposes.article_reviewed_manuscript'), [
                     'assignment_type' => 'reviewer_assignment',
                     'assignment_id' => $assignment->id,
                 ]);
@@ -599,6 +650,7 @@ class ArticleWorkflowController extends Controller
 
     public function reopenReviewer(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
         $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor']);
 
@@ -625,6 +677,7 @@ class ArticleWorkflowController extends Controller
 
     public function finalDecision(FinalDecisionRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
@@ -688,6 +741,7 @@ class ArticleWorkflowController extends Controller
 
     public function assignProduction(ProductionAssignmentRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher']);
         $oldStatus = $article->status;
         $nextStatus = $request->role === 'copy_editor' ? ArticleStatus::COPY_EDITING : ArticleStatus::PROOFREADING;
@@ -730,8 +784,10 @@ class ArticleWorkflowController extends Controller
 
     public function completeProduction(Request $request, int $assignmentId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $request->validate([
             'production_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'production_file_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ]);
 
         $assignment = ProductionAssignment::with('article')->findOrFail($assignmentId);
@@ -741,15 +797,34 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Production assignment required.'], 403);
         }
 
+        if (!$this->isGlobal($user)
+            && (($user->hasRole('copy_editor') && $assignment->role !== 'copy_editor')
+                || ($user->hasRole('proofreader') && $assignment->role !== 'proofreader'))) {
+            return response()->json(['message' => 'Forbidden. Production assignment role mismatch.'], 403);
+        }
+
+        if (!$this->isGlobal($user)
+            && $assignment->role === 'proofreader'
+            && !$this->isAssignedToMagazine($user, $assignment->article->magazine_id, ['proofreader'])) {
+            return response()->json(['message' => 'Forbidden. Proofreader magazine assignment required.'], 403);
+        }
+
         $storedFile = null;
         $oldStatus = $assignment->article->status;
 
         if ($request->hasFile('production_file')) {
-            $storedFile = app(ArticleFileController::class)->storeUploadedFile(
+            return response()->json([
+                'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+            ], 410);
+        }
+
+        if ($request->filled('production_file_upload_id')) {
+            $purpose = $assignment->role === 'proofreader' ? 'article_proof_file' : 'article_production_file';
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
+            $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
                 $assignment->article,
-                $request->file('production_file'),
-                $assignment->role === 'proofreader' ? ArticleFile::PROOF_FILE : ArticleFile::COPY_EDITED_FILE,
-                $user->id,
+                $upload,
+                config('media_uploads.purposes.' . $purpose),
                 [
                     'assignment_type' => 'production_assignment',
                     'assignment_id' => $assignment->id,
@@ -794,7 +869,7 @@ class ArticleWorkflowController extends Controller
             ->orderByDesc('created_at');
 
         if (!$this->isGlobal($request->user())) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
         }
 
         if ($request->filled('magazine_id')) {
@@ -809,7 +884,7 @@ class ArticleWorkflowController extends Controller
         $query = Magazine::query()->select(['id', 'title', 'slug'])->orderBy('title');
 
         if (!$this->isGlobal($request->user())) {
-            $query->whereIn('id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('id', $this->issueManagerMagazineIds($request->user()));
         }
 
         return response()->json(['data' => $query->get()]);
@@ -823,7 +898,7 @@ class ArticleWorkflowController extends Controller
         ])->withCount('articles')->findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         return response()->json(['issue' => $this->issuePayload($issue)]);
@@ -831,8 +906,13 @@ class ArticleWorkflowController extends Controller
 
     public function storeIssue(MagazineIssueRequest $request): JsonResponse
     {
-        if (!$this->isGlobal($request->user()) && !$this->isAssignedToMagazine($request->user(), $request->magazine_id, ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        if (!$this->isGlobal($request->user()) && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id)) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+        }
+
+        if ($this->requestChangesIssuePublicationState($request)
+            && !$this->canPublishIssueMagazine($request->user(), (int) $request->magazine_id)) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for publication state changes.'], 403);
         }
 
         $issue = MagazineIssue::create($this->issueData($request));
@@ -848,13 +928,18 @@ class ArticleWorkflowController extends Controller
         $issue = MagazineIssue::findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         if ((int) $issue->magazine_id !== (int) $request->integer('magazine_id')
             && !$this->isGlobal($request->user())
-            && !$this->isAssignedToMagazine($request->user(), $request->integer('magazine_id'), ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required for target magazine.'], 403);
+            && !$this->canManageIssueMagazine($request->user(), $request->integer('magazine_id'))) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required for target magazine.'], 403);
+        }
+
+        if ($this->requestChangesIssuePublicationState($request)
+            && !$this->canPublishIssueMagazine($request->user(), $request->integer('magazine_id'))) {
+            return response()->json(['message' => 'Forbidden. Publisher assignment required for publication state changes.'], 403);
         }
 
         $issue->update($this->issueData($request, $issue));
@@ -869,7 +954,7 @@ class ArticleWorkflowController extends Controller
     {
         $issue = MagazineIssue::findOrFail($issueId);
 
-        if (!$this->canManageIssue($request->user(), $issue)) {
+        if (!$this->canPublishIssue($request->user(), $issue)) {
             return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
         }
 
@@ -889,7 +974,7 @@ class ArticleWorkflowController extends Controller
     {
         $issue = MagazineIssue::findOrFail($issueId);
 
-        if (!$this->canManageIssue($request->user(), $issue)) {
+        if (!$this->canPublishIssue($request->user(), $issue)) {
             return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
         }
 
@@ -916,11 +1001,11 @@ class ArticleWorkflowController extends Controller
         if ($request->filled('issue_id')) {
             $issue = MagazineIssue::findOrFail($request->integer('issue_id'));
             if (!$this->canManageIssue($request->user(), $issue)) {
-                return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+                return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
             }
             $magazineId = $issue->magazine_id;
-        } elseif (!$this->isGlobal($request->user()) && $magazineId && !$this->isAssignedToMagazine($request->user(), $magazineId, ['publisher'])) {
-            return response()->json(['message' => 'Forbidden. Publisher assignment required.'], 403);
+        } elseif (!$this->isGlobal($request->user()) && $magazineId && !$this->canManageIssueMagazine($request->user(), $magazineId)) {
+            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
         }
 
         $query = Article::with(['magazine:id,title,slug', 'issue:id,volume_number,issue_number,special_title'])
@@ -934,7 +1019,7 @@ class ArticleWorkflowController extends Controller
         if ($magazineId) {
             $query->where('magazine_id', $magazineId);
         } elseif (!$this->isGlobal($request->user())) {
-            $query->whereIn('magazine_id', $this->assignedMagazineIds($request->user(), ['publisher']));
+            $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
         }
 
         return response()->json(['data' => $query->limit(100)->get()->map(fn (Article $article) => $this->publicationArticlePayload($article))->values()]);
@@ -942,6 +1027,7 @@ class ArticleWorkflowController extends Controller
 
     public function publish(PublishArticleRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $request->validate([
             'publication_pdf' => 'nullable|file|mimes:pdf|max:25600',
         ]);
@@ -965,7 +1051,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
             if ($request->hasFile('publication_pdf')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('publication_pdf'), ArticleFile::PUBLICATION_PDF, $request->user()->id);
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for published PDFs. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('publication_pdf_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->publication_pdf_upload_id, 'article_published_pdf');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_published_pdf'));
                 $article->pdf_path = $storedFile->file_path;
             }
 
@@ -1017,6 +1110,7 @@ class ArticleWorkflowController extends Controller
 
     public function postPublication(PostPublicationActionRequest $request, int $articleId): JsonResponse
     {
+        $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);
         $oldStatus = $article->status;
 
@@ -1086,10 +1180,16 @@ class ArticleWorkflowController extends Controller
         $coverImage = $existing?->cover_image;
 
         if ($request->hasFile('cover_image')) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Raw browser uploads are disabled for issue covers. Use the direct S3 upload-session flow.',
+            ], 410));
+        }
+
+        if (!empty($validated['cover_image_upload_id'])) {
             if ($coverImage) {
-                Storage::disk('public')->delete(str_replace('storage/', '', $coverImage));
+                app(MediaStorageService::class)->delete($coverImage);
             }
-            $coverImage = 'storage/' . $request->file('cover_image')->store('magazine-issues', 'public');
+            $coverImage = app(CleanUploadResolver::class)->cleanKey($request->user(), $validated['cover_image_upload_id'], 'issue_cover');
         }
 
         return [
@@ -1122,6 +1222,7 @@ class ArticleWorkflowController extends Controller
             'special_title' => $issue->special_title,
             'description' => $issue->description,
             'cover_image' => $issue->cover_image,
+            'cover_image_url' => $issue->cover_image_url,
             'status' => $issue->status ?: ($issue->is_published ? 'published' : 'draft'),
             'is_published' => $issue->is_published,
             'published_at' => $issue->published_at,
@@ -1168,6 +1269,7 @@ class ArticleWorkflowController extends Controller
             'published_at' => $article->published_at,
             'has_pdf' => !empty($article->pdf_path),
             'pdf_url' => $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'featured_image_url' => $article->featured_image_url,
             'article_url' => $this->articleUrl($article),
             'article_authors' => $article->articleAuthors
                 ->sortBy('author_order')
@@ -1200,7 +1302,36 @@ class ArticleWorkflowController extends Controller
 
     private function canManageIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $issue->magazine_id, ['publisher']);
+        return $this->isGlobal($user) || $this->canManageIssueMagazine($user, $issue->magazine_id);
+    }
+
+    private function canPublishIssue($user, MagazineIssue $issue): bool
+    {
+        return $this->isGlobal($user) || $this->canPublishIssueMagazine($user, $issue->magazine_id);
+    }
+
+    private function canPublishIssueMagazine($user, int $magazineId): bool
+    {
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
+    }
+
+    private function canManageIssueMagazine($user, int $magazineId): bool
+    {
+        return $this->isAssignedToMagazine($user, $magazineId, ['publisher', 'editor', 'magazine_editor']);
+    }
+
+    private function issueManagerMagazineIds($user): array
+    {
+        return $this->assignedMagazineIds($user, ['publisher', 'editor', 'magazine_editor']);
+    }
+
+    private function requestChangesIssuePublicationState(Request $request): bool
+    {
+        if ($request->has('is_published') || $request->has('published_at')) {
+            return true;
+        }
+
+        return in_array($request->input('status'), ['published', 'unpublished'], true);
     }
 
     private function assignedMagazineIds($user, array $roles): array
@@ -1252,7 +1383,13 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if ((in_array('copy_editor', $roles, true) || in_array('proofreader', $roles, true)) && $this->hasProductionAssignment($user, $article)) {
+        if (in_array('copy_editor', $roles, true) && $this->hasProductionAssignment($user, $article, 'copy_editor')) {
+            return $article;
+        }
+
+        if (in_array('proofreader', $roles, true)
+            && $this->hasProductionAssignment($user, $article, 'proofreader')
+            && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader'])) {
             return $article;
         }
 
@@ -1306,7 +1443,9 @@ class ArticleWorkflowController extends Controller
         $canViewEditorial = $this->canViewEditorialInternals($user, $article);
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
-        $canViewProduction = $canViewPublication || $this->hasProductionAssignment($user, $article);
+        $canViewProduction = $canViewPublication
+            || $this->hasProductionAssignment($user, $article, 'copy_editor')
+            || ($this->hasProductionAssignment($user, $article, 'proofreader') && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader']));
 
         $data = [
             'id' => $article->id,
@@ -1393,7 +1532,7 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $user->id,
             'name' => $user->name,
-            'email' => $user->email,
+            'role' => $user->role?->name,
         ];
     }
 
@@ -1509,9 +1648,137 @@ class ArticleWorkflowController extends Controller
         return $assignmentData;
     }
 
+    private function subEditorAssignmentListPayload(SubEditorAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        $primaryAction = match (ArticleStatus::normalize($article?->status ?? '')) {
+            ArticleStatus::ASSIGNED_TO_SUB_EDITOR => 'continue_screening',
+            ArticleStatus::UNDER_REVIEW => 'manage_reviewers',
+            ArticleStatus::REVIEWER_ASSIGNED, ArticleStatus::REVIEW_IN_PROGRESS => 'review_reviewer_progress',
+            ArticleStatus::SUB_EDITOR_RECOMMENDED => 'submit_recommendation',
+            default => 'open_workspace',
+        };
+        if ($assignment->status === 'completed') {
+            $primaryAction = 'view_recommendation';
+        }
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'sub_editor_id' => $assignment->sub_editor_id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            'recommendation' => $assignment->recommendation,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => (bool) ($assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true)),
+            'primary_action' => $primaryAction,
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'slug' => $article->slug,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
+    }
+
+    private function reviewerAssignmentListPayload(ReviewerAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        $primaryAction = match ($assignment->status) {
+            'pending' => 'accept_decline',
+            'accepted' => 'start_review',
+            'in_progress' => 'continue_review',
+            'completed' => 'view_submitted_review',
+            'reopened' => 'continue_review',
+            default => 'start_review',
+        };
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'reviewer_id' => $assignment->reviewer_id,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'accepted_at' => $assignment->accepted_at,
+            'completed_at' => $assignment->completed_at,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => (bool) ($assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true)),
+            'primary_action' => $primaryAction,
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'slug' => $article->slug,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
+    }
+
+    private function productionAssignmentListPayload(ProductionAssignment $assignment): array
+    {
+        $article = $assignment->article;
+
+        return [
+            'id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'role' => $assignment->role,
+            'status' => $assignment->status,
+            'due_date' => $assignment->due_date,
+            'completed_at' => $assignment->completed_at,
+            'created_at' => $assignment->created_at,
+            'updated_at' => $assignment->updated_at,
+            'is_overdue' => $assignment->due_date
+                && $assignment->due_date->isPast()
+                && !in_array($assignment->status, ['completed'], true),
+            'article' => $article ? [
+                'id' => $article->id,
+                'title' => $article->title,
+                'status' => $article->status,
+                'created_at' => $article->created_at,
+                'updated_at' => $article->updated_at,
+                'magazine' => $article->magazine ? [
+                    'id' => $article->magazine->id,
+                    'title' => $article->magazine->title,
+                    'slug' => $article->magazine->slug,
+                ] : null,
+            ] : null,
+        ];
+    }
+
     private function isGlobal($user): bool
     {
         return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function rejectObserverMutation(Request $request): void
+    {
+        if ($request->has('observer_user_id')) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Observer mode is read-only. Clear observer mode before performing workflow actions.',
+            ], 422));
+        }
     }
 
     private function isAssignedToMagazine($user, int $magazineId, array $roles): bool
@@ -1560,11 +1827,12 @@ class ArticleWorkflowController extends Controller
             ->exists();
     }
 
-    private function hasProductionAssignment($user, Article $article): bool
+    private function hasProductionAssignment($user, Article $article, ?string $role = null): bool
     {
         return DB::table('production_assignments')
             ->where('article_id', $article->id)
             ->where('user_id', $user->id)
+            ->when($role, fn ($query) => $query->where('role', $role))
             ->exists();
     }
 

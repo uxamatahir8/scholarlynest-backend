@@ -104,13 +104,22 @@ class ArticleStatusNormalizationTest extends TestCase
         foreach ([
             ArticleStatus::SUBMITTED,
             ArticleStatus::UNDER_REVIEW,
+            ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
+            ArticleStatus::REVIEWER_ASSIGNED,
+            ArticleStatus::REVIEW_IN_PROGRESS,
             ArticleStatus::ACCEPTED,
+            ArticleStatus::COPY_EDITING,
+            ArticleStatus::PROOFREADING,
             ArticleStatus::PUBLISHED,
+            ArticleStatus::REJECTED,
+            ArticleStatus::WITHDRAWN,
+            ArticleStatus::ARCHIVED,
         ] as $status) {
             $article = $this->articleWithStatus("locked-{$status}", $status);
 
             $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Updated {$status}"))
-                ->assertStatus(422);
+                ->assertStatus(422)
+                ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
         }
     }
 
@@ -134,6 +143,54 @@ class ArticleStatusNormalizationTest extends TestCase
                 ->assertStatus(200)
                 ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
         }
+
+        foreach ([
+            ArticleStatus::RESUBMITTED,
+            ArticleStatus::READY_FOR_PUBLICATION,
+        ] as $status) {
+            $article = $this->articleWithStatus("editable-{$status}", $status);
+
+            $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Updated {$status}"))
+                ->assertStatus(200)
+                ->assertJsonPath('article.status', $status);
+        }
+    }
+
+    public function test_super_admin_cannot_bypass_non_editable_status_gate(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
+            $article = $this->articleWithStatus("admin-locked-{$status}", $status);
+
+            $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Admin Updated {$status}"))
+                ->assertStatus(422)
+                ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
+        }
+
+        $ready = $this->articleWithStatus('admin-ready', ArticleStatus::READY_FOR_PUBLICATION);
+        $this->patchJson("/api/admin/articles/{$ready->id}", $this->updatePayload($ready, 'Admin Updated Ready'))
+            ->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::READY_FOR_PUBLICATION);
+    }
+
+    public function test_edit_context_fetch_is_denied_for_non_editable_statuses_and_observer_mode(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $submitted = $this->articleWithStatus('edit-context-submitted', ArticleStatus::SUBMITTED);
+        $this->getJson("/api/admin/articles/{$submitted->id}?view_context=edit")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
+
+        $ready = $this->articleWithStatus('edit-context-ready', ArticleStatus::READY_FOR_PUBLICATION);
+        $this->getJson("/api/admin/articles/{$ready->id}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('can_edit_article', true);
+
+        $this->getJson("/api/admin/articles/{$ready->id}?view_context=edit&observer_readonly=1")
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Observer mode is read-only.');
     }
 
     private function articleWithStatus(string $slug, string $status): Article

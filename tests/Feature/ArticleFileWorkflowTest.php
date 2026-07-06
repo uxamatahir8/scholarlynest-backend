@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\Magazine;
+use App\Models\MediaUploadSession;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -77,14 +78,14 @@ class ArticleFileWorkflowTest extends TestCase
     {
         Sanctum::actingAs($this->editor);
 
-        $file = UploadedFile::fake()->create('similarity-report.pdf', 128, 'application/pdf');
+        $upload = $this->cleanUpload($this->editor, 'article_plagiarism_report', 'similarity-report.pdf');
 
         $this->postJson("/api/admin/articles/{$this->article->id}/screen", [
             'decision' => 'send_to_review',
             'plagiarism_status' => 'clear',
             'plagiarism_score' => 8.5,
             'comments' => 'Looks clean.',
-            'plagiarism_report' => $file,
+            'plagiarism_report_upload_id' => $upload->id,
         ])->assertStatus(200)
             ->assertJsonPath('file.file_type', ArticleFile::PLAGIARISM_REPORT);
 
@@ -112,14 +113,14 @@ class ArticleFileWorkflowTest extends TestCase
             'scorecard' => ['originality' => 4],
             'recommendation' => 'minor_revision',
             'comments_for_author' => 'Please revise.',
-            'reviewed_manuscript' => UploadedFile::fake()->create('reviewed.docx', 64, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+            'reviewed_manuscript_upload_id' => $this->cleanUpload($this->reviewer, 'article_reviewed_manuscript', 'reviewed.docx')->id,
         ])->assertStatus(200)
             ->assertJsonPath('file.file_type', ArticleFile::REVIEWED_MANUSCRIPT);
 
         $file = ArticleFile::where('file_type', ArticleFile::REVIEWED_MANUSCRIPT)->firstOrFail();
 
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertStatus(200);
+            ->assertRedirect();
 
         Sanctum::actingAs($this->author);
         $this->getJson("/api/articles/files/{$file->id}/download")
@@ -134,7 +135,7 @@ class ArticleFileWorkflowTest extends TestCase
             'decision' => 'send_to_review',
             'plagiarism_status' => 'clear',
             'plagiarism_score' => 3,
-            'plagiarism_report' => UploadedFile::fake()->create('report.pdf', 32, 'application/pdf'),
+            'plagiarism_report_upload_id' => $this->cleanUpload($this->editor, 'article_plagiarism_report', 'report.pdf')->id,
         ])->assertStatus(200);
 
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
@@ -145,5 +146,33 @@ class ArticleFileWorkflowTest extends TestCase
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertStatus(200)
             ->assertJsonCount(0, 'files');
+    }
+
+    private function cleanUpload(User $user, string $purpose, string $filename): MediaUploadSession
+    {
+        $key = 'dev/clean/test/' . $purpose . '/' . $filename;
+        Storage::disk('s3')->put($key, 'clean test file');
+
+        return MediaUploadSession::create([
+            'user_id' => $user->id,
+            'purpose' => $purpose,
+            'attachable_type' => Article::class,
+            'attachable_id' => $this->article->id,
+            'original_filename' => $filename,
+            'safe_display_filename' => $filename,
+            'expected_size_bytes' => 16,
+            'declared_mime_type' => str_ends_with($filename, '.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'disk' => 's3',
+            's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,
+            's3_clean_key' => $key,
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_CLEAN,
+            'detected_mime_type' => str_ends_with($filename, '.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'checksum_sha256' => str_repeat('a', 64),
+            'scan_engine' => 'fake-clamav',
+            'scan_status' => 'clean',
+            'scanned_at' => now(),
+            'expires_at' => now()->addHour(),
+        ]);
     }
 }

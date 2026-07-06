@@ -5,8 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Media;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 class MediaController extends Controller
 {
@@ -15,32 +13,9 @@ class MediaController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $request->validate([
-            'file' => 'required|file|image|max:10240', // Limit to 10MB images
-        ]);
-
-        $file = $request->file('file');
-        
-        // Generate a cryptographically clean filename
-        $extension = $file->getClientOriginalExtension();
-        $safeName = Str::random(40) . '.' . $extension;
-
-        // Store file inside public disk under uploads folder
-        // public disk is configured to map to public/storage
-        $path = $file->storeAs('uploads', $safeName, 'public');
-
-        // Capture absolute or local public URL
-        $url = Storage::disk('public')->url($path);
-
-        $media = Media::create([
-            'filename' => $file->getClientOriginalName(),
-            'url' => $url,
-            'disk' => 'public',
-            'mime_type' => $file->getClientMimeType(),
-            'size' => $file->getSize(),
-        ]);
-
-        return response()->json($media, 201);
+        return response()->json([
+            'message' => 'Raw browser uploads are disabled. Use the media upload-session direct S3 flow.',
+        ], 410);
     }
 
     /**

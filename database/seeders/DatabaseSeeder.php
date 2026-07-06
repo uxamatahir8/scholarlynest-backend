@@ -205,6 +205,14 @@ class DatabaseSeeder extends Seeder
                 'key' => 'default_registration_role',
                 'value' => 'author',
             ]);
+            Setting::create([
+                'key' => 'registration_enabled',
+                'value' => '1',
+            ]);
+            Setting::create([
+                'key' => 'registration_notice',
+                'value' => 'Create an author account to submit manuscripts.',
+            ]);
 
             // ==========================================
             // 8. CALL MODULE SEEDERS

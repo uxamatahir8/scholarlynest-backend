@@ -65,12 +65,24 @@ class ArticlePolicy
         }
 
         // Production assignment
-        if ($user->hasRole('copy_editor') || $user->hasRole('proofreader')) {
+        if ($user->hasRole('copy_editor')) {
             $isAssignedProduction = DB::table('production_assignments')
                 ->where('article_id', $article->id)
                 ->where('user_id', $user->id)
+                ->where('role', 'copy_editor')
                 ->exists();
             if ($isAssignedProduction) {
+                return true;
+            }
+        }
+
+        if ($user->hasRole('proofreader')) {
+            $isAssignedProduction = DB::table('production_assignments')
+                ->where('article_id', $article->id)
+                ->where('user_id', $user->id)
+                ->where('role', 'proofreader')
+                ->exists();
+            if ($isAssignedProduction && $this->isAssignedMagazineRole($user, $article, ['proofreader'])) {
                 return true;
             }
         }
@@ -90,6 +102,10 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
+        if (!ArticleStatus::isEditableStatus($article->status)) {
+            return false;
+        }
+
         // Super admins and legacy admins can edit any article.
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
@@ -97,11 +113,6 @@ class ArticlePolicy
 
         // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
         // Normal article content edits stay limited to authors during editable statuses.
-
-        // Authors and editing co-authors can only modify drafts or requested revisions.
-        if (!ArticleStatus::authorCanEdit($article->status)) {
-            return false;
-        }
 
         // Primary author can edit
         if ($article->user_id === $user->id) {

@@ -90,6 +90,15 @@ final class ArticleStatus
         self::ARCHIVED => 'Archived',
     ];
 
+    public const EDITABLE_STATUSES = [
+        self::DRAFT,
+        self::REVISION_REQUIRED,
+        self::MINOR_REVISION_REQUIRED,
+        self::MAJOR_REVISION_REQUIRED,
+        self::RESUBMITTED,
+        self::READY_FOR_PUBLICATION,
+    ];
+
     public static function normalize(?string $status): ?string
     {
         if ($status === null) {
@@ -113,12 +122,12 @@ final class ArticleStatus
 
     public static function authorCanEdit(string $status): bool
     {
-        return in_array(self::normalize($status), [
-            self::DRAFT,
-            self::REVISION_REQUIRED,
-            self::MINOR_REVISION_REQUIRED,
-            self::MAJOR_REVISION_REQUIRED,
-        ], true);
+        return self::isEditableStatus($status);
+    }
+
+    public static function isEditableStatus(string $status): bool
+    {
+        return in_array(self::normalize($status), self::EDITABLE_STATUSES, true);
     }
 
     public static function validationRule(): string

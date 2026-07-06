@@ -6,6 +6,7 @@ use App\Models\Role;
 use App\Models\User;
 use App\Models\Magazine;
 use App\Models\Article;
+use App\Models\Permission;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -35,6 +36,16 @@ class UniversityMetadataTest extends TestCase
             'display_name' => 'Author',
             'is_system' => true
         ]);
+
+        foreach (['articles.create', 'articles.view-own', 'articles.edit-own'] as $permissionName) {
+            Permission::firstOrCreate(['name' => $permissionName], [
+                'module' => 'articles',
+                'description' => $permissionName,
+            ]);
+        }
+
+        $this->superAdminRole->permissions()->sync(Permission::pluck('id'));
+        $this->authorRole->permissions()->sync(Permission::whereIn('name', ['articles.create', 'articles.view-own', 'articles.edit-own'])->pluck('id'));
 
         $this->superAdmin = User::create([
             'name' => 'Admin Alice',

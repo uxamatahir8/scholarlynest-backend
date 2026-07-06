@@ -22,6 +22,7 @@ class MagazineIssueRequest extends FormRequest
             'special_title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'cover_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
+            'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'status' => 'nullable|in:draft,published,unpublished',
             'is_published' => 'nullable|boolean',
             'published_at' => 'nullable|date',

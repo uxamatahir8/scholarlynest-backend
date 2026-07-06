@@ -36,15 +36,23 @@ class ArticleFile extends Model
         'assignment_id',
         'file_type',
         'visibility',
+        'disk',
         'file_path',
+        'storage_key',
         'original_name',
+        'safe_original_name',
         'mime_type',
         'size',
+        'checksum_sha256',
+        'scan_status',
+        'scan_engine',
+        'scanned_at',
         'metadata',
     ];
 
     protected $casts = [
         'metadata' => 'array',
+        'scanned_at' => 'datetime',
     ];
 
     public function article(): BelongsTo

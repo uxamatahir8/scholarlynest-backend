@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Services\Media\MediaStorageService;
+use App\Services\Media\CleanUploadResolver;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,10 +14,12 @@ use Illuminate\Support\Str;
 class MagazineController extends Controller
 {
     protected NotificationService $notificationService;
+    protected MediaStorageService $mediaStorage;
 
-    public function __construct(NotificationService $notificationService)
+    public function __construct(NotificationService $notificationService, MediaStorageService $mediaStorage)
     {
         $this->notificationService = $notificationService;
+        $this->mediaStorage = $mediaStorage;
     }
     /**
      * GET /api/magazines
@@ -189,7 +193,7 @@ class MagazineController extends Controller
 
     /**
      * GET /api/magazines/{slug}/table-of-contents
-     * Returns public table of contents grouped by issue for one magazine only.
+     * Returns public table of contents grouped by article publication date for one magazine only.
      */
     public function tableOfContents(string $slug): JsonResponse
     {
@@ -199,34 +203,40 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Magazine not found.'], 404);
         }
 
-        $articles = $this->publishedArticleQuery($magazine)->get();
+        $articles = $this->publishedArticleQuery($magazine)
+            ->get()
+            ->sortByDesc(fn ($article) => $this->tocPublicationDate($article)?->timestamp ?? 0)
+            ->values();
 
-        $issues = $articles
-            ->groupBy(fn ($article) => $article->issue ? 'issue-' . $article->issue->id : 'unassigned')
-            ->map(function ($issueArticles) {
-                $first = $issueArticles->first();
-                $issue = $first->issue;
+        $tableOfContents = $articles
+            ->groupBy(fn ($article) => (string) $this->tocPublicationDate($article)->year)
+            ->sortKeysDesc()
+            ->map(function ($yearArticles, $year) {
+                $months = $yearArticles
+                    ->groupBy(fn ($article) => str_pad((string) $this->tocPublicationDate($article)->month, 2, '0', STR_PAD_LEFT))
+                    ->sortKeysDesc()
+                    ->map(function ($monthArticles, $monthKey) {
+                        $firstDate = $this->tocPublicationDate($monthArticles->first());
+
+                        return [
+                            'month' => (int) $monthKey,
+                            'month_name' => $firstDate->format('F'),
+                            'articles' => $monthArticles
+                                ->sortByDesc(fn ($article) => $this->tocPublicationDate($article)?->timestamp ?? 0)
+                                ->map(fn ($article) => $this->publicArticlePayload($article))
+                                ->values(),
+                        ];
+                    });
 
                 return [
-                    'issue' => $issue ? [
-                        'id' => $issue->id,
-                        'volume_number' => $issue->volume_number,
-                        'issue_number' => $issue->issue_number,
-                        'issue_month' => $issue->issue_month,
-                        'issue_year' => $issue->issue_year,
-                        'special_title' => $issue->special_title,
-                        'published_at' => $issue->published_at,
-                    ] : null,
-                    'published_at' => $issue?->published_at ?? $first->published_at ?? $first->created_at,
-                    'articles' => $issueArticles->map(fn ($article) => $this->publicArticlePayload($article))->values(),
+                    'year' => (int) $year,
+                    'months' => $months->isEmpty() ? (object) [] : $months,
                 ];
-            })
-            ->sortByDesc(fn ($group) => optional($group['published_at'])->timestamp ?? strtotime((string) $group['published_at']) ?: 0)
-            ->values();
+            });
 
         return response()->json([
             'magazine' => $this->publicMagazinePayload($magazine),
-            'issues' => $issues,
+            'table_of_contents' => $tableOfContents->isEmpty() ? (object) [] : $tableOfContents,
             'seo' => $this->magazineSeoPayload($magazine, 'Table of Contents'),
         ]);
     }
@@ -308,6 +318,7 @@ class MagazineController extends Controller
         $validated = $request->validate([
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable', // can be file or string
+            'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -320,8 +331,9 @@ class MagazineController extends Controller
 
         $coverImagePath = null;
         if ($request->hasFile('cover_image')) {
-            $path = $request->file('cover_image')->store('covers', 'public');
-            $coverImagePath = 'storage/' . $path;
+            return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['cover_image_upload_id'])) {
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
         } elseif (is_string($request->input('cover_image'))) {
             $coverImagePath = $request->input('cover_image');
         }
@@ -368,8 +380,8 @@ class MagazineController extends Controller
                     'We are pleased to announce the publication of our latest issue: <strong>' . e($magazine->title) . '</strong>.',
                 ];
 
-                if ($magazine->cover_image) {
-                    $bodyLines[] = '<div style="text-align: center; margin-bottom: 24px;"><img src="' . $frontendUrl . '/' . $magazine->cover_image . '" alt="Cover Image" style="max-width: 200px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"></div>';
+                if ($magazine->cover_image_url) {
+                    $bodyLines[] = '<div style="text-align: center; margin-bottom: 24px;"><img src="' . e($magazine->cover_image_url) . '" alt="Cover Image" style="max-width: 200px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"></div>';
                 }
 
                 if ($magazine->description) {
@@ -470,6 +482,7 @@ class MagazineController extends Controller
         $validated = $request->validate([
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable',
+            'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -479,12 +492,10 @@ class MagazineController extends Controller
 
         $coverImagePath = $magazine->cover_image;
         if ($request->hasFile('cover_image')) {
-            if ($coverImagePath && strpos($coverImagePath, 'storage/') === 0) {
-                $oldPath = str_replace('storage/', '', $coverImagePath);
-                \Illuminate\Support\Facades\Storage::disk('public')->delete($oldPath);
-            }
-            $path = $request->file('cover_image')->store('covers', 'public');
-            $coverImagePath = 'storage/' . $path;
+            return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['cover_image_upload_id'])) {
+            $this->mediaStorage->delete($coverImagePath);
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
         } elseif ($request->has('cover_image')) {
             $coverImagePath = $request->input('cover_image');
         }
@@ -639,11 +650,12 @@ class MagazineController extends Controller
             'title' => $magazine->title,
             'slug' => $magazine->slug,
             'cover_image' => $magazine->cover_image,
+            'cover_image_url' => $magazine->cover_image_url,
             'description' => $magazine->description,
             'seo_title' => $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest',
             'seo_description' => $magazine->seo_description ?: Str::limit(strip_tags((string) $magazine->description), 160, ''),
             'seo_keywords' => $magazine->seo_keywords ?: '',
-            'og_image' => $magazine->cover_image,
+            'og_image' => $magazine->cover_image_url,
         ];
     }
 
@@ -664,7 +676,7 @@ class MagazineController extends Controller
             'title' => $section . ' | ' . ($magazine->seo_title ?: $magazine->title . ' | ScholarlyNest'),
             'description' => $magazine->seo_description ?: Str::limit(strip_tags((string) ($magazine->about_text ?: $magazine->description)), 160, ''),
             'keywords' => $magazine->seo_keywords ?: '',
-            'og_image' => $magazine->cover_image,
+            'og_image' => $magazine->cover_image_url,
         ];
     }
 
@@ -683,6 +695,8 @@ class MagazineController extends Controller
 
     private function publicArticlePayload($article): array
     {
+        $publicationDate = $this->tocPublicationDate($article);
+
         return [
             'id' => $article->id,
             'title' => $article->title,
@@ -690,9 +704,13 @@ class MagazineController extends Controller
             'abstract' => $article->abstract,
             'doi' => $article->doi,
             'published_at' => $article->published_at,
+            'published_year' => $publicationDate?->year,
+            'published_month' => $publicationDate?->month,
+            'published_month_name' => $publicationDate?->format('F'),
             'created_at' => $article->created_at,
             'page_start' => $article->page_start,
             'page_end' => $article->page_end,
+            'has_pdf' => !empty($article->pdf_path),
             'user' => $article->user ? [
                 'id' => $article->user->id,
                 'name' => $article->user->name,
@@ -717,6 +735,11 @@ class MagazineController extends Controller
                 'published_at' => $article->issue->published_at,
             ] : null,
         ];
+    }
+
+    private function tocPublicationDate($article): ?\Carbon\Carbon
+    {
+        return $article->published_at ?: $article->created_at;
     }
 
     private function reservedPublicPageSlugs(): array

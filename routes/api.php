@@ -6,6 +6,8 @@ use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\EditorSubEditorController;
 use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\MediaController;
+use App\Http\Controllers\MediaObjectController;
+use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
 use App\Http\Controllers\ArticleController;
@@ -34,6 +36,7 @@ use Illuminate\Support\Facades\Route;
 // Public Dynamic CMS Pages Fetching
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
+Route::get('/public/faqs', [FaqController::class, 'publicIndex']);
 
 // Public Footer & Dynamic Custom Pages
 Route::get('/public/footer', [\App\Http\Controllers\FooterController::class, 'index']);
@@ -62,12 +65,14 @@ Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'pu
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
 Route::get('/articles/latest', [ArticleController::class, 'latest']);
+Route::get('/public/homepage-stats', [ArticleController::class, 'publicHomepageStats']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
-Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:60,1');
-Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:60,1');
+Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
     $query = \App\Models\Magazine::orderBy('created_at', 'desc');
@@ -137,6 +142,15 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('/media', [MediaController::class, 'store']);
     Route::delete('/media/{id}', [MediaController::class, 'destroy'])->middleware('super-admin-delete');
 
+    Route::prefix('media/uploads')->group(function () {
+        Route::post('/initiate', [MediaUploadController::class, 'initiate'])->middleware('throttle:media-upload-initiate');
+        Route::post('/{upload}/sign-parts', [MediaUploadController::class, 'signParts'])->middleware('throttle:media-upload-sign-parts');
+        Route::get('/{upload}/resume', [MediaUploadController::class, 'resume'])->middleware('throttle:media-upload-read');
+        Route::post('/{upload}/complete', [MediaUploadController::class, 'complete'])->middleware('throttle:media-upload-complete');
+        Route::delete('/{upload}/abort', [MediaUploadController::class, 'abort'])->middleware('throttle:media-upload-read');
+        Route::get('/{upload}/status', [MediaUploadController::class, 'status'])->middleware('throttle:media-upload-read');
+    });
+
     // Article assets
     Route::post('/articles/{id}/assets', [\App\Http\Controllers\ArticleAssetController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
@@ -155,6 +169,14 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
         Route::get('/stats', [ArticleController::class, 'adminStats']);
         Route::get('/users', [RbacController::class, 'users'])->middleware('permission:users.view-any');
+        Route::get('/users/magazine-assignment-options', [RbacController::class, 'magazineAssignmentOptions'])->middleware(['super-admin', 'permission:users.view-any']);
+        Route::post('/users', [RbacController::class, 'store'])->middleware('super-admin');
+        Route::get('/users/{id}', [RbacController::class, 'show'])->middleware('super-admin');
+        Route::patch('/users/{id}', [RbacController::class, 'update'])->middleware('super-admin');
+        Route::post('/users/{id}/impersonate', [\App\Http\Controllers\Admin\ImpersonationController::class, 'start'])->middleware('super-admin');
+        Route::get('/desk-observer/users', [\App\Http\Controllers\Admin\DeskObserverController::class, 'users'])->middleware('super-admin');
+        Route::get('/impersonation/status', [\App\Http\Controllers\Admin\ImpersonationController::class, 'status']);
+        Route::post('/impersonation/stop', [\App\Http\Controllers\Admin\ImpersonationController::class, 'stop']);
         Route::put('/contact-settings', [ContactController::class, 'updateSettings']);
         Route::get('/contact-messages', [ContactController::class, 'getMessages']);
         Route::post('/contact-messages/{id}/reply', [ContactController::class, 'reply']);
@@ -168,6 +190,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/newsletter/send', [NewsletterController::class, 'sendCampaign'])->middleware('permission:newsletters.send');
  
         // CMS Content Management (Restricted to Admin / Super Admin)
+        Route::get('/cms/{slug}', [CmsPageController::class, 'adminShow']);
         Route::put('/cms/{slug}', [CmsPageController::class, 'update'])->middleware('permission:settings.manage');
 
         // FAQ Management (Restricted to Admin / Super Admin)
@@ -205,8 +228,10 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
  
         // Article Review & Update Endpoints
         Route::get('/articles', [ArticleController::class, 'adminList'])->middleware('permission:articles.view-own');
+        Route::get('/articles/status-options', [ArticleController::class, 'adminStatusOptions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}', [ArticleController::class, 'showById'])->middleware('permission:articles.view-own');
         Route::put('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');
+        Route::patch('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');
         Route::patch('/articles/{id}/review', [ArticleController::class, 'review'])->middleware('permission:articles.approve');
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
@@ -249,10 +274,17 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
  
         // Dynamic RBAC Management
-        Route::prefix('rbac')->group(function () {
+        Route::prefix('user-management')->middleware('super-admin')->group(function () {
+            Route::get('/registration-settings', [RbacController::class, 'registrationSettings'])->middleware('permission:settings.view-any');
+            Route::patch('/registration-settings', [RbacController::class, 'updateRegistrationSettings'])->middleware('permission:settings.manage');
+            Route::get('/registration-role-options', [RbacController::class, 'registrationRoleOptions'])->middleware('permission:settings.view-any');
+        });
+
+        Route::prefix('rbac')->middleware('super-admin')->group(function () {
             Route::get('/roles', [RbacController::class, 'roles'])->middleware('permission:roles.view-any');
             Route::post('/roles', [RbacController::class, 'storeRole'])->middleware('permission:roles.manage');
             Route::put('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
+            Route::patch('/roles/{id}', [RbacController::class, 'updateRole'])->middleware('permission:roles.manage');
             Route::delete('/roles/{id}', [RbacController::class, 'deleteRole'])->middleware(['super-admin-delete', 'permission:roles.manage']);
             Route::get('/permissions', [RbacController::class, 'permissions'])->middleware('permission:roles.view-any');
             Route::post('/roles/{id}/permissions', [RbacController::class, 'syncRolePermissions'])->middleware('permission:roles.manage');

@@ -10,6 +10,21 @@ use Illuminate\Support\Facades\Log;
 class FaqController extends Controller
 {
     /**
+     * Get safe public FAQs for anonymous visitors.
+     */
+    public function publicIndex(): JsonResponse
+    {
+        $faqs = Faq::where('is_active', true)
+            ->orderBy('sort_order', 'asc')
+            ->orderBy('id', 'asc')
+            ->get(['id', 'question', 'answer', 'sort_order']);
+
+        return response()->json([
+            'data' => $faqs,
+        ]);
+    }
+
+    /**
      * Get all FAQs (Public Endpoint).
      */
     public function index(): JsonResponse

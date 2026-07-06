@@ -19,6 +19,7 @@ class PublisherIssueWorkflowTest extends TestCase
 
     private User $publisher;
     private User $otherPublisher;
+    private User $editor;
     private User $author;
     private Magazine $magazine;
     private Magazine $otherMagazine;
@@ -28,15 +29,18 @@ class PublisherIssueWorkflowTest extends TestCase
         parent::setUp();
 
         $publisherRole = Role::create(['name' => 'publisher', 'display_name' => 'Publisher', 'is_system' => true]);
+        $editorRole = Role::create(['name' => 'editor', 'display_name' => 'Editor', 'is_system' => true]);
         $authorRole = Role::create(['name' => 'author', 'display_name' => 'Author', 'is_system' => true]);
 
         foreach (['articles.view-own', 'articles.approve'] as $permission) {
             Permission::firstOrCreate(['name' => $permission], ['module' => 'articles', 'description' => $permission]);
         }
         $publisherRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
+        $editorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
 
         $this->publisher = User::factory()->create(['role_id' => $publisherRole->id]);
         $this->otherPublisher = User::factory()->create(['role_id' => $publisherRole->id]);
+        $this->editor = User::factory()->create(['role_id' => $editorRole->id]);
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
@@ -52,6 +56,7 @@ class PublisherIssueWorkflowTest extends TestCase
 
         $this->publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
         $this->otherPublisher->magazines()->attach($this->otherMagazine->id, ['role' => 'publisher']);
+        $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
     }
 
     public function test_publisher_can_manage_only_assigned_magazine_issues(): void
@@ -149,6 +154,68 @@ class PublisherIssueWorkflowTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $ready->id);
+    }
+
+    public function test_assigned_editor_can_manage_issue_records_but_not_publish_issue(): void
+    {
+        $issue = MagazineIssue::create([
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 3,
+            'issue_number' => 1,
+            'status' => 'draft',
+        ]);
+        $otherIssue = MagazineIssue::create([
+            'magazine_id' => $this->otherMagazine->id,
+            'volume_number' => 9,
+            'issue_number' => 1,
+            'status' => 'draft',
+        ]);
+
+        Sanctum::actingAs($this->editor);
+
+        $this->getJson('/api/admin/issues/magazines')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $this->magazine->id);
+
+        $this->getJson('/api/admin/issues')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $issue->id);
+
+        $this->getJson("/api/admin/issues/{$issue->id}")
+            ->assertOk()
+            ->assertJsonPath('issue.id', $issue->id);
+
+        $this->getJson("/api/admin/issues/{$otherIssue->id}")->assertForbidden();
+
+        $createdIssueId = $this->postJson('/api/admin/issues', [
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 4,
+            'issue_number' => 1,
+            'issue_month' => 'July',
+            'issue_year' => 2026,
+            'special_title' => 'Editor Planned Issue',
+        ])->assertCreated()
+            ->assertJsonPath('issue.special_title', 'Editor Planned Issue')
+            ->json('issue.id');
+
+        $this->postJson("/api/admin/issues/{$createdIssueId}", [
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 4,
+            'issue_number' => 2,
+            'status' => 'draft',
+        ])->assertOk()
+            ->assertJsonPath('issue.issue_number', 2);
+
+        $this->postJson('/api/admin/issues', [
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 5,
+            'issue_number' => 1,
+            'status' => 'published',
+        ])->assertForbidden();
+
+        $this->postJson("/api/admin/issues/{$issue->id}/publish")->assertForbidden();
     }
 
     private function article(string $status): Article

@@ -17,6 +17,8 @@ use App\Models\Role;
 use App\Models\Tag;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -264,6 +266,75 @@ class FinalWorkflowHardeningTest extends TestCase
         }
     }
 
+    public function test_status_gate_blocks_role_bypass_attempts_for_article_updates(): void
+    {
+        foreach (['super_admin', 'admin', 'editor', 'publisher'] as $roleName) {
+            $user = $this->user($roleName);
+            if (in_array($roleName, ['editor', 'publisher'], true)) {
+                $user->magazines()->attach($this->magazine->id, ['role' => $roleName]);
+                $user->role->permissions()->syncWithoutDetaching(
+                    Permission::whereIn('name', ['articles.edit-own'])->pluck('id')
+                );
+            }
+
+            Sanctum::actingAs($user);
+            $article = $this->article($this->user('author'), ArticleStatus::ACCEPTED);
+
+            $response = $this->putJson("/api/admin/articles/{$article->id}", [
+                'magazine_id' => $this->magazine->id,
+                'title' => "Blocked {$roleName} Edit",
+                'abstract' => 'Updated abstract',
+                'full_text' => 'Updated full text',
+            ]);
+
+            $this->assertContains($response->getStatusCode(), [403, 422]);
+            $this->assertDatabaseMissing('articles', [
+                'id' => $article->id,
+                'title' => "Blocked {$roleName} Edit",
+            ]);
+        }
+    }
+
+    public function test_cross_magazine_scope_is_still_enforced_before_editable_status_gate(): void
+    {
+        $editor = $this->user('editor');
+        $editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+        $editor->role->permissions()->syncWithoutDetaching(
+            Permission::whereIn('name', ['articles.edit-own'])->pluck('id')
+        );
+
+        $otherArticle = $this->articleForMagazine($this->user('author'), $this->otherMagazine, ArticleStatus::DRAFT);
+
+        Sanctum::actingAs($editor);
+        $this->putJson("/api/admin/articles/{$otherArticle->id}", [
+            'magazine_id' => $this->otherMagazine->id,
+            'title' => 'Cross Magazine Edit Attempt',
+            'abstract' => 'Updated abstract',
+            'full_text' => 'Updated full text',
+        ])->assertForbidden();
+    }
+
+    public function test_general_file_and_asset_updates_obey_article_edit_status_gate(): void
+    {
+        Storage::fake('public');
+
+        $author = $this->user('author');
+        $article = $this->article($author, ArticleStatus::SUBMITTED);
+
+        Sanctum::actingAs($author);
+
+        $this->postJson("/api/articles/{$article->id}/files", [
+            'file' => UploadedFile::fake()->create('manuscript.pdf', 100, 'application/pdf'),
+            'file_type' => ArticleFile::MANUSCRIPT,
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.');
+
+        $this->postJson("/api/articles/{$article->id}/assets", [
+            'file' => UploadedFile::fake()->create('supplementary.pdf', 100, 'application/pdf'),
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
+    }
+
     public function test_reviewer_and_production_roles_cannot_publish_articles(): void
     {
         $article = $this->article($this->user('author'), ArticleStatus::READY_FOR_PUBLICATION);
@@ -286,7 +357,7 @@ class FinalWorkflowHardeningTest extends TestCase
             'is_system' => false,
         ]);
 
-        Sanctum::actingAs($this->user('admin'));
+        Sanctum::actingAs($this->user('super_admin'));
 
         $this->postJson("/api/admin/rbac/roles/{$customRole->id}/permissions", [
             'permissions' => ['articles.view-own', 'articles.delete-own', 'magazines.delete'],
