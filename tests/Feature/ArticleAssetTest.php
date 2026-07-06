@@ -116,39 +116,15 @@ class ArticleAssetTest extends TestCase
     {
         Sanctum::actingAs($this->author);
 
-        $file = UploadedFile::fake()->create('dataset.xlsx', 500, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-
         $response = $this->postJson("/api/articles/{$this->article->id}/assets", [
-            'file' => $file,
+            'file' => UploadedFile::fake()->create('dataset.xlsx', 500, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
         ]);
 
-        $response->assertStatus(201)
-                 ->assertJsonStructure([
-                     'message',
-                     'asset' => [
-                         'id',
-                         'article_id',
-                         'original_filename',
-                         'file_size',
-                         'mime_type',
-                     ]
-                 ]);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
 
-        $this->assertDatabaseHas('article_assets', [
-            'article_id' => $this->article->id,
-            'original_filename' => 'dataset.xlsx',
-            'mime_type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        ]);
-
-        $this->assertDatabaseHas('article_files', [
-            'article_id' => $this->article->id,
-            'file_type' => 'supplementary',
-            'original_name' => 'dataset.xlsx',
-        ]);
-
-        $asset = ArticleAsset::first();
-        $relativePath = str_replace('storage/', '', $asset->file_path);
-        Storage::disk('public')->assertExists($relativePath);
+        $this->assertDatabaseEmpty('article_assets');
+        $this->assertDatabaseEmpty('article_files');
     }
 
     /**
@@ -166,10 +142,8 @@ class ArticleAssetTest extends TestCase
             'file' => $file,
         ]);
 
-        $response->assertStatus(422)
-                 ->assertJsonFragment([
-                     'message' => 'Malware scan failed: Infected file detected.'
-                 ]);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
 
         $this->assertDatabaseEmpty('article_assets');
     }
@@ -187,7 +161,8 @@ class ArticleAssetTest extends TestCase
             'file' => $file,
         ]);
 
-        $response->assertStatus(403);
+        $response->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
         $this->assertDatabaseEmpty('article_assets');
     }
 

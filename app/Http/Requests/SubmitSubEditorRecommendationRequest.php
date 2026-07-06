@@ -18,6 +18,7 @@ class SubmitSubEditorRecommendationRequest extends FormRequest
             'comments' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'annotated_manuscript' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'annotated_manuscript_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ];
     }
 }

@@ -7,6 +7,7 @@ use App\Models\MagazinePage;
 use App\Models\MagazineIssue;
 use App\Models\Article;
 use App\Models\Permission;
+use App\Models\MediaUploadSession;
 use App\Models\User;
 use App\Models\Role;
 use App\Constants\ArticleStatus;
@@ -14,6 +15,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\UploadedFile;
 use Spatie\Permission\PermissionRegistrar;
 
 class MagazineTest extends TestCase
@@ -62,6 +64,29 @@ class MagazineTest extends TestCase
                      'title' => 'Test Medical Magazine',
                      'slug' => 'test-medical-magazine'
                  ]);
+    }
+
+    public function test_admin_can_create_magazine_with_uploaded_cover_image(): void
+    {
+        Storage::fake('public');
+
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $response = $this->post('/api/admin/magazines', [
+            'title' => 'Cover Upload Journal',
+            'description' => 'A journal with a local cover.',
+            'cover_image_upload_id' => $this->cleanUpload($admin, 'magazine_cover', 'cover.png')->id,
+        ]);
+
+        $response->assertStatus(211)
+            ->assertJsonPath('magazine.title', 'Cover Upload Journal')
+            ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'));
+
+        $magazine = Magazine::where('title', 'Cover Upload Journal')->firstOrFail();
+        $this->assertStringStartsWith('dev/clean/test/magazine_cover/', $magazine->cover_image);
+        Storage::disk('s3')->assertExists($magazine->cover_image);
     }
 
     /**
@@ -179,7 +204,7 @@ class MagazineTest extends TestCase
         // Check if a PDF path was generated on the database record
         $article->refresh();
         $this->assertNotNull($article->pdf_path);
-        $this->assertStringContainsString('storage/articles/scholarlynest_article_', $article->pdf_path);
+        $this->assertStringContainsString('articles/scholarlynest_article_', $article->pdf_path);
     }
 
     /**
@@ -462,14 +487,12 @@ class MagazineTest extends TestCase
 
         Sanctum::actingAs($user);
 
-        $imageFile = \Illuminate\Http\UploadedFile::fake()->image('featured.png');
-
         $response = $this->postJson('/api/articles', [
             'magazine_id' => $magazine->id,
             'title' => 'Quantum Logic Theory with Image',
             'abstract' => 'Abstract synopsis details',
             'full_text' => 'Full text content details',
-            'featured_image' => $imageFile,
+            'featured_image_upload_id' => $this->cleanUpload($user, 'article_featured_image', 'featured.png')->id,
         ]);
 
         $response->assertStatus(211);
@@ -477,11 +500,10 @@ class MagazineTest extends TestCase
         $article = Article::where('title', 'Quantum Logic Theory with Image')->first();
         $this->assertNotNull($article);
         $this->assertNotNull($article->featured_image);
-        $this->assertStringContainsString('storage/articles/', $article->featured_image);
+        $this->assertStringContainsString('article_featured_image/', $article->featured_image);
 
         // Check file exists in fake storage
-        $storedFilename = str_replace('storage/articles/', '', $article->featured_image);
-        Storage::disk('public')->assertExists('articles/' . $storedFilename);
+        Storage::disk('s3')->assertExists($article->featured_image);
     }
 
     /**
@@ -511,15 +533,13 @@ class MagazineTest extends TestCase
         // Place a fake file
         Storage::disk('public')->put('articles/old_image.png', 'fake old image content');
 
-        $newImageFile = \Illuminate\Http\UploadedFile::fake()->image('new_featured.png');
-
         $response = $this->postJson("/api/admin/articles/{$article->id}", [
             '_method' => 'PUT',
             'magazine_id' => $magazine->id,
             'title' => 'Original Title',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
-            'featured_image' => $newImageFile,
+            'featured_image_upload_id' => $this->cleanUpload($user, 'article_featured_image', 'new_featured.png')->id,
         ]);
 
         $response->assertStatus(200);
@@ -530,8 +550,7 @@ class MagazineTest extends TestCase
 
         // Old file deleted, new file exists
         Storage::disk('public')->assertMissing('articles/old_image.png');
-        $newStoredFilename = str_replace('storage/articles/', '', $article->featured_image);
-        Storage::disk('public')->assertExists('articles/' . $newStoredFilename);
+        Storage::disk('s3')->assertExists($article->featured_image);
     }
 
     /**
@@ -775,6 +794,32 @@ class MagazineTest extends TestCase
         $this->getJson('/api/magazines/empty/table-of-contents')
             ->assertStatus(200)
             ->assertJsonPath('table_of_contents', []);
+    }
+
+    private function cleanUpload(User $user, string $purpose, string $filename): MediaUploadSession
+    {
+        $key = 'dev/clean/test/' . $purpose . '/' . $filename;
+        Storage::disk('s3')->put($key, 'fake clean image');
+
+        return MediaUploadSession::create([
+            'user_id' => $user->id,
+            'purpose' => $purpose,
+            'original_filename' => $filename,
+            'safe_display_filename' => $filename,
+            'expected_size_bytes' => 16,
+            'declared_mime_type' => 'image/png',
+            'disk' => 's3',
+            's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,
+            's3_clean_key' => $key,
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_CLEAN,
+            'detected_mime_type' => 'image/png',
+            'checksum_sha256' => str_repeat('c', 64),
+            'scan_engine' => 'fake-clamav',
+            'scan_status' => 'clean',
+            'scanned_at' => now(),
+            'expires_at' => now()->addHour(),
+        ]);
     }
 
 }

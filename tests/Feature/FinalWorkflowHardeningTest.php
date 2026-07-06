@@ -326,13 +326,13 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->postJson("/api/articles/{$article->id}/files", [
             'file' => UploadedFile::fake()->create('manuscript.pdf', 100, 'application/pdf'),
             'file_type' => ArticleFile::MANUSCRIPT,
-        ])->assertStatus(422)
-            ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.');
 
         $this->postJson("/api/articles/{$article->id}/assets", [
             'file' => UploadedFile::fake()->create('supplementary.pdf', 100, 'application/pdf'),
-        ])->assertStatus(422)
-            ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
     }
 
     public function test_reviewer_and_production_roles_cannot_publish_articles(): void

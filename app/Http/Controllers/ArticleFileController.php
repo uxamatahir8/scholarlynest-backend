@@ -5,46 +5,19 @@ namespace App\Http\Controllers;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
+use App\Models\MediaUploadSession;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 
 class ArticleFileController extends Controller
 {
     public function store(Request $request, int $articleId): JsonResponse
     {
-        $article = Article::findOrFail($articleId);
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'file' => 'required|file|mimes:pdf,doc,docx,xlsx,xls,csv,zip,png,jpg,jpeg,txt|max:25600',
-            'file_type' => ['required', Rule::in(ArticleFile::TYPES)],
-            'assignment_type' => 'nullable|string|max:80',
-            'assignment_id' => 'nullable|integer|min:1',
-        ]);
-
-        if (
-            in_array($validated['file_type'], [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
-            && !ArticleStatus::isEditableStatus($article->status)
-        ) {
-            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
-        }
-
-        if (!$this->canUpload($user, $article, $validated['file_type'], $validated['assignment_type'] ?? null, $validated['assignment_id'] ?? null)) {
-            return response()->json(['message' => 'Forbidden. You cannot upload this file type for this article.'], 403);
-        }
-
-        $file = $this->storeUploadedFile($article, $request->file('file'), $validated['file_type'], $user->id, [
-            'assignment_type' => $validated['assignment_type'] ?? null,
-            'assignment_id' => $validated['assignment_id'] ?? null,
-        ]);
-
         return response()->json([
-            'message' => 'Article file uploaded.',
-            'file' => $this->serializeFile($file),
-        ], 201);
+            'message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.',
+        ], 410);
     }
 
     public function download(Request $request, int $fileId)
@@ -53,6 +26,24 @@ class ArticleFileController extends Controller
 
         if (!$this->canAccess($request->user('sanctum'), $file)) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        if (($file->scan_status ?? 'clean') !== 'clean') {
+            return response()->json(['message' => 'The requested file is not available.'], 404);
+        }
+
+        if (($file->disk ?? 'public') !== 'public') {
+            $key = $file->storage_key ?: $file->file_path;
+            if (!$key || !Storage::disk($file->disk)->exists($key)) {
+                return response()->json(['message' => 'The requested file is not available.'], 404);
+            }
+
+            return redirect()->away(
+                Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
+                    'ResponseContentDisposition' => 'attachment; filename="' . addslashes($file->safe_original_name ?: $file->original_name) . '"',
+                    'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
+                ])
+            );
         }
 
         $relativePath = str_replace('storage/', '', $file->file_path);
@@ -67,24 +58,59 @@ class ArticleFileController extends Controller
         ]);
     }
 
-    public function storeUploadedFile(Article $article, \Illuminate\Http\UploadedFile $uploadedFile, string $fileType, int $uploadedBy, array $extra = []): ArticleFile
+    public function createPendingDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig): ArticleFile
     {
-        $path = $uploadedFile->store("article-files/{$article->id}/{$fileType}", 'public');
+        $metadata = $upload->metadata ?: [];
 
         return ArticleFile::create([
             'article_id' => $article->id,
-            'article_version_id' => $extra['article_version_id'] ?? null,
-            'source_asset_id' => $extra['source_asset_id'] ?? null,
-            'uploaded_by' => $uploadedBy,
-            'assignment_type' => $extra['assignment_type'] ?? null,
-            'assignment_id' => $extra['assignment_id'] ?? null,
-            'file_type' => $fileType,
-            'visibility' => $this->defaultVisibility($fileType),
-            'file_path' => 'storage/' . $path,
-            'original_name' => basename($uploadedFile->getClientOriginalName()),
-            'mime_type' => $uploadedFile->getMimeType(),
-            'size' => $uploadedFile->getSize(),
-            'metadata' => $extra['metadata'] ?? null,
+            'article_version_id' => $metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id'),
+            'uploaded_by' => $upload->user_id,
+            'assignment_type' => $metadata['assignment_type'] ?? null,
+            'assignment_id' => $metadata['assignment_id'] ?? null,
+            'file_type' => $purposeConfig['article_file_type'],
+            'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
+            'disk' => $upload->disk,
+            'file_path' => $upload->s3_incoming_key,
+            'storage_key' => $upload->s3_incoming_key,
+            'original_name' => $upload->safe_display_filename,
+            'safe_original_name' => $upload->safe_display_filename,
+            'mime_type' => $upload->declared_mime_type ?: 'application/octet-stream',
+            'size' => $upload->expected_size_bytes,
+            'checksum_sha256' => null,
+            'scan_status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
+            'metadata' => [
+                'upload_session_id' => $upload->id,
+                'direct_s3_upload' => true,
+            ],
+        ]);
+    }
+
+    public function createCleanDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $extra = []): ArticleFile
+    {
+        return ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $extra['article_version_id'] ?? $article->versions()->latest('version_number')->value('id'),
+            'uploaded_by' => $upload->user_id,
+            'assignment_type' => $extra['assignment_type'] ?? ($upload->metadata['assignment_type'] ?? null),
+            'assignment_id' => $extra['assignment_id'] ?? ($upload->metadata['assignment_id'] ?? null),
+            'file_type' => $purposeConfig['article_file_type'],
+            'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
+            'disk' => $upload->disk,
+            'file_path' => $upload->s3_clean_key,
+            'storage_key' => $upload->s3_clean_key,
+            'original_name' => $upload->safe_display_filename,
+            'safe_original_name' => $upload->safe_display_filename,
+            'mime_type' => $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'size' => $upload->expected_size_bytes,
+            'checksum_sha256' => $upload->checksum_sha256,
+            'scan_status' => 'clean',
+            'scan_engine' => $upload->scan_engine,
+            'scanned_at' => $upload->scanned_at,
+            'metadata' => array_merge([
+                'upload_session_id' => $upload->id,
+                'direct_s3_upload' => true,
+            ], $extra['metadata'] ?? []),
         ]);
     }
 
@@ -101,12 +127,14 @@ class ArticleFileController extends Controller
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,
             'size' => $file->size,
+            'scan_status' => $file->scan_status ?? 'clean',
+            'available' => ($file->scan_status ?? 'clean') === 'clean',
             'uploader' => $file->uploader ? [
                 'id' => $file->uploader->id,
                 'name' => $file->uploader->name,
             ] : null,
             'created_at' => $file->created_at,
-            'download_url' => "/api/articles/files/{$file->id}/download",
+            'download_url' => ($file->scan_status ?? 'clean') === 'clean' ? "/api/articles/files/{$file->id}/download" : null,
             'assignment_type' => $file->assignment_type,
             'assignment_id' => $file->assignment_id,
         ];
@@ -204,6 +232,11 @@ class ArticleFileController extends Controller
         }
 
         return false;
+    }
+
+    public function canUploadForDirectSession($user, Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
+    {
+        return $this->canUpload($user, $article, $fileType, $assignmentType, $assignmentId);
     }
 
     private function canUpload($user, Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool

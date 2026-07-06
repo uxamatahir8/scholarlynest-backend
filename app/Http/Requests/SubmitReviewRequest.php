@@ -19,6 +19,7 @@ class SubmitReviewRequest extends FormRequest
             'comments_for_author' => 'nullable|string',
             'confidential_comments' => 'nullable|string',
             'reviewed_manuscript' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'reviewed_manuscript_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ];
     }
 }

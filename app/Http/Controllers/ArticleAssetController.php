@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Models\ArticleFile;
 use App\Models\Article;
 use App\Models\ArticleAsset;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -18,71 +19,9 @@ class ArticleAssetController extends Controller
      */
     public function store(Request $request, int $id): JsonResponse
     {
-        $user = $request->user();
-        if (!$user) {
-            return response()->json(['message' => 'Unauthenticated.'], 401);
-        }
-
-        $article = Article::find($id);
-        if (!$article) {
-            return response()->json(['message' => 'Article not found.'], 404);
-        }
-
-        // Authorize using the update policy of the article
-        if ($user->cannot('view', $article)) {
-            return response()->json(['message' => 'This action is unauthorized.'], 403);
-        }
-
-        if (!ArticleStatus::isEditableStatus($article->status)) {
-            return response()->json(['message' => 'This manuscript cannot be edited at its current workflow stage.'], 422);
-        }
-
-        if ($user->cannot('update', $article)) {
-            return response()->json(['message' => 'This action is unauthorized.'], 403);
-        }
-
-        // Validate MIME type and file size (max 25MB)
-        $request->validate([
-            'file' => 'required|file|mimes:pdf,docx,xlsx,xls,csv,png,jpg,jpeg,txt|max:25600',
-        ]);
-
-        $file = $request->file('file');
-
-        // 1. Antivirus / Malware checking
-        // TODO(security): Run ClamScan in sandbox. Standard local fallback validates files.
-        $fileContents = file_get_contents($file->getRealPath());
-        if (str_contains($fileContents, 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE')) {
-            return response()->json(['message' => 'Malware scan failed: Infected file detected.'], 422);
-        }
-
-        // 2. Input/filename sanitization
-        $originalName = $file->getClientOriginalName();
-        $safeOriginalName = basename($originalName); // Strip path traversal attempts
-
-        $fileSize = $file->getSize();
-        $mimeType = $file->getMimeType();
-
-        // 3. Unique hashing filename storage outside web root (stored inside private/public disk, served conditionally)
-        $path = $file->store('assets', 'public');
-
-        $asset = ArticleAsset::create([
-            'article_id' => $article->id,
-            'file_path' => 'storage/' . $path,
-            'original_filename' => $safeOriginalName,
-            'file_size' => $fileSize,
-            'mime_type' => $mimeType,
-        ]);
-
-        app(ArticleFileController::class)->storeUploadedFile($article, $file, ArticleFile::SUPPLEMENTARY, $user->id, [
-            'article_version_id' => $article->versions()->latest('version_number')->value('id'),
-            'source_asset_id' => $asset->id,
-            'metadata' => ['compatibility_bridge' => 'article_assets'],
-        ]);
-
         return response()->json([
-            'message' => 'Asset uploaded successfully.',
-            'asset' => $this->serializeAsset($asset),
-        ], 201);
+            'message' => 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.',
+        ], 410);
     }
 
     /**
@@ -115,10 +54,7 @@ class ArticleAssetController extends Controller
         }
 
         // Unlink physical file from storage
-        $relativePath = str_replace('storage/', '', $asset->file_path);
-        if (Storage::disk('public')->exists($relativePath)) {
-            Storage::disk('public')->delete($relativePath);
-        }
+        app(MediaStorageService::class)->delete($asset->storage_key ?: $asset->file_path);
 
         $asset->delete();
 
@@ -150,6 +86,24 @@ class ArticleAssetController extends Controller
             }
         }
 
+        if (($asset->scan_status ?? 'clean') !== 'clean') {
+            return response()->json(['message' => 'The requested file is not available.'], 404);
+        }
+
+        if (($asset->disk ?? 'public') !== 'public') {
+            $key = $asset->storage_key ?: $asset->file_path;
+            if (!$key || !Storage::disk($asset->disk)->exists($key)) {
+                return response()->json(['message' => 'The requested file is not available.'], 404);
+            }
+
+            return redirect()->away(
+                Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
+                    'ResponseContentDisposition' => 'attachment; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
+                    'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
+                ])
+            );
+        }
+
         $relativePath = str_replace('storage/', '', $asset->file_path);
         if (!Storage::disk('public')->exists($relativePath)) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
@@ -173,6 +127,8 @@ class ArticleAssetController extends Controller
             'original_filename' => $asset->original_filename,
             'file_size' => $asset->file_size,
             'mime_type' => $asset->mime_type,
+            'scan_status' => $asset->scan_status ?? 'clean',
+            'available' => ($asset->scan_status ?? 'clean') === 'clean',
         ];
     }
 }

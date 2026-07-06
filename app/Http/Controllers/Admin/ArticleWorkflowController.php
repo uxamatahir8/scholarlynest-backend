@@ -30,6 +30,8 @@ use App\Models\User;
 use App\Services\PdfGeneratorService;
 use App\Services\ArticleVersionService;
 use App\Services\CitationService;
+use App\Services\Media\CleanUploadResolver;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -352,7 +354,14 @@ class ArticleWorkflowController extends Controller
                 : ArticleStatus::UNDER_REVIEW;
 
             if ($request->hasFile('plagiarism_report')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('plagiarism_report'), ArticleFile::PLAGIARISM_REPORT, $request->user()->id);
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('plagiarism_report_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->plagiarism_report_upload_id, 'article_plagiarism_report');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_plagiarism_report'));
             }
 
             $article->update([
@@ -499,7 +508,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
             if ($request->hasFile('annotated_manuscript')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('annotated_manuscript'), ArticleFile::ANNOTATED_MANUSCRIPT, $request->user()->id, [
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('annotated_manuscript_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->annotated_manuscript_upload_id, 'article_annotated_manuscript');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($assignment->article, $upload, config('media_uploads.purposes.article_annotated_manuscript'), [
                     'assignment_type' => 'sub_editor_assignment',
                     'assignment_id' => $assignment->id,
                 ]);
@@ -585,7 +601,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
             if ($request->hasFile('reviewed_manuscript')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($assignment->article, $request->file('reviewed_manuscript'), ArticleFile::REVIEWED_MANUSCRIPT, $request->user()->id, [
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('reviewed_manuscript_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->reviewed_manuscript_upload_id, 'article_reviewed_manuscript');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($assignment->article, $upload, config('media_uploads.purposes.article_reviewed_manuscript'), [
                     'assignment_type' => 'reviewer_assignment',
                     'assignment_id' => $assignment->id,
                 ]);
@@ -759,6 +782,7 @@ class ArticleWorkflowController extends Controller
         $this->rejectObserverMutation($request);
         $request->validate([
             'production_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'production_file_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ]);
 
         $assignment = ProductionAssignment::with('article')->findOrFail($assignmentId);
@@ -784,11 +808,18 @@ class ArticleWorkflowController extends Controller
         $oldStatus = $assignment->article->status;
 
         if ($request->hasFile('production_file')) {
-            $storedFile = app(ArticleFileController::class)->storeUploadedFile(
+            return response()->json([
+                'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
+            ], 410);
+        }
+
+        if ($request->filled('production_file_upload_id')) {
+            $purpose = $assignment->role === 'proofreader' ? 'article_proof_file' : 'article_production_file';
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
+            $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
                 $assignment->article,
-                $request->file('production_file'),
-                $assignment->role === 'proofreader' ? ArticleFile::PROOF_FILE : ArticleFile::COPY_EDITED_FILE,
-                $user->id,
+                $upload,
+                config('media_uploads.purposes.' . $purpose),
                 [
                     'assignment_type' => 'production_assignment',
                     'assignment_id' => $assignment->id,
@@ -1015,7 +1046,14 @@ class ArticleWorkflowController extends Controller
 
         DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
             if ($request->hasFile('publication_pdf')) {
-                $storedFile = app(ArticleFileController::class)->storeUploadedFile($article, $request->file('publication_pdf'), ArticleFile::PUBLICATION_PDF, $request->user()->id);
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Raw browser uploads are disabled for published PDFs. Use the direct S3 upload-session flow.',
+                ], 410));
+            }
+
+            if ($request->filled('publication_pdf_upload_id')) {
+                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->publication_pdf_upload_id, 'article_published_pdf');
+                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_published_pdf'));
                 $article->pdf_path = $storedFile->file_path;
             }
 
@@ -1137,10 +1175,16 @@ class ArticleWorkflowController extends Controller
         $coverImage = $existing?->cover_image;
 
         if ($request->hasFile('cover_image')) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Raw browser uploads are disabled for issue covers. Use the direct S3 upload-session flow.',
+            ], 410));
+        }
+
+        if (!empty($validated['cover_image_upload_id'])) {
             if ($coverImage) {
-                Storage::disk('public')->delete(str_replace('storage/', '', $coverImage));
+                app(MediaStorageService::class)->delete($coverImage);
             }
-            $coverImage = 'storage/' . $request->file('cover_image')->store('magazine-issues', 'public');
+            $coverImage = app(CleanUploadResolver::class)->cleanKey($request->user(), $validated['cover_image_upload_id'], 'issue_cover');
         }
 
         return [
@@ -1173,6 +1217,7 @@ class ArticleWorkflowController extends Controller
             'special_title' => $issue->special_title,
             'description' => $issue->description,
             'cover_image' => $issue->cover_image,
+            'cover_image_url' => $issue->cover_image_url,
             'status' => $issue->status ?: ($issue->is_published ? 'published' : 'draft'),
             'is_published' => $issue->is_published,
             'published_at' => $issue->published_at,
@@ -1219,6 +1264,7 @@ class ArticleWorkflowController extends Controller
             'published_at' => $article->published_at,
             'has_pdf' => !empty($article->pdf_path),
             'pdf_url' => $article->pdf_path ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'featured_image_url' => $article->featured_image_url,
             'article_url' => $this->articleUrl($article),
             'article_authors' => $article->articleAuthors
                 ->sortBy('author_order')

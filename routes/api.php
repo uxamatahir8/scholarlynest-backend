@@ -6,6 +6,8 @@ use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\EditorSubEditorController;
 use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\MediaController;
+use App\Http\Controllers\MediaObjectController;
+use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
 use App\Http\Controllers\ArticleController;
@@ -68,8 +70,9 @@ Route::get('/articles/{slug}', [ArticleController::class, 'show']);
 Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
-Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:60,1');
-Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:60,1');
+Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
     $query = \App\Models\Magazine::orderBy('created_at', 'desc');
@@ -138,6 +141,15 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     // Media polymorphic uploads
     Route::post('/media', [MediaController::class, 'store']);
     Route::delete('/media/{id}', [MediaController::class, 'destroy'])->middleware('super-admin-delete');
+
+    Route::prefix('media/uploads')->group(function () {
+        Route::post('/initiate', [MediaUploadController::class, 'initiate'])->middleware('throttle:media-upload-initiate');
+        Route::post('/{upload}/sign-parts', [MediaUploadController::class, 'signParts'])->middleware('throttle:media-upload-sign-parts');
+        Route::get('/{upload}/resume', [MediaUploadController::class, 'resume'])->middleware('throttle:media-upload-read');
+        Route::post('/{upload}/complete', [MediaUploadController::class, 'complete'])->middleware('throttle:media-upload-complete');
+        Route::delete('/{upload}/abort', [MediaUploadController::class, 'abort'])->middleware('throttle:media-upload-read');
+        Route::get('/{upload}/status', [MediaUploadController::class, 'status'])->middleware('throttle:media-upload-read');
+    });
 
     // Article assets
     Route::post('/articles/{id}/assets', [\App\Http\Controllers\ArticleAssetController::class, 'store'])
