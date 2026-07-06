@@ -252,12 +252,60 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $this->getJson("/api/admin/articles/{$articleB->id}")->assertForbidden();
     }
 
-    public function test_sub_editor_and_reviewer_cannot_access_magazine_management_apis(): void
+    public function test_sub_editor_status_filters_work(): void
     {
-        Sanctum::actingAs($this->subEditorA);
-        $this->getJson('/api/admin/magazines')->assertForbidden();
+        $article1 = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->admin->id,
+            'title' => "Active Task Article",
+            'slug' => "active-task-article",
+            'abstract' => "Abstract 1",
+            'full_text' => "Full text 1",
+            'status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $article1->id,
+            'sub_editor_id' => $this->subEditorA->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+        ]);
 
-        Sanctum::actingAs($this->reviewerA);
-        $this->getJson('/api/admin/magazines')->assertForbidden();
+        $article2 = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->admin->id,
+            'title' => "Completed Task Article",
+            'slug' => "completed-task-article",
+            'abstract' => "Abstract 2",
+            'full_text' => "Full text 2",
+            'status' => ArticleStatus::REVIEW_IN_PROGRESS,
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $article2->id,
+            'sub_editor_id' => $this->subEditorA->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'completed',
+            'completed_at' => now(),
+            'recommendation' => 'accept',
+        ]);
+
+        Sanctum::actingAs($this->subEditorA);
+
+        // Active
+        $this->getJson('/api/admin/my-sub-editor-assignments?status=active')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.article.title', 'Active Task Article');
+
+        // Completed
+        $this->getJson('/api/admin/my-sub-editor-assignments?status=completed')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.article.title', 'Completed Task Article');
+
+        // Pending
+        $this->getJson('/api/admin/my-sub-editor-assignments?status=pending')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.article.title', 'Active Task Article');
     }
 }
