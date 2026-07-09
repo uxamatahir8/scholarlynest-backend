@@ -21,14 +21,14 @@ class CitationService
             : $this->joinAuthors($authors->all());
 
         $year = $article->published_year ?: optional($article->published_at)->year ?: now()->year;
-        $journal = $article->magazine?->title ?? 'ScholarlyNest';
+        $magazine = $article->magazine?->title ?? 'ScholarlyNest';
         $volume = $article->issue?->volume_number;
         $issue = $article->issue?->issue_number;
         $pages = $article->page_start && $article->page_end
             ? "{$article->page_start}-{$article->page_end}"
             : null;
 
-        $citation = "{$authorText} ({$year}). {$article->title}. {$journal}";
+        $citation = "{$authorText} ({$year}). {$article->title}. {$magazine}";
 
         if ($volume) {
             $citation .= ", {$volume}";

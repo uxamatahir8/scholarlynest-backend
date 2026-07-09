@@ -237,7 +237,7 @@ class DeskObserverTest extends TestCase
         return Magazine::create([
             'title' => $title,
             'slug' => Str::slug($title) . '-' . uniqid(),
-            'description' => 'Observer test journal',
+            'description' => 'Observer test magazine',
         ]);
     }
 

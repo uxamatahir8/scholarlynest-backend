@@ -54,7 +54,7 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $this->magazine = Magazine::create([
             'title' => 'Quantum Science',
             'slug' => 'quantum-science',
-            'description' => 'Quantum mechanics journal',
+            'description' => 'Quantum mechanics magazine',
         ]);
     }
 

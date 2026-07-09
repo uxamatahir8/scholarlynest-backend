@@ -76,14 +76,14 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->roles['proofreader']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.manage-assets'])->pluck('id'));
 
         $this->magazine = Magazine::create([
-            'title' => 'Hardening Journal',
-            'slug' => 'hardening-journal',
-            'description' => 'QA journal',
+            'title' => 'Hardening Magazine',
+            'slug' => 'hardening-magazine',
+            'description' => 'QA magazine',
         ]);
         $this->otherMagazine = Magazine::create([
-            'title' => 'Unrelated Journal',
-            'slug' => 'unrelated-journal',
-            'description' => 'Other journal',
+            'title' => 'Unrelated Magazine',
+            'slug' => 'unrelated-magazine',
+            'description' => 'Other magazine',
         ]);
     }
 

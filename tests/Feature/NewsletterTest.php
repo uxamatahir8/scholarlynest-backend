@@ -190,7 +190,7 @@ class NewsletterTest extends TestCase
  
         // 2. Send campaign
         $campaignResponse = $this->postJson('/api/admin/newsletter/send', [
-            'subject' => 'Journal Volume 1',
+            'subject' => 'Magazine Volume 1',
             'content' => '<h1>New Volume Released!</h1>'
         ]);
  
@@ -201,18 +201,18 @@ class NewsletterTest extends TestCase
  
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'sub1@example.com',
-            'subject' => 'Journal Volume 1',
+            'subject' => 'Magazine Volume 1',
         ]);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'sub2@example.com',
-            'subject' => 'Journal Volume 1',
+            'subject' => 'Magazine Volume 1',
         ]);
  
         Queue::assertPushed(\App\Jobs\SendNotificationJob::class, 2);
 
         // Check campaign logged in db
         $this->assertDatabaseHas('newsletter_campaigns', [
-            'subject' => 'Journal Volume 1',
+            'subject' => 'Magazine Volume 1',
             'recipients_count' => 2
         ]);
 
@@ -221,7 +221,7 @@ class NewsletterTest extends TestCase
         $campaignListResponse->assertStatus(200)
                              ->assertJsonCount(1)
                              ->assertJsonFragment([
-                                 'subject' => 'Journal Volume 1',
+                                 'subject' => 'Magazine Volume 1',
                                  'recipients_count' => 2
                              ]);
     }

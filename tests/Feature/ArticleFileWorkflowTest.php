@@ -53,9 +53,9 @@ class ArticleFileWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'File Journal',
-            'slug' => 'file-journal',
-            'description' => 'File workflow journal',
+            'title' => 'File Magazine',
+            'slug' => 'file-magazine',
+            'description' => 'File workflow magazine',
         ]);
 
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);

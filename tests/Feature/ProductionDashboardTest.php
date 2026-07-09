@@ -55,14 +55,14 @@ class ProductionDashboardTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Production Journal',
-            'slug' => 'production-journal',
-            'description' => 'Production test journal',
+            'title' => 'Production Magazine',
+            'slug' => 'production-magazine',
+            'description' => 'Production test magazine',
         ]);
         $this->otherMagazine = Magazine::create([
-            'title' => 'Other Production Journal',
-            'slug' => 'other-production-journal',
-            'description' => 'Other production test journal',
+            'title' => 'Other Production Magazine',
+            'slug' => 'other-production-magazine',
+            'description' => 'Other production test magazine',
         ]);
 
         $this->publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);

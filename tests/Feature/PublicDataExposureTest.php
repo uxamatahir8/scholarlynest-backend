@@ -30,8 +30,8 @@ class PublicDataExposureTest extends TestCase
         Storage::fake('public');
 
         $this->magazine = Magazine::create([
-            'title' => 'Public Security Journal',
-            'slug' => 'public-security-journal',
+            'title' => 'Public Security Magazine',
+            'slug' => 'public-security-magazine',
         ]);
 
         $this->author = User::factory()->create([
@@ -159,8 +159,8 @@ class PublicDataExposureTest extends TestCase
     public function test_public_homepage_stats_return_safe_published_aggregates_only(): void
     {
         $secondMagazine = Magazine::create([
-            'title' => 'Second Public Journal',
-            'slug' => 'second-public-journal',
+            'title' => 'Second Public Magazine',
+            'slug' => 'second-public-magazine',
         ]);
 
         $publishedIssue = MagazineIssue::create([
@@ -234,7 +234,7 @@ class PublicDataExposureTest extends TestCase
             'sort_order' => 3,
         ]);
 
-        $this->getJson('/api/magazines/public-security-journal/pages/editorial-policy')
+        $this->getJson('/api/magazines/public-security-magazine/pages/editorial-policy')
             ->assertOk()
             ->assertJsonPath('page.content', 'Public policy text')
             ->assertJsonMissing(['created_by' => $editor->id])

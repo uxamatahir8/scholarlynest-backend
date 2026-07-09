@@ -49,8 +49,8 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         $this->superAdmin = $this->user('super_admin');
         $this->author = $this->user('author');
 
-        $this->magazineA = $this->magazine('Assigned Journal');
-        $this->magazineB = $this->magazine('Blocked Journal');
+        $this->magazineA = $this->magazine('Assigned Magazine');
+        $this->magazineB = $this->magazine('Blocked Magazine');
     }
 
     public function test_editor_and_magazine_editor_are_limited_to_assigned_magazines(): void
@@ -232,7 +232,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         return Magazine::create([
             'title' => $title,
             'slug' => Str::slug($title) . '-' . uniqid(),
-            'description' => 'Role-aware test journal',
+            'description' => 'Role-aware test magazine',
         ]);
     }
 

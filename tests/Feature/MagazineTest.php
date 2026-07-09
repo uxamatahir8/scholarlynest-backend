@@ -75,16 +75,16 @@ class MagazineTest extends TestCase
         Sanctum::actingAs($admin);
 
         $response = $this->post('/api/admin/magazines', [
-            'title' => 'Cover Upload Journal',
-            'description' => 'A journal with a local cover.',
+            'title' => 'Cover Upload Magazine',
+            'description' => 'A magazine with a local cover.',
             'cover_image_upload_id' => $this->cleanUpload($admin, 'magazine_cover', 'cover.png')->id,
         ]);
 
         $response->assertStatus(211)
-            ->assertJsonPath('magazine.title', 'Cover Upload Journal')
+            ->assertJsonPath('magazine.title', 'Cover Upload Magazine')
             ->assertJsonPath('magazine.cover_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'));
 
-        $magazine = Magazine::where('title', 'Cover Upload Journal')->firstOrFail();
+        $magazine = Magazine::where('title', 'Cover Upload Magazine')->firstOrFail();
         $this->assertStringStartsWith('dev/clean/test/magazine_cover/', $magazine->cover_image);
         Storage::disk('s3')->assertExists($magazine->cover_image);
     }

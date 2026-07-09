@@ -37,12 +37,12 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         return User::factory()->create(['role_id' => $this->roles[$roleName]->id]);
     }
 
-    private function magazine(string $title = 'Assignment Journal'): Magazine
+    private function magazine(string $title = 'Assignment Magazine'): Magazine
     {
         return Magazine::create([
             'title' => $title . ' ' . uniqid(),
             'slug' => Str::slug($title) . '-' . uniqid(),
-            'description' => 'Test journal',
+            'description' => 'Test magazine',
         ]);
     }
 
@@ -398,7 +398,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         Sanctum::actingAs($this->user('super_admin'));
 
         foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
-            $magazine = $this->magazine(Str::headline($roleName) . ' Journal');
+            $magazine = $this->magazine(Str::headline($roleName) . ' Magazine');
 
             $response = $this->postJson('/api/admin/users', [
                 'name' => Str::headline($roleName) . ' User',
@@ -454,7 +454,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_user_edit_payload_returns_assigned_magazines_safely(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
-        $magazine = $this->magazine('Safe Payload Journal');
+        $magazine = $this->magazine('Safe Payload Magazine');
         $targetUser = User::factory()->create(['role_id' => $this->roles['publisher']->id]);
         $targetUser->magazines()->attach($magazine->id, ['role' => 'publisher', 'assigned_by' => null]);
 
@@ -473,7 +473,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
 
     public function test_magazine_assignment_options_are_super_admin_only_and_safe(): void
     {
-        $magazine = $this->magazine('Assignment Context Journal');
+        $magazine = $this->magazine('Assignment Context Magazine');
         $editor = User::factory()->create([
             'name' => 'Visible Editor',
             'email' => 'hidden.editor@example.com',

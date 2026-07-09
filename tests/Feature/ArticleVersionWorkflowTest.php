@@ -42,9 +42,9 @@ class ArticleVersionWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
         $this->editor = User::factory()->create(['role_id' => $editorRole->id]);
         $this->magazine = Magazine::create([
-            'title' => 'Version Journal',
-            'slug' => 'version-journal',
-            'description' => 'Version test journal',
+            'title' => 'Version Magazine',
+            'slug' => 'version-magazine',
+            'description' => 'Version test magazine',
         ]);
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
 

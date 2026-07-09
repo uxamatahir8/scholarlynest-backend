@@ -45,9 +45,9 @@ class ArticleAcademicMetadataTest extends TestCase
             'university_name' => 'Example University',
         ]);
         $this->magazine = Magazine::create([
-            'title' => 'Metadata Journal',
-            'slug' => 'metadata-journal',
-            'description' => 'Metadata test journal',
+            'title' => 'Metadata Magazine',
+            'slug' => 'metadata-magazine',
+            'description' => 'Metadata test magazine',
         ]);
     }
 

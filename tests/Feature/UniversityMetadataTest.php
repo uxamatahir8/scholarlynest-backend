@@ -68,7 +68,7 @@ class UniversityMetadataTest extends TestCase
         $this->magazine = Magazine::create([
             'title' => 'Scientific Computing',
             'slug' => 'scientific-computing',
-            'description' => 'A computer science journal',
+            'description' => 'A computer science magazine',
         ]);
     }
 

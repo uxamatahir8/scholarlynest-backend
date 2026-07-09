@@ -233,9 +233,9 @@ class RegistrationSettingsTest extends TestCase
     {
         Sanctum::actingAs($this->user('super_admin'));
         $magazine = Magazine::create([
-            'title' => 'Registration Flow Journal',
-            'slug' => 'registration-flow-journal',
-            'description' => 'Registration flow test journal',
+            'title' => 'Registration Flow Magazine',
+            'slug' => 'registration-flow-magazine',
+            'description' => 'Registration flow test magazine',
         ]);
 
         $response = $this->postJson('/api/admin/users', [

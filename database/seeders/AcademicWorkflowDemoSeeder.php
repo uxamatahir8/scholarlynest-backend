@@ -224,8 +224,8 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'about_text' => 'We curate space research telemetry logs, star cluster mapping datasets, and state-of-the-art astrophysical theorems for researchers worldwide.'
                 ],
                 [
-                    'title' => 'Journal of Quantum Information Science',
-                    'slug' => 'journal-quantum-information',
+                    'title' => 'Magazine of Quantum Information Science',
+                    'slug' => 'magazine-quantum-information',
                     'description' => 'Covering quantum key distribution, entanglement teleportation, and quantum computer gate alignment.',
                     'about_text' => 'This publication provides peer-reviewed research on modern quantum state manipulation, algorithms, and logical gates.'
                 ],
@@ -248,13 +248,13 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'about_text' => 'Covers modern hardware grids, renewable source dynamics, and smart grid battery control algorithms.'
                 ],
                 [
-                    'title' => 'Journal of Robotics and Cybernetic Systems',
-                    'slug' => 'journal-robotics-cybernetics',
+                    'title' => 'Magazine of Robotics and Cybernetic Systems',
+                    'slug' => 'magazine-robotics-cybernetics',
                     'description' => 'Highlighting path planning, robotic surgery control loops, and feedback actuator dynamics.',
-                    'about_text' => 'Our monthly journal contains peer-reviewed papers on automation, kinematics, and control loop safety.'
+                    'about_text' => 'Our monthly magazine contains peer-reviewed papers on automation, kinematics, and control loop safety.'
                 ],
                 [
-                    'title' => 'International Journal of Cognitive Systems',
+                    'title' => 'International Magazine of Cognitive Systems',
                     'slug' => 'cognitive-systems',
                     'description' => 'Detailing neural network models of human perception, language decoding, and cognitive memory.',
                     'about_text' => 'Publishes interdisciplinary research combining cognitive sciences, computer science, and linguistics.'
@@ -298,7 +298,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'cover_image' => '/images/nature_computing.png',
                     'seo_title' => $m['title'] . ' | ScholarlyNest',
                     'seo_description' => Str::limit($m['description'], 150),
-                    'seo_keywords' => 'research, journal, ' . str_replace(' ', '', strtolower($m['title'])),
+                    'seo_keywords' => 'research, magazine, ' . str_replace(' ', '', strtolower($m['title'])),
                 ]);
 
                 $magToEditor[$mag->id] = $assignedEditor;
@@ -492,7 +492,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     }
 
                     $abstract = "This manuscript details a rigorous academic investigation into the key theoretical parameters of the field. We present telemetry data, methodology, and a comprehensive analysis of the results.";
-                    $fullText = "<h3>Introduction</h3><p>Academic workflows require consistent peer review.</p><h3>Methodology</h3><p>We simulated 550 articles across 12 journals to validate system performance.</p><h3>Conclusion</h3><p>Our findings indicate that proper user assignment reduces editorial bottlenecks.</p>";
+                    $fullText = "<h3>Introduction</h3><p>Academic workflows require consistent peer review.</p><h3>Methodology</h3><p>We simulated 550 articles across 12 magazines to validate system performance.</p><h3>Conclusion</h3><p>Our findings indicate that proper user assignment reduces editorial bottlenecks.</p>";
 
                     $plagiarismStatus = null;
                     $plagiarismScore = null;
@@ -534,7 +534,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         'featured_image' => ($artIndex % 5 === 0) ? '/images/nature_computing.png' : null,
                         'doi' => $doi,
                         'status' => $status,
-                        'rejection_reason' => ($status === 'rejected') ? 'The submission does not meet the novelty standards of this journal.' : null,
+                        'rejection_reason' => ($status === 'rejected') ? 'The submission does not meet the novelty standards of this magazine.' : null,
                         'plagiarism_status' => $plagiarismStatus,
                         'plagiarism_score' => $plagiarismScore,
                         'plagiarism_report_path' => $plagiarismReportPath,

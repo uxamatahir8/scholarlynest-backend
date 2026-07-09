@@ -75,9 +75,9 @@ class MagazineDevDataSeeder extends Seeder
             // 20 Elite Academic Publications Data Spec
             $magazinesData = [
                 [
-                    'title' => 'International Journal of Applied Sciences',
-                    'description' => 'A monthly peer-reviewed journal highlighting multidisciplinary advancements in engineering physics, sensor telemetry, and applied systems computation.',
-                    'about_text' => 'Established in 2018, the International Journal of Applied Sciences acts as a bridge between foundational laboratory experiments and operational industrial deployments. Our editorial team selects high-impact findings with rigorous statistical telemetry.',
+                    'title' => 'International Magazine of Applied Sciences',
+                    'description' => 'A monthly peer-reviewed magazine highlighting multidisciplinary advancements in engineering physics, sensor telemetry, and applied systems computation.',
+                    'about_text' => 'Established in 2018, the International Magazine of Applied Sciences acts as a bridge between foundational laboratory experiments and operational industrial deployments. Our editorial team selects high-impact findings with rigorous statistical telemetry.',
                     'tags' => ['Sensor Networks', 'Applied Physics', 'Material Science', 'Chemical Analytics', 'Aero-dynamics', 'Signal Processing'],
                     'pages' => [
                         'Submission Protocols' => 'Guidelines for authors submitting mathematical modeling scripts, sensor calibrations, and raw experimental data logs.',
@@ -171,7 +171,7 @@ class MagazineDevDataSeeder extends Seeder
                 [
                     'title' => 'Global Environmental Policy and Law',
                     'description' => 'Examining climate change mitigation statutes, biodiversity conservation regulations, and international treaty enforcement frameworks.',
-                    'about_text' => 'This journal offers a platform for legal scholars, policy analysts, and conservation scientists to debate structural policy frameworks, international carbon credit laws, and sustainable resource strategies.',
+                    'about_text' => 'This magazine offers a platform for legal scholars, policy analysts, and conservation scientists to debate structural policy frameworks, international carbon credit laws, and sustainable resource strategies.',
                     'tags' => ['Environmental Law', 'Carbon Credits', 'Treaty Policy', 'Biodiversity', 'Climate Mitigation', 'Resource Management'],
                     'pages' => [
                         'Legal Style Guide' => 'Citations must adhere to the Bluebook formatting standard for legal briefs, treaties, and court cases.',
@@ -203,9 +203,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Journal of Advanced Quantum Computing',
+                    'title' => 'Magazine of Advanced Quantum Computing',
                     'description' => 'Focusing on qubit coherence optimization, quantum fault tolerance codes, cryo-CMOS integration, and superconducting qubit architectures.',
-                    'about_text' => 'The Journal of Advanced Quantum Computing publishes breakthroughs in quantum hardware engineering, algorithm complexity, cryostatic controller scaling, and error mitigation algorithms.',
+                    'about_text' => 'The Magazine of Advanced Quantum Computing publishes breakthroughs in quantum hardware engineering, algorithm complexity, cryostatic controller scaling, and error mitigation algorithms.',
                     'tags' => ['Quantum Hardware', 'Qubit Coherence', 'Fault Tolerance', 'Cryogenics', 'Superconductors', 'Algorithms'],
                     'pages' => [
                         'Hardware Telemetry Specs' => 'Guidelines for reporting qubit gate fidelities, cryogenic temperatures, and microwave noise levels.',
@@ -295,9 +295,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'International Journal of Astrobiology',
+                    'title' => 'International Magazine of Astrobiology',
                     'description' => 'Investigating planetary habitability telemetry, extremophile metabolic pathways, prebiotic chemistry, and cosmic biomarker detection.',
-                    'about_text' => 'The International Journal of Astrobiology examines origin-of-life biology, prebiotic chemical synthesis, planetary atmosphere telemetry, and biological adaptations to extreme environments.',
+                    'about_text' => 'The International Magazine of Astrobiology examines origin-of-life biology, prebiotic chemical synthesis, planetary atmosphere telemetry, and biological adaptations to extreme environments.',
                     'tags' => ['Planetary Habitability', 'Extremophiles', 'Prebiotic Chemistry', 'Biomarkers', 'Space Biology', 'Spectroscopy'],
                     'pages' => [
                         'Spectroscopy Data Specs' => 'Guidelines for archiving infrared, Raman, and mass spectroscopy profiles from meteorites or planetary simulations.',
@@ -324,9 +324,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Journal of Cognitive Neuroscience and AI',
+                    'title' => 'Magazine of Cognitive Neuroscience and AI',
                     'description' => 'Bridging human cortical mapping telemetry, artificial neural net alignment, cognitive mechanics, and sensory interface engineering.',
-                    'about_text' => 'This journal explores the overlap between biological brain structures and computational artificial intelligence models. We emphasize cortical imaging, deep network interpretability, and brain-machine interfaces.',
+                    'about_text' => 'This magazine explores the overlap between biological brain structures and computational artificial intelligence models. We emphasize cortical imaging, deep network interpretability, and brain-machine interfaces.',
                     'tags' => ['Cortical Mapping', 'Neural Alignment', 'Cognitive Modeling', 'Sensory Interfaces', 'Interpretability', 'Neuro-AI'],
                     'pages' => [
                         'Imaging Data Guidelines' => 'Required formats for fMRI brain mappings, EEG signal recordings, and artificial network weight vectors.',
@@ -353,7 +353,7 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Pakistan Journal of Renewable Energy',
+                    'title' => 'Pakistan Magazine of Renewable Energy',
                     'description' => 'Detailing solar photovoltaic efficiency, sub-regional wind telemetry, hydrokinetic turbine designs, and localized grid storage solutions.',
                     'about_text' => 'Focusing on renewable energy resources, regional grid integration, wind resource telemetry mapping, and energy conservation policies across agricultural and urban sectors.',
                     'tags' => ['Solar PV', 'Wind Telemetry', 'Hydrokinetics', 'Grid Storage', 'Energy Policy', 'Turbines'],
@@ -386,7 +386,7 @@ class MagazineDevDataSeeder extends Seeder
                         ]
                     ]
                 ],
-                // 11-20 placeholder journals designed dynamically
+                // 11-20 placeholder magazines designed dynamically
                 [
                     'title' => 'Review of Educational Telemetry',
                     'description' => 'Investigating online student engagement metrics, predictive learning analytics, and adaptive digital curriculum feedback systems.',
@@ -417,7 +417,7 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Journal of Blockchain Technology and Finance',
+                    'title' => 'Magazine of Blockchain Technology and Finance',
                     'description' => 'Exploring consensus mechanics, decentralized lending protocols, smart contract audits, and central bank digital currency telemetry.',
                     'about_text' => 'A premier publication covering cryptography, market design, consensus algorithms, and financial regulations in decentralized ledgers.',
                     'tags' => ['Blockchain', 'Consensus Algorithms', 'Smart Contracts', 'DeFi', 'Cryptofinance', 'CBDC'],
@@ -446,9 +446,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Global Journal of Organic Chemistry',
+                    'title' => 'Global Magazine of Organic Chemistry',
                     'description' => 'Analyzing biocatalytic synthesis paths, stereochemical structures, green chemical methods, and pharmaceutical reaction telemetry.',
-                    'about_text' => 'This journal compiles research on synthetic methodologies, green chemistry, catalyst designs, and pharmaceutical reaction mechanics.',
+                    'about_text' => 'This magazine compiles research on synthetic methodologies, green chemistry, catalyst designs, and pharmaceutical reaction mechanics.',
                     'tags' => ['Biocatalysis', 'Stereochemistry', 'Green Chemistry', 'Synthesis', 'Reaction Kinetics', 'Pharmaceuticals'],
                     'pages' => [
                         'Synthesis Specifications' => 'Crystallographic database links, NMR spectra, and yield telemetry requirements.',
@@ -504,9 +504,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'International Journal of Robotics and Automation',
+                    'title' => 'International Magazine of Robotics and Automation',
                     'description' => 'Focusing on kinematic path planning, sensory feedback integration, human-robot interaction, and autonomous navigation telemetry.',
-                    'about_text' => 'The journal details mechanical designs, computer vision algorithms, control systems, and field robotics applications.',
+                    'about_text' => 'The magazine details mechanical designs, computer vision algorithms, control systems, and field robotics applications.',
                     'tags' => ['Path Planning', 'Sensory Feedback', 'Human-Robot Interaction', 'Autonomous Navigation', 'Kinematics', 'Computer Vision'],
                     'pages' => [
                         'Robotic Testing Safety' => 'Mandatory documentation for obstacle avoidance, emergency shutdown switches, and field test limits.',
@@ -533,7 +533,7 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Pakistan Journal of Water Resource Management',
+                    'title' => 'Pakistan Magazine of Water Resource Management',
                     'description' => 'Detailing aquifer recharge models, wastewater processing, regional canal telemetry, and flood protection structures.',
                     'about_text' => 'A national scientific record concerning water management, hydrological telemetry, crop irrigation modeling, and environmental conservation.',
                     'tags' => ['Aquifers', 'Canal Telemetry', 'Hydrology', 'Wastewater', 'Flood Protection', 'Irrigation'],
@@ -562,9 +562,9 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'Journal of Clinical Immunotherapy Research',
+                    'title' => 'Magazine of Clinical Immunotherapy Research',
                     'description' => 'Publishing oncology immunotherapies, cellular receptors modeling, clinical trials telemetry, and immune response analytics.',
-                    'about_text' => 'The journal details clinical progress in cancer immunotherapy, monoclonal antibodies, adaptive cell transfers, and patient diagnostics.',
+                    'about_text' => 'The magazine details clinical progress in cancer immunotherapy, monoclonal antibodies, adaptive cell transfers, and patient diagnostics.',
                     'tags' => ['Immunotherapy', 'Oncology', 'Cellular Receptors', 'Clinical Trials', 'Monoclonal Antibodies', 'Diagnostics'],
                     'pages' => [
                         'Clinical Trials Protocol' => 'Pre-registration numbers must be provided for all clinical study submissions.',
@@ -649,7 +649,7 @@ class MagazineDevDataSeeder extends Seeder
                     ]
                 ],
                 [
-                    'title' => 'International Journal of Urban Infrastructure',
+                    'title' => 'International Magazine of Urban Infrastructure',
                     'description' => 'Analyzing intelligent traffic flow telemetry, urban sewer sensor networks, structural concrete monitoring, and smart grids.',
                     'about_text' => 'Dedicated to smart cities, structural monitoring, transit optimization, and sustainable urban resource distribution models.',
                     'tags' => ['Intelligent Traffic', 'Urban Sensors', 'Concrete Monitoring', 'Smart Grids', 'Smart Cities', 'Transit Optimization'],

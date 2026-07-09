@@ -1138,10 +1138,10 @@ class RbacController extends Controller
                 'magazine_ids' => $magazineRules,
                 'magazine_ids.*' => 'integer|distinct|exists:magazines,id',
             ], [
-                'magazine_ids.required' => 'At least one journal must be assigned for this role.',
-                'magazine_ids.min' => 'At least one journal must be assigned for this role.',
-                'magazine_ids.*.distinct' => 'Each selected journal may only be assigned once.',
-                'magazine_ids.*.exists' => 'One or more selected journals are no longer available.',
+                'magazine_ids.required' => 'At least one magazine must be assigned for this role.',
+                'magazine_ids.min' => 'At least one magazine must be assigned for this role.',
+                'magazine_ids.*.distinct' => 'Each selected magazine may only be assigned once.',
+                'magazine_ids.*.exists' => 'One or more selected magazines are no longer available.',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             throw $e;

@@ -44,14 +44,14 @@ class PublisherIssueWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Publisher Journal',
-            'slug' => 'publisher-journal',
-            'description' => 'Publisher test journal',
+            'title' => 'Publisher Magazine',
+            'slug' => 'publisher-magazine',
+            'description' => 'Publisher test magazine',
         ]);
         $this->otherMagazine = Magazine::create([
-            'title' => 'Other Journal',
-            'slug' => 'other-journal',
-            'description' => 'Other test journal',
+            'title' => 'Other Magazine',
+            'slug' => 'other-magazine',
+            'description' => 'Other test magazine',
         ]);
 
         $this->publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);

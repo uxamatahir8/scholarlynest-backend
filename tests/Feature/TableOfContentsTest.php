@@ -17,7 +17,7 @@ class TableOfContentsTest extends TestCase
 
     public function test_public_table_of_contents_groups_and_sorts_by_article_published_at(): void
     {
-        $magazine = Magazine::create(['title' => 'Publication Date Journal', 'slug' => 'publication-date-journal']);
+        $magazine = Magazine::create(['title' => 'Publication Date Magazine', 'slug' => 'publication-date-magazine']);
         $user = User::factory()->create(['email' => 'private-author@example.com']);
         $issue2025 = MagazineIssue::create([
             'magazine_id' => $magazine->id,
@@ -66,7 +66,7 @@ class TableOfContentsTest extends TestCase
             'is_corresponding' => true,
         ]);
 
-        $response = $this->getJson('/api/magazines/publication-date-journal/table-of-contents');
+        $response = $this->getJson('/api/magazines/publication-date-magazine/table-of-contents');
 
         $response->assertOk()
             ->assertJsonPath('table_of_contents.2026.year', 2026)
@@ -97,12 +97,12 @@ class TableOfContentsTest extends TestCase
 
     public function test_public_table_of_contents_returns_empty_group_for_magazine_without_published_articles(): void
     {
-        Magazine::create(['title' => 'Empty Journal', 'slug' => 'empty-journal']);
+        Magazine::create(['title' => 'Empty Magazine', 'slug' => 'empty-magazine']);
 
-        $response = $this->getJson('/api/magazines/empty-journal/table-of-contents');
+        $response = $this->getJson('/api/magazines/empty-magazine/table-of-contents');
 
         $response->assertOk()
-            ->assertJsonPath('magazine.slug', 'empty-journal')
+            ->assertJsonPath('magazine.slug', 'empty-magazine')
             ->assertJsonPath('table_of_contents', []);
     }
 

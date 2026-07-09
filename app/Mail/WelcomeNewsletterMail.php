@@ -52,7 +52,7 @@ class WelcomeNewsletterMail extends Mailable
     <div class="content">
       <h3>Subscription Confirmed!</h3>
       <p>Thank you for subscribing to the ScholarlyNest newsletter. We are thrilled to have you join our global community of researchers, educators, and scholars.</p>
-      <p>You will now receive regular updates, including monthly highlights from our academic journals, trending articles, and platform developments.</p>
+      <p>You will now receive regular updates, including monthly highlights from our academic magazines, trending articles, and platform developments.</p>
       <p>If you have any questions or feedback, please feel free to reach out to us at any time.</p>
       <p>Best regards,<br><strong>The ScholarlyNest Team</strong></p>
     </div>

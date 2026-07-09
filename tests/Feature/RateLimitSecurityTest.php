@@ -38,7 +38,7 @@ class RateLimitSecurityTest extends TestCase
     public function test_public_download_rate_limit_returns_safe_429_response(): void
     {
         Storage::fake('public');
-        $magazine = Magazine::create(['title' => 'Rate Journal', 'slug' => 'rate-journal']);
+        $magazine = Magazine::create(['title' => 'Rate Magazine', 'slug' => 'rate-magazine']);
         $author = User::factory()->create();
         $article = Article::create([
             'magazine_id' => $magazine->id,
