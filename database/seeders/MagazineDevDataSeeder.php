@@ -19,7 +19,7 @@ class MagazineDevDataSeeder extends Seeder
     public function run(): void
     {
         // 1. Temporarily disable foreign key constraints
-        DB::statement('SET FOREIGN_KEY_CHECKS = 0');
+        $this->setForeignKeyChecks(false);
 
         // // 2. Truncate historical tables to ensure absolute clean seed
         $tables = [
@@ -38,7 +38,7 @@ class MagazineDevDataSeeder extends Seeder
         // }
 
         // Re-enable foreign key constraints
-        DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+        $this->setForeignKeyChecks(true);
 
         // Start transaction for DML inserts
         DB::beginTransaction();
@@ -849,11 +849,21 @@ class MagazineDevDataSeeder extends Seeder
         } catch (\Exception $e) {
             DB::rollBack();
             try {
-                DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+                $this->setForeignKeyChecks(true);
             } catch (\Exception $ex) {
                 // Ignore nested database exception
             }
             throw $e;
         }
+    }
+
+    private function setForeignKeyChecks(bool $enabled): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            DB::statement('PRAGMA foreign_keys = ' . ($enabled ? 'ON' : 'OFF'));
+            return;
+        }
+
+        DB::statement('SET FOREIGN_KEY_CHECKS = ' . ($enabled ? '1' : '0'));
     }
 }

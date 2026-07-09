@@ -22,7 +22,7 @@ class DatabaseSeeder extends Seeder
 
         try {
             // 1. Temporarily disable foreign key constraints
-            DB::statement('SET FOREIGN_KEY_CHECKS = 0');
+            $this->setForeignKeyChecks(false);
 
             // 2. Truncate historical tables
             $tables = [
@@ -54,7 +54,7 @@ class DatabaseSeeder extends Seeder
             }
 
             // Re-enable foreign key constraints
-            DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+            $this->setForeignKeyChecks(true);
 
             // ==========================================
             // 3. SEED ROLES
@@ -239,11 +239,21 @@ class DatabaseSeeder extends Seeder
             }
             // Re-enable foreign key constraints in case of failure
             try {
-                DB::statement('SET FOREIGN_KEY_CHECKS = 1');
+                $this->setForeignKeyChecks(true);
             } catch (\Exception $ex) {
                 // Ignore nested database exception
             }
             throw $e;
         }
+    }
+
+    private function setForeignKeyChecks(bool $enabled): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            DB::statement('PRAGMA foreign_keys = ' . ($enabled ? 'ON' : 'OFF'));
+            return;
+        }
+
+        DB::statement('SET FOREIGN_KEY_CHECKS = ' . ($enabled ? '1' : '0'));
     }
 }

@@ -65,21 +65,23 @@ return new class extends Migration
             }
         });
 
-        Schema::create('article_reviewer_preferences', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
-            $table->foreignId('created_by_author_id')->nullable()->constrained('users')->nullOnDelete();
-            $table->string('type', 20);
-            $table->string('name');
-            $table->string('email');
-            $table->string('affiliation')->nullable();
-            $table->string('designation')->nullable();
-            $table->text('reason')->nullable();
-            $table->timestamps();
+        if (!Schema::hasTable('article_reviewer_preferences')) {
+            Schema::create('article_reviewer_preferences', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
+                $table->foreignId('created_by_author_id')->nullable()->constrained('users')->nullOnDelete();
+                $table->string('type', 20);
+                $table->string('name');
+                $table->string('email');
+                $table->string('affiliation')->nullable();
+                $table->string('designation')->nullable();
+                $table->text('reason')->nullable();
+                $table->timestamps();
 
-            $table->unique(['article_id', 'type', 'email'], 'article_reviewer_pref_unique');
-            $table->index(['article_id', 'type']);
-        });
+                $table->unique(['article_id', 'type', 'email'], 'article_reviewer_pref_unique');
+                $table->index(['article_id', 'type']);
+            });
+        }
 
         Schema::table('reviewer_assignments', function (Blueprint $table) {
             if (Schema::hasColumn('reviewer_assignments', 'reviewer_id')) {
@@ -134,61 +136,114 @@ return new class extends Migration
             }
         });
 
-        Schema::create('review_questionnaires', function (Blueprint $table) {
-            $table->id();
-            $table->string('name');
-            $table->boolean('is_active')->default(false);
-            $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
-            $table->timestamps();
-        });
+        if (!Schema::hasTable('review_questionnaires')) {
+            Schema::create('review_questionnaires', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->boolean('is_active')->default(false);
+                $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
+                $table->timestamps();
+            });
+        }
 
-        Schema::create('review_questionnaire_versions', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('review_questionnaire_id')->constrained('review_questionnaires')->cascadeOnDelete();
-            $table->unsignedInteger('version_number');
-            $table->boolean('is_active')->default(false);
-            $table->timestamp('published_at')->nullable();
-            $table->timestamps();
-            $table->unique(['review_questionnaire_id', 'version_number'], 'review_questionnaire_version_unique');
-        });
+        if (!Schema::hasTable('review_questionnaire_versions')) {
+            Schema::create('review_questionnaire_versions', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('review_questionnaire_id');
+                $table->unsignedInteger('version_number');
+                $table->boolean('is_active')->default(false);
+                $table->timestamp('published_at')->nullable();
+                $table->timestamps();
+                $table->unique(['review_questionnaire_id', 'version_number'], 'review_questionnaire_version_unique');
+                $table->foreign('review_questionnaire_id', 'rq_versions_questionnaire_fk')
+                    ->references('id')
+                    ->on('review_questionnaires')
+                    ->cascadeOnDelete();
+            });
+        }
 
-        Schema::create('review_questions', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('review_questionnaire_version_id')->constrained('review_questionnaire_versions')->cascadeOnDelete();
-            $table->string('prompt');
-            $table->string('response_type', 40);
-            $table->boolean('is_required')->default(false);
-            $table->unsignedInteger('sort_order')->default(0);
-            $table->timestamps();
-        });
+        if (!Schema::hasTable('review_questions')) {
+            Schema::create('review_questions', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('review_questionnaire_version_id');
+                $table->string('prompt');
+                $table->string('response_type', 40);
+                $table->boolean('is_required')->default(false);
+                $table->unsignedInteger('sort_order')->default(0);
+                $table->timestamps();
+                $table->foreign('review_questionnaire_version_id', 'rq_questions_version_fk')
+                    ->references('id')
+                    ->on('review_questionnaire_versions')
+                    ->cascadeOnDelete();
+            });
+        }
 
-        Schema::create('review_question_options', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('review_question_id')->constrained('review_questions')->cascadeOnDelete();
-            $table->string('label');
-            $table->string('value');
-            $table->unsignedInteger('sort_order')->default(0);
-            $table->timestamps();
-        });
+        if (!Schema::hasTable('review_question_options')) {
+            Schema::create('review_question_options', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('review_question_id')->constrained('review_questions')->cascadeOnDelete();
+                $table->string('label');
+                $table->string('value');
+                $table->unsignedInteger('sort_order')->default(0);
+                $table->timestamps();
+            });
+        }
 
-        Schema::create('review_questionnaire_instances', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
-            $table->foreignId('reviewer_assignment_id')->constrained('reviewer_assignments')->cascadeOnDelete();
-            $table->foreignId('reviewer_id')->nullable()->constrained('users')->nullOnDelete();
-            $table->foreignId('review_questionnaire_version_id')->constrained('review_questionnaire_versions')->cascadeOnDelete();
-            $table->timestamp('submitted_at')->nullable();
-            $table->timestamps();
-            $table->unique('reviewer_assignment_id', 'review_questionnaire_instance_assignment_unique');
-        });
+        if (!Schema::hasTable('review_questionnaire_instances')) {
+            Schema::create('review_questionnaire_instances', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
+                $table->foreignId('reviewer_assignment_id')->constrained('reviewer_assignments')->cascadeOnDelete();
+                $table->foreignId('reviewer_id')->nullable()->constrained('users')->nullOnDelete();
+                $table->unsignedBigInteger('review_questionnaire_version_id');
+                $table->timestamp('submitted_at')->nullable();
+                $table->timestamps();
+                $table->unique('reviewer_assignment_id', 'review_questionnaire_instance_assignment_unique');
+                $table->foreign('review_questionnaire_version_id', 'rq_instances_version_fk')
+                    ->references('id')
+                    ->on('review_questionnaire_versions')
+                    ->cascadeOnDelete();
+            });
+        }
 
-        Schema::create('review_question_responses', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('review_questionnaire_instance_id')->constrained('review_questionnaire_instances')->cascadeOnDelete();
-            $table->foreignId('review_question_id')->constrained('review_questions')->cascadeOnDelete();
-            $table->json('answer')->nullable();
-            $table->timestamps();
-            $table->unique(['review_questionnaire_instance_id', 'review_question_id'], 'review_question_response_unique');
+        if (!Schema::hasTable('review_question_responses')) {
+            Schema::create('review_question_responses', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('review_questionnaire_instance_id');
+                $table->foreignId('review_question_id')->constrained('review_questions')->cascadeOnDelete();
+                $table->json('answer')->nullable();
+                $table->timestamps();
+                $table->unique(['review_questionnaire_instance_id', 'review_question_id'], 'review_question_response_unique');
+                $table->foreign('review_questionnaire_instance_id', 'rq_responses_instance_fk')
+                    ->references('id')
+                    ->on('review_questionnaire_instances')
+                    ->cascadeOnDelete();
+            });
+        }
+
+        $this->ensureForeign('review_questionnaire_versions', 'rq_versions_questionnaire_fk', function (Blueprint $table) {
+            $table->foreign('review_questionnaire_id', 'rq_versions_questionnaire_fk')
+                ->references('id')
+                ->on('review_questionnaires')
+                ->cascadeOnDelete();
+        });
+        $this->ensureForeign('review_questions', 'rq_questions_version_fk', function (Blueprint $table) {
+            $table->foreign('review_questionnaire_version_id', 'rq_questions_version_fk')
+                ->references('id')
+                ->on('review_questionnaire_versions')
+                ->cascadeOnDelete();
+        });
+        $this->ensureForeign('review_questionnaire_instances', 'rq_instances_version_fk', function (Blueprint $table) {
+            $table->foreign('review_questionnaire_version_id', 'rq_instances_version_fk')
+                ->references('id')
+                ->on('review_questionnaire_versions')
+                ->cascadeOnDelete();
+        });
+        $this->ensureForeign('review_question_responses', 'rq_responses_instance_fk', function (Blueprint $table) {
+            $table->foreign('review_questionnaire_instance_id', 'rq_responses_instance_fk')
+                ->references('id')
+                ->on('review_questionnaire_instances')
+                ->cascadeOnDelete();
         });
 
         Schema::table('reviewer_assignments', function (Blueprint $table) {
@@ -200,15 +255,17 @@ return new class extends Migration
             }
         });
 
-        Schema::create('article_publication_sections', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
-            $table->string('section_key', 80);
-            $table->longText('content_html')->nullable();
-            $table->longText('content_text')->nullable();
-            $table->timestamps();
-            $table->unique(['article_id', 'section_key'], 'article_publication_section_unique');
-        });
+        if (!Schema::hasTable('article_publication_sections')) {
+            Schema::create('article_publication_sections', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('article_id')->constrained('articles')->cascadeOnDelete();
+                $table->string('section_key', 80);
+                $table->longText('content_html')->nullable();
+                $table->longText('content_text')->nullable();
+                $table->timestamps();
+                $table->unique(['article_id', 'section_key'], 'article_publication_section_unique');
+            });
+        }
     }
 
     public function down(): void
@@ -286,6 +343,18 @@ return new class extends Migration
             return collect(Schema::getIndexes($table))->contains(fn ($item) => ($item['name'] ?? null) === $index);
         } catch (Throwable) {
             return false;
+        }
+    }
+
+    private function ensureForeign(string $table, string $index, Closure $callback): void
+    {
+        if ($this->indexExists($table, $index)) {
+            return;
+        }
+
+        try {
+            Schema::table($table, $callback);
+        } catch (Throwable) {
         }
     }
 };
