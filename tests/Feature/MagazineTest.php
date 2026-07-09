@@ -475,9 +475,9 @@ class MagazineTest extends TestCase
     }
 
     /**
-     * Test submitting an article with featured image.
+     * Test author submission ignores featured image fields.
      */
-    public function test_authenticated_author_can_submit_article_with_featured_image(): void
+    public function test_authenticated_author_submission_ignores_featured_image(): void
     {
         Storage::fake('public');
 
@@ -491,7 +491,6 @@ class MagazineTest extends TestCase
             'magazine_id' => $magazine->id,
             'title' => 'Quantum Logic Theory with Image',
             'abstract' => 'Abstract synopsis details',
-            'full_text' => 'Full text content details',
             'featured_image_upload_id' => $this->cleanUpload($user, 'article_featured_image', 'featured.png')->id,
         ]);
 
@@ -499,17 +498,13 @@ class MagazineTest extends TestCase
         
         $article = Article::where('title', 'Quantum Logic Theory with Image')->first();
         $this->assertNotNull($article);
-        $this->assertNotNull($article->featured_image);
-        $this->assertStringContainsString('article_featured_image/', $article->featured_image);
-
-        // Check file exists in fake storage
-        Storage::disk('s3')->assertExists($article->featured_image);
+        $this->assertNull($article->featured_image);
     }
 
     /**
-     * Test updating an article's featured image.
+     * Test author update ignores featured image replacement.
      */
-    public function test_author_can_update_article_featured_image(): void
+    public function test_author_update_ignores_featured_image_replacement(): void
     {
         Storage::fake('public');
 
@@ -538,25 +533,20 @@ class MagazineTest extends TestCase
             'magazine_id' => $magazine->id,
             'title' => 'Original Title',
             'abstract' => 'Abstract',
-            'full_text' => 'Full text',
             'featured_image_upload_id' => $this->cleanUpload($user, 'article_featured_image', 'new_featured.png')->id,
         ]);
 
         $response->assertStatus(200);
 
         $article->refresh();
-        $this->assertNotNull($article->featured_image);
-        $this->assertNotEquals('storage/articles/old_image.png', $article->featured_image);
-
-        // Old file deleted, new file exists
-        Storage::disk('public')->assertMissing('articles/old_image.png');
-        Storage::disk('s3')->assertExists($article->featured_image);
+        $this->assertSame('storage/articles/old_image.png', $article->featured_image);
+        Storage::disk('public')->assertExists('articles/old_image.png');
     }
 
     /**
-     * Test deleting an article's featured image.
+     * Test author update ignores featured image deletion.
      */
-    public function test_author_can_delete_article_featured_image(): void
+    public function test_author_update_ignores_featured_image_deletion(): void
     {
         Storage::fake('public');
 
@@ -584,15 +574,14 @@ class MagazineTest extends TestCase
             'magazine_id' => $magazine->id,
             'title' => 'Original Title',
             'abstract' => 'Abstract',
-            'full_text' => 'Full text',
             'delete_featured_image' => 'true',
         ]);
 
         $response->assertStatus(200);
 
         $article->refresh();
-        $this->assertNull($article->featured_image);
-        Storage::disk('public')->assertMissing('articles/old_image.png');
+        $this->assertSame('storage/articles/old_image.png', $article->featured_image);
+        Storage::disk('public')->assertExists('articles/old_image.png');
     }
     public function test_public_about_overview_resolves_only_requested_magazine(): void
     {

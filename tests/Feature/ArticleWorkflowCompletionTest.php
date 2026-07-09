@@ -69,6 +69,23 @@ class ArticleWorkflowCompletionTest extends TestCase
         ]);
     }
 
+    public function test_questionnaire_settings_are_super_admin_only(): void
+    {
+        Sanctum::actingAs($this->author);
+        $this->getJson('/api/admin/review-questionnaire')->assertForbidden();
+        $this->postJson('/api/admin/review-questionnaire', [
+            'name' => 'Blocked Form',
+            'questions' => [[
+                'prompt' => 'Blocked question',
+                'response_type' => 'textarea',
+                'is_required' => true,
+            ]],
+        ])->assertForbidden();
+
+        Sanctum::actingAs($this->admin);
+        $this->getJson('/api/admin/review-questionnaire')->assertOk();
+    }
+
     public function test_opposed_reviewer_cannot_be_assigned_or_manually_invited(): void
     {
         ArticleReviewerPreference::create([

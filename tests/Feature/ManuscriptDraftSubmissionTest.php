@@ -110,11 +110,13 @@ class ManuscriptDraftSubmissionTest extends TestCase
             'article_id' => $article->id,
             'type' => 'suggested',
             'email' => 'suggested@example.test',
+            'reason' => null,
         ]);
         $this->assertDatabaseHas('article_reviewer_preferences', [
             'article_id' => $article->id,
             'type' => 'opposed',
             'email' => 'opposed@example.test',
+            'reason' => null,
         ]);
 
         $second = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
@@ -126,6 +128,38 @@ class ManuscriptDraftSubmissionTest extends TestCase
             $article->tracking_code,
             Article::findOrFail($second->json('article.id'))->tracking_code
         );
+    }
+
+    public function test_author_submission_ignores_removed_author_payload_fields(): void
+    {
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $response = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'status' => ArticleStatus::DRAFT,
+            'title' => 'Removed Fields Are Ignored',
+            'full_text' => 'Author supplied body must not persist',
+            'manuscript_text' => 'Author supplied manuscript text must not persist',
+            'featured_image_upload_id' => 'not-a-real-upload-session',
+            'featured_image_url' => 'https://example.test/featured.png',
+            'suggested_reviewers' => [[
+                'name' => 'Suggested No Reason',
+                'email' => 'suggested-no-reason@example.test',
+                'reason' => 'Must not persist',
+                'note' => 'Must not persist',
+            ]],
+        ]));
+
+        $response->assertCreated();
+
+        $article = Article::findOrFail($response->json('article.id'));
+        $this->assertSame('', $article->full_text);
+        $this->assertNull($article->featured_image);
+        $this->assertDatabaseHas('article_reviewer_preferences', [
+            'article_id' => $article->id,
+            'email' => 'suggested-no-reason@example.test',
+            'reason' => null,
+        ]);
     }
 
     public function test_reviewer_preference_validation_blocks_duplicates_cross_list_and_authors(): void
@@ -276,7 +310,6 @@ class ManuscriptDraftSubmissionTest extends TestCase
             'magazine_id' => $this->magazine->id,
             'title' => 'Draft Workflow Manuscript',
             'abstract' => 'Abstract',
-            'full_text' => 'Full text',
             'authors' => [[
                 'name' => $owner->name,
                 'email' => $owner->email,

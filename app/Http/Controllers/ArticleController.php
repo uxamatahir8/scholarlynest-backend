@@ -245,17 +245,15 @@ class ArticleController extends Controller
         $articleOwner = $authorResolution['owner'] ?? $user;
         $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
-        $featuredImagePath = app(CleanUploadResolver::class)
-            ->cleanKey($user, $validated['featured_image_upload_id'] ?? null, 'article_featured_image');
-
         $slug = Str::slug($validated['title']);
 
         $articleData = array_merge($request->articlePayload(), [
             'user_id' => $articleOwner->id,
             'title' => $validated['title'],
             'slug' => $slug,
+            'full_text' => '',
             'pdf_path' => null,
-            'featured_image' => $featuredImagePath,
+            'featured_image' => null,
             'status' => $requestedStatus,
         ]);
 
@@ -600,21 +598,6 @@ class ArticleController extends Controller
 
         $pdfPath = $article->pdf_path;
 
-        $featuredImagePath = $article->featured_image;
-        if ($request->input('delete_featured_image') === 'true' || $request->input('delete_featured_image') === '1') {
-            if ($featuredImagePath) {
-                $this->mediaStorage->delete($featuredImagePath);
-                $featuredImagePath = null;
-            }
-        }
-        if (!empty($validated['featured_image_upload_id'])) {
-            if ($featuredImagePath) {
-                $this->mediaStorage->delete($featuredImagePath);
-            }
-            $featuredImagePath = app(CleanUploadResolver::class)
-                ->cleanKey($user, $validated['featured_image_upload_id'], 'article_featured_image');
-        }
-
         $slug = $article->slug;
         if ($validated['title'] !== $article->title) {
             $slug = Str::slug($validated['title']);
@@ -687,7 +670,6 @@ class ArticleController extends Controller
             'title' => $validated['title'],
             'slug' => $slug,
             'pdf_path' => $pdfPath,
-            'featured_image' => $featuredImagePath,
             'status' => $status,
             'published_at' => $publishedAt,
             'published_year' => $publishedYear,
@@ -861,7 +843,7 @@ class ArticleController extends Controller
                     'email' => $preference['email'],
                     'affiliation' => $preference['affiliation'] ?: null,
                     'designation' => $preference['designation'] ?: null,
-                    'reason' => $preference['reason'] ?: null,
+                    'reason' => null,
                 ]);
             }
         }
@@ -1319,7 +1301,6 @@ class ArticleController extends Controller
                 'email' => $item->email,
                 'affiliation' => $item->affiliation,
                 'designation' => $item->designation,
-                'reason' => $item->reason,
             ])->values())
             ->union(['suggested' => collect(), 'opposed' => collect()])
             ->map(fn ($items) => $items->values())
