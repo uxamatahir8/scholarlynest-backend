@@ -11,10 +11,19 @@ class ReviewerAssignment extends Model
         'article_id',
         'sub_editor_assignment_id',
         'reviewer_id',
+        'invitee_name',
+        'invitee_email',
+        'invite_token_hash',
+        'invited_at',
+        'invite_expires_at',
         'assigned_by',
         'status',
         'due_date',
         'accepted_at',
+        'declined_at',
+        'decline_reason',
+        'account_created_at',
+        'questionnaire_instance_id',
         'completed_at',
         'scorecard',
         'recommendation',
@@ -24,7 +33,11 @@ class ReviewerAssignment extends Model
 
     protected $casts = [
         'due_date' => 'datetime',
+        'invited_at' => 'datetime',
+        'invite_expires_at' => 'datetime',
         'accepted_at' => 'datetime',
+        'declined_at' => 'datetime',
+        'account_created_at' => 'datetime',
         'completed_at' => 'datetime',
         'scorecard' => 'array',
     ];
@@ -42,6 +55,11 @@ class ReviewerAssignment extends Model
     public function reviewer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'reviewer_id');
+    }
+
+    public function questionnaireInstance(): BelongsTo
+    {
+        return $this->belongsTo(ReviewQuestionnaireInstance::class, 'questionnaire_instance_id');
     }
 
     public function assigner(): BelongsTo

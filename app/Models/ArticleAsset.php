@@ -11,11 +11,16 @@ class ArticleAsset extends Model
 
     protected $fillable = [
         'article_id',
+        'asset_type',
         'disk',
         'file_path',
         'storage_key',
         'original_filename',
         'safe_original_filename',
+        'title',
+        'caption',
+        'description',
+        'sort_order',
         'file_size',
         'mime_type',
         'checksum_sha256',
@@ -26,6 +31,7 @@ class ArticleAsset extends Model
 
     protected $casts = [
         'scanned_at' => 'datetime',
+        'sort_order' => 'integer',
     ];
 
     /**

@@ -246,6 +246,7 @@ class MediaUploadController extends Controller
             if (!empty($config['create_article_asset'])) {
                 $asset = ArticleAsset::create([
                     'article_id' => $article->id,
+                    'asset_type' => $config['asset_type'] ?? 'supplementary',
                     'disk' => $upload->disk,
                     'storage_key' => $upload->s3_incoming_key,
                     'file_path' => $upload->s3_incoming_key,

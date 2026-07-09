@@ -11,6 +11,10 @@ use Illuminate\Validation\Validator as ValidationValidator;
 trait ValidatesArticleSubmission
 {
     protected array $normalizedAuthors = [];
+    protected array $normalizedReviewerPreferences = [
+        'suggested' => [],
+        'opposed' => [],
+    ];
 
     protected function prepareArticleSubmissionForValidation(): void
     {
@@ -130,9 +134,13 @@ trait ValidatesArticleSubmission
             })
             ->all();
 
+        $this->normalizeReviewerPreferenceRows();
+
         $this->merge([
             'authors' => $this->normalizedAuthors,
             'co_authors' => $this->normalizedAuthors,
+            'suggested_reviewers' => $this->normalizedReviewerPreferences['suggested'],
+            'opposed_reviewers' => $this->normalizedReviewerPreferences['opposed'],
             'keywords' => $this->decodeArrayInput($this->input('keywords', [])),
             'status' => ArticleStatus::normalize($this->input('status')),
         ]);
@@ -147,7 +155,7 @@ trait ValidatesArticleSubmission
             'title' => "{$required}|string|max:255",
             'abstract' => "{$required}|string",
             'full_text' => "{$required}|string",
-            'pdf_file' => 'nullable|file|mimes:pdf|max:10240',
+            'pdf_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
             'pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'featured_image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg,webp|max:5120',
             'featured_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
@@ -177,6 +185,18 @@ trait ValidatesArticleSubmission
             'authors.*.can_edit' => 'boolean',
             'authors.*.create_account' => 'boolean',
             'authors.*.contribution_statement' => 'nullable|string|max:5000',
+            'suggested_reviewers' => 'nullable|array',
+            'suggested_reviewers.*.name' => 'required_with:suggested_reviewers|string|max:255',
+            'suggested_reviewers.*.email' => 'required_with:suggested_reviewers|email|max:255',
+            'suggested_reviewers.*.affiliation' => 'nullable|string|max:255',
+            'suggested_reviewers.*.designation' => 'nullable|string|max:255',
+            'suggested_reviewers.*.reason' => 'nullable|string|max:5000',
+            'opposed_reviewers' => 'nullable|array',
+            'opposed_reviewers.*.name' => 'required_with:opposed_reviewers|string|max:255',
+            'opposed_reviewers.*.email' => 'required_with:opposed_reviewers|email|max:255',
+            'opposed_reviewers.*.affiliation' => 'nullable|string|max:255',
+            'opposed_reviewers.*.designation' => 'nullable|string|max:255',
+            'opposed_reviewers.*.reason' => 'nullable|string|max:5000',
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
@@ -220,6 +240,27 @@ trait ValidatesArticleSubmission
                 $validator->errors()->add('authors', 'Super admins must assign manuscript ownership to an article author.');
             }
         }
+
+        $suggestedEmails = collect($this->normalizedReviewerPreferences['suggested'])->pluck('email')->filter()->values();
+        $opposedEmails = collect($this->normalizedReviewerPreferences['opposed'])->pluck('email')->filter()->values();
+        if ($suggestedEmails->count() !== $suggestedEmails->unique()->count()) {
+            $validator->errors()->add('suggested_reviewers', 'Suggested reviewer emails must be unique.');
+        }
+        if ($opposedEmails->count() !== $opposedEmails->unique()->count()) {
+            $validator->errors()->add('opposed_reviewers', 'Opposing reviewer emails must be unique.');
+        }
+        if ($suggestedEmails->intersect($opposedEmails)->isNotEmpty()) {
+            $validator->errors()->add('suggested_reviewers', 'The same reviewer cannot appear in suggested and opposing reviewer lists.');
+        }
+
+        $authorEmails = collect($authors)->pluck('email')->filter()->map(fn ($email) => strtolower($email))->values();
+        $selfEmail = strtolower((string) $this->user()?->email);
+        foreach ($suggestedEmails as $email) {
+            if ($email === $selfEmail || $authorEmails->contains($email)) {
+                $validator->errors()->add('suggested_reviewers', 'Authors and co-authors cannot be suggested as reviewers.');
+                break;
+            }
+        }
     }
 
     public function academicAuthors(): array
@@ -247,6 +288,11 @@ trait ValidatesArticleSubmission
         ]);
     }
 
+    public function reviewerPreferencesPayload(): array
+    {
+        return $this->normalizedReviewerPreferences;
+    }
+
     protected function decodeArrayInput(mixed $value): array
     {
         if (is_string($value)) {
@@ -256,6 +302,30 @@ trait ValidatesArticleSubmission
         }
 
         return is_array($value) ? $value : [];
+    }
+
+    private function normalizeReviewerPreferenceRows(): void
+    {
+        $this->normalizedReviewerPreferences = [
+            'suggested' => $this->normalizeReviewerRows($this->decodeArrayInput($this->input('suggested_reviewers', [])), 'suggested'),
+            'opposed' => $this->normalizeReviewerRows($this->decodeArrayInput($this->input('opposed_reviewers', [])), 'opposed'),
+        ];
+    }
+
+    private function normalizeReviewerRows(array $rows, string $type): array
+    {
+        return collect($rows)
+            ->filter(fn ($row) => is_array($row) && (trim((string) ($row['name'] ?? '')) !== '' || trim((string) ($row['email'] ?? '')) !== ''))
+            ->map(fn ($row) => [
+                'type' => $type,
+                'name' => trim((string) ($row['name'] ?? '')),
+                'email' => strtolower(trim((string) ($row['email'] ?? ''))),
+                'affiliation' => trim((string) ($row['affiliation'] ?? '')),
+                'designation' => trim((string) ($row['designation'] ?? '')),
+                'reason' => trim((string) ($row['reason'] ?? '')),
+            ])
+            ->values()
+            ->all();
     }
 
     protected function truthy(mixed $value): bool
