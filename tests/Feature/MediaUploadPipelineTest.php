@@ -52,7 +52,7 @@ class MediaUploadPipelineTest extends TestCase
 
         $this->author = User::factory()->create(['role_id' => $role->id]);
         $this->otherUser = User::factory()->create(['role_id' => $role->id]);
-        $magazine = Magazine::create(['title' => 'Security Journal', 'slug' => 'security-journal']);
+        $magazine = Magazine::create(['title' => 'Security Magazine', 'slug' => 'security-magazine']);
         $this->article = Article::create([
             'magazine_id' => $magazine->id,
             'user_id' => $this->author->id,
@@ -86,6 +86,49 @@ class MediaUploadPipelineTest extends TestCase
             'original_filename' => 'large.pdf',
             'size_bytes' => 50 * 1024 * 1024,
         ])->assertStatus(422);
+    }
+
+    public function test_article_media_purposes_enforce_allowed_extensions(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'manuscript.docx',
+            'declared_mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'file_fingerprint' => 'manuscript.docx:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'manuscript.png',
+            'declared_mime_type' => 'image/png',
+            'file_fingerprint' => 'manuscript.png:1024:1',
+        ]))->assertStatus(422)
+            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_supplementary',
+            'original_filename' => 'dataset.zip',
+            'declared_mime_type' => 'application/zip',
+            'file_fingerprint' => 'dataset.zip:1024:1',
+        ]))->assertStatus(422)
+            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'figure.webp',
+            'declared_mime_type' => 'image/webp',
+            'file_fingerprint' => 'figure.webp:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'figure.pdf',
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'figure.pdf:1024:1',
+        ]))->assertStatus(422)
+            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
     }
 
     public function test_direct_upload_keys_are_server_generated_under_configured_prefix(): void

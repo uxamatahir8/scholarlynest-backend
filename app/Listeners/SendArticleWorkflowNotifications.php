@@ -28,6 +28,10 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             return;
         }
 
+        if ($this->wasTransitionAlreadyNotified($article->id, $event)) {
+            return;
+        }
+
         $message = $this->messageFor($article, $event);
         $action = [
             'text' => 'Open Workflow',
@@ -60,18 +64,29 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         ]);
     }
 
+    private function wasTransitionAlreadyNotified(int $articleId, ArticleWorkflowEventOccurred $event): bool
+    {
+        return ArticleAuditLog::query()
+            ->where('article_id', $articleId)
+            ->where('event', 'notification.sent')
+            ->where('from_status', $event->payload['from_status'] ?? null)
+            ->where('to_status', $event->payload['to_status'] ?? null)
+            ->get()
+            ->contains(fn (ArticleAuditLog $log) => ($log->payload['workflow_event'] ?? null) === $event->event);
+    }
+
     private function recipientsFor($article, ArticleWorkflowEventOccurred $event): Collection
     {
         return match ($event->event) {
-            'sub_editor.assigned' => $this->dedupe(collect([
+            'sub_editor.assigned' => $this->dedupe($this->authorRecipients($article)->merge(collect([
                 $this->userRecipient($event->payload['sub_editor'] ?? null, 'sub_editor'),
                 $this->userRecipient($event->actor, 'assigner'),
-            ])->merge($this->superAdmins())),
+            ])->merge($this->superAdmins()))),
 
-            'reviewer.assigned' => $this->dedupe(collect([
+            'reviewer.assigned' => $this->dedupe($this->authorRecipients($article)->merge(collect([
                 $this->userRecipient($event->payload['reviewer'] ?? null, 'reviewer'),
                 $this->userRecipient($event->actor, 'assigner'),
-            ])->merge($this->superAdmins())),
+            ])->merge($this->superAdmins()))),
 
             'review.accepted' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
             'sub_editor.recommendation_submitted',
@@ -79,6 +94,7 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             'review.reopened' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
 
             'revision.requested' => $this->authorRecipients($article),
+            'article.under_review' => $this->authorRecipients($article),
 
             'article.accepted',
             'article.rejected' => $this->authorRecipients($article)
@@ -86,14 +102,15 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 ->merge($this->superAdmins())
                 ->pipe(fn ($items) => $this->dedupe($items)),
 
-            'production.assigned' => $this->dedupe(collect([
+            'production.assigned' => $this->dedupe($this->authorRecipients($article)->merge(collect([
                 $this->userRecipient($event->payload['assignee'] ?? null, 'production_assignee'),
                 $this->userRecipient($event->actor, 'assigner'),
-            ])->merge($this->superAdmins())),
+            ])->merge($this->superAdmins()))),
 
             'production.completed',
             'article.ready_for_publication',
-            'post_publication.recorded' => $this->editorialRecipients($article)
+            'post_publication.recorded' => $this->authorRecipients($article)
+                ->merge($this->editorialRecipients($article))
                 ->merge($this->publisherRecipients($article))
                 ->merge($this->superAdmins())
                 ->pipe(fn ($items) => $this->dedupe($items)),
@@ -127,7 +144,14 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 'subject' => 'Reviewer Assignment: ' . $title,
                 'body' => [
                     'A reviewer invitation has been created for "' . $title . '".',
-                    'Please open your Reviewer Desk to accept or review the assignment.',
+                    'Current manuscript status: ' . $statusLabel . '.',
+                ],
+            ],
+            'article.under_review' => [
+                'subject' => 'Article Under Review: ' . $title,
+                'body' => [
+                    'Your manuscript "' . $title . '" has moved into editorial review.',
+                    'Current manuscript status: ' . $statusLabel . '.',
                 ],
             ],
             'review.accepted' => [

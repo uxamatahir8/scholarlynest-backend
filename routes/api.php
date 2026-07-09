@@ -72,6 +72,8 @@ Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShare
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
 Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
+Route::post('/reviewer-invitations/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerInvitation'])->middleware('throttle:20,1');
+Route::post('/reviewer-invitations/{id}/decline', [ArticleWorkflowController::class, 'declineReviewerInvitation'])->middleware('throttle:20,1');
 Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
@@ -256,6 +258,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/reviewer-assignments/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerAssignment']);
         Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);
         Route::post('/reviewer-assignments/{id}/reopen', [ArticleWorkflowController::class, 'reopenReviewer'])->middleware('permission:articles.approve');
+        Route::get('/review-questionnaire', [ArticleWorkflowController::class, 'questionnaire'])->middleware('super-admin');
+        Route::post('/review-questionnaire', [ArticleWorkflowController::class, 'storeQuestionnaire'])->middleware('super-admin');
         Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/production-assignments', [ArticleWorkflowController::class, 'assignProduction'])->middleware('permission:articles.approve');
         Route::post('/production-assignments/{id}/complete', [ArticleWorkflowController::class, 'completeProduction']);

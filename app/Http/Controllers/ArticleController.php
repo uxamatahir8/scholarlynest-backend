@@ -44,7 +44,8 @@ class ArticleController extends Controller
             'user:id,name,created_at',
             'tags:id,name',
             'articleAuthors:id,article_id,co_author_name,affiliation,university_name,author_order,is_owner,is_corresponding',
-            'assets:id,article_id,original_filename,file_size,mime_type',
+            'assets:id,article_id,asset_type,original_filename,file_size,mime_type,title,caption,description,sort_order,scan_status',
+            'publicationSections',
             'issue:id,volume_number,issue_number,special_title,issue_month,issue_year',
         ]);
 
@@ -264,10 +265,11 @@ class ArticleController extends Controller
             $articleData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        $article = \DB::transaction(function() use ($articleData, $request, $authorResolution) {
+        $article = \DB::transaction(function() use ($articleData, $request, $authorResolution, $user) {
             $article = Article::create($articleData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
+            $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
 
             return $article;
         });
@@ -298,7 +300,7 @@ class ArticleController extends Controller
             'message' => $requestedStatus === ArticleStatus::DRAFT
                 ? 'Draft manuscript saved.'
                 : 'Your research article has been submitted successfully for peer review.',
-            'article' => $article->load(['tags', 'articleAuthors'])
+            'article' => $article->load(['tags', 'articleAuthors', 'reviewerPreferences'])
         ], $requestedStatus === ArticleStatus::DRAFT ? 201 : 211);
     }
 
@@ -466,13 +468,6 @@ class ArticleController extends Controller
             $this->sendArticleNewsletter($article);
         }
 
-        // Dispatch queued Laravel Mailable to author for rejections
-        if (ArticleStatus::isRevisionRequired($article->status) || ArticleStatus::isRejected($article->status)) {
-            \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
-                new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
-            );
-        }
-
         return response()->json([
             'message' => 'Article status updated successfully.',
             'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']), $user)
@@ -496,6 +491,7 @@ class ArticleController extends Controller
             'issue',
             'shareClicks',
             'articleAuthors',
+            'reviewerPreferences',
             'assets:id,article_id,original_filename,file_size,mime_type',
             'subEditorAssignments.subEditor:id,name,email',
             'reviewerAssignments.reviewer:id,name,email',
@@ -536,8 +532,10 @@ class ArticleController extends Controller
             $isAdminOrEditor = $this->hasGlobalArticleAccess($user)
                 || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
             if ($isAdminOrEditor) {
+                $oldStatus = $article->status;
                 $article->status = ArticleStatus::UNDER_REVIEW;
-                $article->saveQuietly();
+                $article->save();
+                $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, ArticleStatus::UNDER_REVIEW);
             }
         }
 
@@ -547,6 +545,7 @@ class ArticleController extends Controller
             'issue',
             'shareClicks',
             'articleAuthors',
+            'reviewerPreferences',
             'assets:id,article_id,original_filename,file_size,mime_type',
             'subEditorAssignments.subEditor:id,name,email',
             'reviewerAssignments.reviewer:id,name,email',
@@ -702,10 +701,11 @@ class ArticleController extends Controller
             $updateData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution) {
+        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user) {
             $article->update($updateData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
+            $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
         });
 
         $linkedFileIds = [];
@@ -767,16 +767,9 @@ class ArticleController extends Controller
             $this->sendArticleNewsletter($article);
         }
 
-        // Dispatch queued Laravel Mailable to author for rejections
-        if ((ArticleStatus::isRevisionRequired($article->status) || ArticleStatus::isRejected($article->status)) && ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
-            \Illuminate\Support\Facades\Mail::to($article->user->email)->queue(
-                new \App\Mail\ArticleRejectedMail($article, $article->status, $article->rejection_reason)
-            );
-        }
-
         return response()->json([
             'message' => 'Article updated successfully.',
-            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image', 'issue', 'articleAuthors', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
+            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image', 'issue', 'articleAuthors', 'reviewerPreferences', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
         ]);
     }
 
@@ -854,6 +847,26 @@ class ArticleController extends Controller
         }
     }
 
+    protected function persistReviewerPreferences(Article $article, array $preferences, User $creator): void
+    {
+        $article->reviewerPreferences()->delete();
+
+        foreach (['suggested', 'opposed'] as $type) {
+            foreach (($preferences[$type] ?? []) as $preference) {
+                \App\Models\ArticleReviewerPreference::create([
+                    'article_id' => $article->id,
+                    'created_by_author_id' => $creator->id,
+                    'type' => $type,
+                    'name' => $preference['name'],
+                    'email' => $preference['email'],
+                    'affiliation' => $preference['affiliation'] ?: null,
+                    'designation' => $preference['designation'] ?: null,
+                    'reason' => $preference['reason'] ?: null,
+                ]);
+            }
+        }
+    }
+
     protected function notificationAuthors(array $authors, string $ownerEmail): array
     {
         $ownerEmail = strtolower($ownerEmail);
@@ -915,6 +928,8 @@ class ArticleController extends Controller
         $normalizedStatus = ArticleStatus::normalize($newStatus);
 
         $event = match ($normalizedStatus) {
+            ArticleStatus::UNDER_REVIEW => 'article.under_review',
+            ArticleStatus::REVIEWER_ASSIGNED => 'reviewer.assigned',
             ArticleStatus::RESUBMITTED => 'article.resubmitted',
             ArticleStatus::ACCEPTED => 'article.accepted',
             ArticleStatus::REJECTED => 'article.rejected',
@@ -1043,8 +1058,11 @@ class ArticleController extends Controller
 
     private function publicArticlePayload(Article $article, bool $includeBody = false): array
     {
+        $article->loadMissing(['assets', 'publicationSections', 'tags']);
+
         $payload = [
             'id' => $article->id,
+            'tracking_code' => $article->tracking_code,
             'title' => $article->title,
             'subtitle' => $article->subtitle,
             'slug' => $article->slug,
@@ -1052,6 +1070,17 @@ class ArticleController extends Controller
             'featured_image' => $article->featured_image,
             'featured_image_url' => $article->featured_image_url,
             'doi' => $article->doi,
+            'open_access_label' => $article->open_access_label,
+            'is_peer_reviewed' => $article->is_peer_reviewed,
+            'academic_editor' => $article->academic_editor,
+            'received_at' => $article->received_at,
+            'accepted_at' => $article->accepted_at,
+            'license_statement' => $article->license_statement,
+            'data_availability_statement' => $article->data_availability_statement,
+            'funding_statement' => $article->funding_statement,
+            'competing_interests_statement' => $article->competing_interests_statement,
+            'abbreviations' => $article->abbreviations,
+            'citation_text' => $article->citation_text,
             'published_at' => $article->published_at,
             'created_at' => $article->created_at,
             'published_year' => $article->published_year,
@@ -1098,13 +1127,38 @@ class ArticleController extends Controller
                 ])
                 ->values(),
             'assets' => $article->assets
+                ->filter(fn ($asset) => ($asset->scan_status ?? 'clean') === 'clean' && ($asset->asset_type ?? 'supplementary') !== 'image')
                 ->map(fn ($asset) => [
                     'id' => $asset->id,
+                    'asset_type' => $asset->asset_type ?: 'supplementary',
                     'original_filename' => $asset->original_filename,
                     'file_size' => $asset->file_size,
                     'mime_type' => $asset->mime_type,
                     'scan_status' => $asset->scan_status ?? 'clean',
                     'available' => ($asset->scan_status ?? 'clean') === 'clean',
+                ])
+                ->values(),
+            'article_images' => $article->assets
+                ->filter(fn ($asset) => ($asset->scan_status ?? 'clean') === 'clean' && ($asset->asset_type ?? null) === 'image')
+                ->sortBy('sort_order')
+                ->values()
+                ->map(fn ($asset, $index) => [
+                    'id' => $asset->id,
+                    'label' => 'Figure ' . ($index + 1),
+                    'title' => $asset->title,
+                    'caption' => $asset->caption,
+                    'description' => $asset->description,
+                    'original_filename' => $asset->original_filename,
+                    'file_size' => $asset->file_size,
+                    'mime_type' => $asset->mime_type,
+                    'download_url' => url("/api/articles/assets/{$asset->id}/download"),
+                ])
+                ->values(),
+            'publication_sections' => $article->publicationSections
+                ->map(fn ($section) => [
+                    'section_key' => $section->section_key,
+                    'content_html' => $section->content_html,
+                    'content_text' => $section->content_text,
                 ])
                 ->values(),
         ];
@@ -1122,6 +1176,7 @@ class ArticleController extends Controller
 
         return [
             'id' => $article->id,
+            'tracking_code' => $article->tracking_code,
             'magazine_id' => $article->magazine_id,
             'title' => $article->title,
             'subtitle' => $article->subtitle,
@@ -1213,6 +1268,7 @@ class ArticleController extends Controller
                     return $data;
                 })
                 ->values(),
+            'reviewer_preferences' => $this->reviewerPreferencePayload($article, $viewer),
             'assets' => $article->assets
                 ->map(fn ($asset) => [
                     'id' => $asset->id,
@@ -1241,6 +1297,33 @@ class ArticleController extends Controller
         }
 
         return $payload;
+    }
+
+    private function reviewerPreferencePayload(Article $article, User $viewer): array
+    {
+        $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
+            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor', 'magazine_editor']);
+        $isAuthor = (int) $article->user_id === (int) $viewer->id
+            || $article->articleAuthors->contains(fn ($author) => (int) $author->user_id === (int) $viewer->id || strtolower((string) $author->co_author_email) === strtolower((string) $viewer->email));
+
+        if (!$canViewEditorial && !$isAuthor) {
+            return ['suggested' => [], 'opposed' => []];
+        }
+
+        return $article->reviewerPreferences
+            ->groupBy('type')
+            ->map(fn ($items) => $items->map(fn ($item) => [
+                'id' => $item->id,
+                'type' => $item->type,
+                'name' => $item->name,
+                'email' => $item->email,
+                'affiliation' => $item->affiliation,
+                'designation' => $item->designation,
+                'reason' => $item->reason,
+            ])->values())
+            ->union(['suggested' => collect(), 'opposed' => collect()])
+            ->map(fn ($items) => $items->values())
+            ->all();
     }
 
     private function assignmentPreviewPayload($assignment, string $relation, bool $includeReview = false): array

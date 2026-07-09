@@ -49,9 +49,9 @@ class ManuscriptDraftSubmissionTest extends TestCase
         $this->superAdminRole->permissions()->sync(Permission::pluck('id'));
 
         $this->magazine = Magazine::create([
-            'title' => 'Draft Workflow Journal',
-            'slug' => 'draft-workflow-journal',
-            'description' => 'Journal used for manuscript draft tests.',
+            'title' => 'Draft Workflow Magazine',
+            'slug' => 'draft-workflow-magazine',
+            'description' => 'Magazine used for manuscript draft tests.',
         ]);
     }
 
@@ -76,6 +76,93 @@ class ManuscriptDraftSubmissionTest extends TestCase
         ]);
         $this->assertDatabaseCount('article_versions', 0);
         Event::assertNotDispatched(ArticleSubmitted::class);
+    }
+
+    public function test_draft_submission_generates_tracking_code_and_persists_reviewer_preferences(): void
+    {
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $response = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'status' => ArticleStatus::DRAFT,
+            'suggested_reviewers' => [[
+                'name' => 'Suggested Expert',
+                'email' => 'suggested@example.test',
+                'affiliation' => 'External Lab',
+                'designation' => 'Professor',
+                'reason' => 'Relevant methods expertise.',
+            ]],
+            'opposed_reviewers' => [[
+                'name' => 'Opposed Expert',
+                'email' => 'opposed@example.test',
+                'affiliation' => 'Conflict Institute',
+                'designation' => 'Director',
+                'reason' => 'Declared conflict.',
+            ]],
+        ]));
+
+        $response->assertCreated()
+            ->assertJsonPath('article.status', ArticleStatus::DRAFT);
+
+        $article = Article::findOrFail($response->json('article.id'));
+        $this->assertMatchesRegularExpression('/^SN-\d{4}-\d{6}$/', $article->tracking_code);
+        $this->assertDatabaseHas('article_reviewer_preferences', [
+            'article_id' => $article->id,
+            'type' => 'suggested',
+            'email' => 'suggested@example.test',
+        ]);
+        $this->assertDatabaseHas('article_reviewer_preferences', [
+            'article_id' => $article->id,
+            'type' => 'opposed',
+            'email' => 'opposed@example.test',
+        ]);
+
+        $second = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'title' => 'Second Draft Manuscript',
+            'status' => ArticleStatus::DRAFT,
+        ]))->assertCreated();
+
+        $this->assertNotSame(
+            $article->tracking_code,
+            Article::findOrFail($second->json('article.id'))->tracking_code
+        );
+    }
+
+    public function test_reviewer_preference_validation_blocks_duplicates_cross_list_and_authors(): void
+    {
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'suggested_reviewers' => [
+                ['name' => 'Reviewer One', 'email' => 'same@example.test'],
+                ['name' => 'Reviewer Two', 'email' => 'same@example.test'],
+            ],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors(['suggested_reviewers']);
+
+        $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'suggested_reviewers' => [['name' => 'Reviewer One', 'email' => 'cross@example.test']],
+            'opposed_reviewers' => [['name' => 'Reviewer Two', 'email' => 'cross@example.test']],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors(['suggested_reviewers']);
+
+        $payload = $this->articlePayload($author);
+        $payload['authors'][] = [
+            'name' => 'Co Author',
+            'email' => 'coauthor@example.test',
+            'affiliation' => 'University',
+            'author_order' => 2,
+            'is_owner' => false,
+            'is_corresponding' => false,
+            'can_edit' => false,
+            'create_account' => false,
+        ];
+        $payload['suggested_reviewers'] = [['name' => 'Co Author', 'email' => 'coauthor@example.test']];
+
+        $this->postJson('/api/articles', $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['suggested_reviewers']);
     }
 
     public function test_author_can_submit_their_saved_draft(): void

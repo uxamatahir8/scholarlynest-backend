@@ -42,9 +42,9 @@ class WorkflowNotificationTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Notification Journal',
-            'slug' => 'notification-journal',
-            'description' => 'Workflow notification journal',
+            'title' => 'Notification Magazine',
+            'slug' => 'notification-magazine',
+            'description' => 'Workflow notification magazine',
         ]);
 
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
@@ -81,6 +81,29 @@ class WorkflowNotificationTest extends TestCase
             'article_id' => $this->article->id,
             'event' => 'notification.sent',
         ]);
+    }
+
+    public function test_workflow_notification_is_not_duplicated_for_same_transition(): void
+    {
+        Queue::fake();
+
+        $listener = new SendArticleWorkflowNotifications(app(NotificationService::class));
+        $event = new ArticleWorkflowEventOccurred(
+            $this->article,
+            'article.rejected',
+            $this->editor,
+            ['from_status' => ArticleStatus::REVIEW_IN_PROGRESS, 'to_status' => ArticleStatus::REJECTED]
+        );
+
+        $listener->handle($event);
+        $listener->handle($event);
+
+        $this->assertSame(3, NotificationLog::count());
+        $this->assertSame(1, $this->article->auditLogs()
+            ->where('event', 'notification.sent')
+            ->where('from_status', ArticleStatus::REVIEW_IN_PROGRESS)
+            ->where('to_status', ArticleStatus::REJECTED)
+            ->count());
     }
 
     public function test_deadline_reminder_command_sends_due_windows_once(): void
