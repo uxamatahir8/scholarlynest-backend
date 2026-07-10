@@ -89,10 +89,8 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 $this->userRecipient($event->actor, 'assigner'),
             ])->merge($this->superAdmins()))),
 
-            'review.accepted' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
-            'review.declined' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
+            'review.accepted', 'review.declined', 'review.submitted' => $this->editorialRecipients($article)->merge($this->subEditorRecipients($article))->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
             'sub_editor.recommendation_submitted',
-            'review.submitted',
             'review.reopened' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
 
             'revision.requested' => $this->authorRecipients($article),
@@ -161,10 +159,7 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 'subject' => 'Sub Editor Recommendation Submitted: ' . $title,
                 'body' => ['A Sub Editor recommendation has been submitted for "' . $title . '".'],
             ],
-            'review.submitted' => [
-                'subject' => 'Reviewer Report Submitted: ' . $title,
-                'body' => ['A reviewer report has been submitted for "' . $title . '".'],
-            ],
+            'review.submitted' => $this->reviewSubmittedMessage($article, $event),
             'review.reopened' => [
                 'subject' => 'Review Reopened: ' . $title,
                 'body' => ['A reviewer assignment has been reopened for "' . $title . '".'],
@@ -220,7 +215,9 @@ class SendArticleWorkflowNotifications implements ShouldQueue
     private function subEditorRecipients($article): Collection { return collect($article->subEditorAssignments()->with('subEditor')->get()->map(fn ($a) => $this->userRecipient($a->subEditor, 'sub_editor'))->all()); }
 
     private function reviewerResponseMessage($article, ArticleWorkflowEventOccurred $event): array
-    { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['Reviewer: ' . ($reviewer?->name ?? 'Reviewer') . ' (' . ($reviewer?->email ?? 'email unavailable') . ').', 'Response: ' . ($accepted ? 'Accepted' : 'Declined') . '.', 'Article: ' . $article->title . '.', 'Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.', 'Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Timestamp: ' . now()->toDateTimeString() . '.']]; }
+    { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; $name = $reviewer?->name ?? ($event->payload['reviewer_name'] ?? 'Reviewer'); $email = $reviewer?->email ?? ($event->payload['reviewer_email'] ?? 'email unavailable'); return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . $name . ' — ' . $article->title, 'body' => ['A reviewer has ' . ($accepted ? 'accepted' : 'declined') . ' the review invitation.', 'Reviewer Details: Reviewer Name: ' . $name . '. Reviewer Email: ' . $email . '. Response: ' . ($accepted ? 'Accepted' : 'Declined') . '. Responded At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: ' . ($accepted ? 'The reviewer can now access permitted manuscript files and submit their recommendation from the reviewer dashboard.' : 'Please assign another reviewer or continue the editorial workflow according to your review policy.')]]; }
+
+    private function reviewSubmittedMessage($article, ArticleWorkflowEventOccurred $event): array { $reviewer = $event->actor; return ['subject' => 'Review Submitted: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['A reviewer has submitted their review.', 'Reviewer Details: Reviewer Name: ' . ($reviewer?->name ?? 'Reviewer') . '. Reviewer Email: ' . ($reviewer?->email ?? 'email unavailable') . '. Recommendation: ' . ($event->payload['recommendation'] ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: Please review the recommendation and continue the editorial decision process.', 'Privacy Note: Reviewer comments and confidential recommendations are visible only to authorized editorial users.']]; }
 
     private function workflowContextLines($article, ArticleWorkflowEventOccurred $event): array
     {

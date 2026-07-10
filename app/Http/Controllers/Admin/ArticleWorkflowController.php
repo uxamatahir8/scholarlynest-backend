@@ -700,7 +700,7 @@ class ArticleWorkflowController extends Controller
         $this->audit($assignment->article, null, 'review.declined', $assignment->article->status, $assignment->article->status, [
             'reviewer_assignment_id' => $assignment->id,
         ]);
-        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.declined', null, ['from_status' => $assignment->article->status, 'to_status' => $assignment->article->status]));
+        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.declined', null, ['from_status' => $assignment->article->status, 'to_status' => $assignment->article->status, 'reviewer_name' => $assignment->invitee_name, 'reviewer_email' => $assignment->invitee_email]));
 
         return response()->json(['message' => 'Review invitation declined.']);
     }
@@ -774,6 +774,7 @@ class ArticleWorkflowController extends Controller
             'assignment_id' => $assignment->id,
             'from_status' => $oldStatus,
             'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+            'recommendation' => $assignment->recommendation,
         ]));
 
         return response()->json([
