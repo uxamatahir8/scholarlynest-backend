@@ -285,7 +285,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'new.editor@example.com',
-            'subject' => 'Set your ScholarlyNest password',
+            'subject' => 'Set Your Scholarly Nest Password',
         ]);
     }
 

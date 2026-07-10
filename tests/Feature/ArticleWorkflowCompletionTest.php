@@ -138,7 +138,7 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertTrue((bool) $createdReviewer->needs_password_reset);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'external.accept@example.test',
-            'subject' => 'Set your ScholarlyNest password',
+            'subject' => 'Set Your Scholarly Nest Password',
         ]);
         $this->assertDatabaseHas('reviewer_assignments', [
             'id' => $acceptAssignment->id,
