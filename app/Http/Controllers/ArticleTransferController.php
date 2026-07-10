@@ -93,7 +93,7 @@ class ArticleTransferController extends Controller
             'transfer_request' => $this->transferRequestPayload($transferRequest, true),
             'article' => [
                 'id' => $article->id,
-                'status' => ArticleStatus::SUBMITTED,
+                'status' => ArticleStatus::SCREENING,
                 'magazine_id' => $transferRequest->to_magazine_id,
             ],
         ]);
@@ -119,7 +119,7 @@ class ArticleTransferController extends Controller
             'transfer_request' => $this->transferRequestPayload($transferRequest, true),
             'article' => [
                 'id' => $article->id,
-                'status' => ArticleStatus::SUBMITTED,
+                'status' => ArticleStatus::SCREENING,
                 'magazine_id' => $transferRequest->from_magazine_id,
             ],
         ]);
@@ -127,7 +127,7 @@ class ArticleTransferController extends Controller
 
     private function assertCanRequestTransfer(User $user, Article $article): void
     {
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::SUBMITTED) {
+        if (!in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)) {
             throw new HttpResponseException(response()->json(['message' => 'Article transfers can only be requested during Screening.'], 422));
         }
 

@@ -46,7 +46,7 @@ class ArticleTransferService
                 'status' => ArticleTransferRequest::STATUS_PENDING,
                 'editor_comments' => $comments,
                 'previous_article_status' => $oldStatus,
-                'next_article_status' => ArticleStatus::SUBMITTED,
+                'next_article_status' => ArticleStatus::SCREENING,
                 'requested_at' => now(),
             ]);
 
@@ -68,7 +68,7 @@ class ArticleTransferService
             $requestedBy,
             [
                 'transfer_request_id' => $transferRequest->id,
-                'from_status' => ArticleStatus::SUBMITTED,
+                'from_status' => $transferRequest->previous_article_status,
                 'to_status' => ArticleStatus::IN_TRANSIT,
                 'from_magazine_id' => $transferRequest->from_magazine_id,
                 'to_magazine_id' => $transferRequest->to_magazine_id,
@@ -100,22 +100,22 @@ class ArticleTransferService
             $article->update([
                 'magazine_id' => $targetMagazine->id,
                 'magazine_issue_id' => null,
-                'status' => ArticleStatus::SUBMITTED,
+                'status' => ArticleStatus::SCREENING,
             ]);
 
             $transferRequest->update([
                 'status' => ArticleTransferRequest::STATUS_ACCEPTED,
                 'responded_by_user_id' => $respondedBy->id,
                 'responded_at' => now(),
-                'next_article_status' => ArticleStatus::SUBMITTED,
+                'next_article_status' => ArticleStatus::SCREENING,
             ]);
 
-            $this->audit($article, $respondedBy->id, 'transfer.accepted', ArticleStatus::IN_TRANSIT, ArticleStatus::SUBMITTED, [
+            $this->audit($article, $respondedBy->id, 'transfer.accepted', ArticleStatus::IN_TRANSIT, ArticleStatus::SCREENING, [
                 'transfer_request_id' => $transferRequest->id,
                 'from_magazine_id' => $oldMagazineId,
                 'to_magazine_id' => $targetMagazine->id,
             ]);
-            $this->audit($article, $respondedBy->id, 'transfer.magazine_changed', ArticleStatus::IN_TRANSIT, ArticleStatus::SUBMITTED, [
+            $this->audit($article, $respondedBy->id, 'transfer.magazine_changed', ArticleStatus::IN_TRANSIT, ArticleStatus::SCREENING, [
                 'transfer_request_id' => $transferRequest->id,
                 'from_magazine_id' => $oldMagazineId,
                 'to_magazine_id' => $targetMagazine->id,
@@ -131,7 +131,7 @@ class ArticleTransferService
             [
                 'transfer_request_id' => $transferRequest->id,
                 'from_status' => ArticleStatus::IN_TRANSIT,
-                'to_status' => ArticleStatus::SUBMITTED,
+                'to_status' => ArticleStatus::SCREENING,
                 'from_magazine_id' => $transferRequest->from_magazine_id,
                 'to_magazine_id' => $transferRequest->to_magazine_id,
                 'requested_by_user_id' => $transferRequest->requested_by_user_id,
@@ -150,17 +150,17 @@ class ArticleTransferService
             $transferRequest = ArticleTransferRequest::query()->lockForUpdate()->findOrFail($transferRequest->id);
             $this->assertPendingResponse($article, $transferRequest);
 
-            $article->update(['status' => ArticleStatus::SUBMITTED]);
+            $article->update(['status' => ArticleStatus::SCREENING]);
 
             $transferRequest->update([
                 'status' => ArticleTransferRequest::STATUS_REJECTED,
                 'responded_by_user_id' => $respondedBy->id,
                 'responded_at' => now(),
                 'author_rejection_reason' => $reason,
-                'next_article_status' => ArticleStatus::SUBMITTED,
+                'next_article_status' => ArticleStatus::SCREENING,
             ]);
 
-            $this->audit($article, $respondedBy->id, 'transfer.rejected', ArticleStatus::IN_TRANSIT, ArticleStatus::SUBMITTED, [
+            $this->audit($article, $respondedBy->id, 'transfer.rejected', ArticleStatus::IN_TRANSIT, ArticleStatus::SCREENING, [
                 'transfer_request_id' => $transferRequest->id,
                 'from_magazine_id' => $transferRequest->from_magazine_id,
                 'to_magazine_id' => $transferRequest->to_magazine_id,
@@ -177,7 +177,7 @@ class ArticleTransferService
             [
                 'transfer_request_id' => $transferRequest->id,
                 'from_status' => ArticleStatus::IN_TRANSIT,
-                'to_status' => ArticleStatus::SUBMITTED,
+                'to_status' => ArticleStatus::SCREENING,
                 'from_magazine_id' => $transferRequest->from_magazine_id,
                 'to_magazine_id' => $transferRequest->to_magazine_id,
                 'requested_by_user_id' => $transferRequest->requested_by_user_id,
@@ -190,7 +190,7 @@ class ArticleTransferService
 
     private function assertCanCreate(Article $article, Magazine $targetMagazine): void
     {
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::SUBMITTED) {
+        if (!in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)) {
             throw ValidationException::withMessages([
                 'article' => ['Article transfers can only be requested during Screening.'],
             ]);

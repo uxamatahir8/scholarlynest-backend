@@ -2048,7 +2048,7 @@ class ArticleWorkflowController extends Controller
     private function canRequestTransfer($user, Article $article): bool
     {
         return $user
-            && ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED
+            && in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)
             && ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']))
             && !$article->pendingTransferRequest;
     }

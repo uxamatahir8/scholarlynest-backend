@@ -163,7 +163,7 @@ class ArticleTransferWorkflowTest extends TestCase
 
         $this->postJson("/api/articles/{$this->article->id}/transfer-requests/{$transferRequest->id}/accept")
             ->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::SUBMITTED)
+            ->assertJsonPath('article.status', ArticleStatus::SCREENING)
             ->assertJsonPath('article.magazine_id', $this->targetMagazine->id);
 
         $this->assertDatabaseHas('article_transfer_requests', [
@@ -174,7 +174,7 @@ class ArticleTransferWorkflowTest extends TestCase
         $this->assertDatabaseHas('articles', [
             'id' => $this->article->id,
             'magazine_id' => $this->targetMagazine->id,
-            'status' => ArticleStatus::SUBMITTED,
+            'status' => ArticleStatus::SCREENING,
         ]);
         $this->assertDatabaseHas('article_audit_logs', [
             'article_id' => $this->article->id,
@@ -198,7 +198,7 @@ class ArticleTransferWorkflowTest extends TestCase
         $this->postJson("/api/articles/{$this->article->id}/transfer-requests/{$transferRequest->id}/reject", [
             'author_rejection_reason' => 'I prefer the original magazine.',
         ])->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::SUBMITTED)
+            ->assertJsonPath('article.status', ArticleStatus::SCREENING)
             ->assertJsonPath('article.magazine_id', $this->currentMagazine->id);
 
         $this->assertDatabaseHas('article_transfer_requests', [
@@ -209,7 +209,7 @@ class ArticleTransferWorkflowTest extends TestCase
         $this->assertDatabaseHas('articles', [
             'id' => $this->article->id,
             'magazine_id' => $this->currentMagazine->id,
-            'status' => ArticleStatus::SUBMITTED,
+            'status' => ArticleStatus::SCREENING,
         ]);
         $this->assertDatabaseHas('article_audit_logs', [
             'article_id' => $this->article->id,
