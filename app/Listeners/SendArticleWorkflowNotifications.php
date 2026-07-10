@@ -33,6 +33,7 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         }
 
         $message = $this->messageFor($article, $event);
+        $message['body'] = array_merge($message['body'], $this->workflowContextLines($article, $event));
         $action = [
             'text' => 'Open Workflow',
             'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . '/admin/articles',
@@ -220,6 +221,17 @@ class SendArticleWorkflowNotifications implements ShouldQueue
 
     private function reviewerResponseMessage($article, ArticleWorkflowEventOccurred $event): array
     { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['Reviewer: ' . ($reviewer?->name ?? 'Reviewer') . ' (' . ($reviewer?->email ?? 'email unavailable') . ').', 'Response: ' . ($accepted ? 'Accepted' : 'Declined') . '.', 'Article: ' . $article->title . '.', 'Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.', 'Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Timestamp: ' . now()->toDateTimeString() . '.']]; }
+
+    private function workflowContextLines($article, ArticleWorkflowEventOccurred $event): array
+    {
+        $status = ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? str_replace('_', ' ', $article->status);
+        $actor = $event->actor?->name ?? 'System workflow';
+        return [
+            'Article Details: Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.',
+            'Current Status: ' . $status . '. Actor: ' . $actor . '. Timestamp: ' . now()->toDateTimeString() . '.',
+            'Next Action: Open the workflow to review the current stage and complete your authorized action.',
+        ];
+    }
 
     private function authorRecipients($article): Collection
     {
