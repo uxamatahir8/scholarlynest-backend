@@ -34,6 +34,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
 
             // 2. Truncate workflow tables in safe dependency order
             $tables = [
+                'article_transfer_requests',
                 'editor_sub_editor',
                 'article_tag',
                 'article_share_clicks',
@@ -303,9 +304,10 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $magToEditor = [];
             $magToPublisher = [];
 
+            $magazineData = array_slice($magazineData, 0, count($magazineData) / 2);
             foreach ($magazineData as $idx => $m) {
-                $editorIndex = (int)($idx / 4);
-                $publisherIndex = (int)($idx / 4);
+                $editorIndex = (int)($idx / 2);
+                $publisherIndex = (int)($idx / 2);
 
                 $assignedEditor = $usersByRole['editor'][$editorIndex];
                 $assignedPublisher = $usersByRole['publisher'][$publisherIndex];
@@ -419,10 +421,12 @@ class AcademicWorkflowDemoSeeder extends Seeder
                 $magIssues[$mag->id] = [$issue1Id, $issue2Id, $issue3Id];
             }
 
-            // 7. Seed Articles (550 per magazine, total 6,600 to satisfy density requirement)
+            // 7. Seed Articles (275 per magazine, total 1,650 to satisfy density requirement)
             $statuses = [
                 'draft',
                 'submitted',
+                'screening',
+                'in_transit',
                 'under_review',
                 'assigned_to_sub_editor',
                 'reviewer_assigned',
@@ -457,6 +461,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $reviewerAssignmentsToInsert = [];
             $editorialDecisionsToInsert = [];
             $productionAssignmentsToInsert = [];
+            $transferRequestsToInsert = [];
             $auditLogsToInsert = [];
 
             // Global predictable IDs for referencing
@@ -468,7 +473,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $startTimestamp = strtotime('2015-01-23 09:00:00');
             $endTimestamp = strtotime('2026-06-19 17:00:00');
             $secondsDiff = $endTimestamp - $startTimestamp;
-            $totalArticlesPerMagazine = 550;
+            $totalArticlesPerMagazine = 275;
             $seededPendingExternalInvitation = false;
             $seededAcceptedExternalInvitation = false;
             $seededDeclinedExternalInvitation = false;
@@ -478,8 +483,8 @@ class AcademicWorkflowDemoSeeder extends Seeder
                 $publisherUser = $magToPublisher[$mag->id];
 
                 for ($artIndex = 0; $artIndex < $totalArticlesPerMagazine; $artIndex++) {
-                    $statusIndex = (int)($artIndex / 30);
-                    if ($statusIndex >= 18) {
+                    $statusIndex = (int)($artIndex / 13);
+                    if ($statusIndex >= count($statuses)) {
                         $status = 'published';
                     } else {
                         $status = $statuses[$statusIndex];
@@ -548,7 +553,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     $screenedAt = null;
                     $screenedBy = null;
 
-                    $hasScreening = !in_array($status, ['draft', 'submitted']);
+                    $hasScreening = !in_array($status, ['draft', 'submitted', 'screening', 'in_transit']);
                     if ($hasScreening) {
                         $plagiarismStatus = ($artIndex % 10 === 0) ? 'warning' : 'passed';
                         $plagiarismScore = ($artIndex % 10 === 0) ? 28.50 : 8.20;
@@ -607,9 +612,34 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         'seo_title' => $title . " | ScholarlyNest",
                         'seo_description' => Str::limit($abstract, 150),
                         'seo_keywords' => 'academic, workflow, ' . $mag->slug,
+                        'terms_accepted_at' => !in_array($status, ['draft']) ? $createdAt : null,
+                        'terms_accepted_by' => !in_array($status, ['draft']) ? $authorUser->id : null,
+                        'terms_acceptance_ip' => !in_array($status, ['draft']) ? '127.0.0.1' : null,
+                        'author_final_approved_at' => in_array($status, ['ready_for_publication', 'published']) ? $createdAt->copy()->addDays(38) : null,
+                        'author_final_approved_by' => in_array($status, ['ready_for_publication', 'published']) ? $authorUser->id : null,
                         'created_at' => $createdAt,
                         'updated_at' => $createdAt,
                     ]);
+
+                    if ($status === 'in_transit') {
+                        $targetMag = $magazinesList[($idx + 1) % count($magazinesList)];
+                        $transferRequestsToInsert[] = [
+                            'article_id' => $articleId,
+                            'from_magazine_id' => $mag->id,
+                            'to_magazine_id' => $targetMag->id,
+                            'requested_by_user_id' => $editorUser->id,
+                            'responded_by_user_id' => null,
+                            'status' => 'pending',
+                            'editor_comments' => 'This article fits the scope of ' . $targetMag->title . ' better.',
+                            'author_rejection_reason' => null,
+                            'previous_article_status' => 'submitted',
+                            'next_article_status' => 'screening',
+                            'requested_at' => $createdAt,
+                            'responded_at' => null,
+                            'created_at' => $createdAt,
+                            'updated_at' => $createdAt,
+                        ];
+                    }
 
                     DB::table('articles')->where('id', $articleId)->update([
                         'tracking_code' => sprintf('SN-%s-%06d', $createdAt->format('Y'), $articleId),
@@ -1236,6 +1266,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $bulkInsert('reviewer_assignments', $reviewerAssignmentsToInsert);
             $bulkInsert('editorial_decisions', $editorialDecisionsToInsert);
             $bulkInsert('production_assignments', $productionAssignmentsToInsert);
+            $bulkInsert('article_transfer_requests', $transferRequestsToInsert);
             $bulkInsert('article_audit_logs', $auditLogsToInsert);
 
             $this->seedQuestionnaireInstancesAndResponses($questionnaireSeed);
