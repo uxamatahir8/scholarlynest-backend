@@ -367,16 +367,19 @@ class SupportTicketController extends Controller
         $adminUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support-tickets/{$ticket->id}";
         $userUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}";
 
-        $this->notifications->send($ticket->user->email, "Support ticket {$ticket->ticket_number} submitted", 'Support ticket received', [
-            "{$ticket->ticket_number}: {$ticket->title}",
-            'Status: ' . str_replace('_', ' ', $ticket->status),
+        $this->notifications->send($ticket->user->email, "Support Ticket Received: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+            'Your support ticket has been submitted successfully.',
+            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Issue Type: ' . str_replace('_', ' ', $ticket->issue_type) . '. Title: ' . $ticket->title . '. Status: ' . str_replace('_', ' ', $ticket->status) . '. Submitted At: ' . $ticket->created_at->toDateTimeString() . '.',
+            'Details: ' . strip_tags((string) $ticket->message),
+            'Next Action: Our support team will review your ticket and reply in the ticket thread.',
         ], ['text' => 'View Ticket', 'url' => $userUrl], 'default', $ticket->user_id);
 
         foreach ($this->supportRecipients($ticket->user) as $recipient) {
-            $this->notifications->send($recipient->email, "New support ticket {$ticket->ticket_number}", 'New support ticket', [
-                "{$ticket->ticket_number}: {$ticket->title}",
-                'Submitted by: ' . $ticket->user->name,
-                'Issue type: ' . str_replace('_', ' ', $ticket->issue_type),
+            $this->notifications->send($recipient->email, "New Support Ticket: {$ticket->ticket_number} — {$ticket->title}", 'Dear ' . $recipient->name . ',', [
+                'A new support ticket has been created.',
+                'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Issue Type: ' . str_replace('_', ' ', $ticket->issue_type) . '. Title: ' . $ticket->title . '. Status: ' . str_replace('_', ' ', $ticket->status) . '. Submitted By: ' . $ticket->user->name . '. Requester Email: ' . $ticket->user->email . '. Submitted At: ' . $ticket->created_at->toDateTimeString() . '.',
+                'Details: ' . strip_tags((string) $ticket->message),
+                'Next Action: Please review and respond from the admin support ticket panel.',
             ], ['text' => 'Open Ticket', 'url' => $adminUrl], 'default', $recipient->id);
         }
     }
@@ -385,17 +388,19 @@ class SupportTicketController extends Controller
     {
         if ((int) $actor->id === (int) $ticket->user_id) {
             foreach ($this->supportRecipients($actor) as $recipient) {
-                $this->notifications->send($recipient->email, "Reply on {$ticket->ticket_number}", 'Ticket reply added', [
-                    "{$ticket->ticket_number}: {$ticket->title}",
-                    'The ticket owner added a reply.',
+                $this->notifications->send($recipient->email, "User Replied to Support Ticket: {$ticket->ticket_number}", 'Dear ' . $recipient->name . ',', [
+                    'The ticket owner has replied to a support ticket.',
+                    'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Current Status: ' . str_replace('_', ' ', $ticket->status) . '. Replied By: ' . $actor->name . '. Replied At: ' . now()->toDateTimeString() . '.',
+                    'Next Action: Please review the latest reply and continue support handling.',
                 ], ['text' => 'Open Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support-tickets/{$ticket->id}"], 'default', $recipient->id);
             }
             return;
         }
 
-        $this->notifications->send($ticket->user->email, "Reply on {$ticket->ticket_number}", 'Support replied', [
-            "{$ticket->ticket_number}: {$ticket->title}",
-            'A support reply has been added.',
+        $this->notifications->send($ticket->user->email, "Support Ticket Updated: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+            'A support team member has replied to your ticket.',
+            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Current Status: ' . str_replace('_', ' ', $ticket->status) . '. Replied By: ' . $actor->name . '. Replied At: ' . now()->toDateTimeString() . '.',
+            'Next Action: Please open the ticket to review the reply and respond if needed.',
         ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
     }
 
@@ -405,9 +410,10 @@ class SupportTicketController extends Controller
             return;
         }
 
-        $this->notifications->send($ticket->user->email, "Status updated for {$ticket->ticket_number}", 'Support ticket status updated', [
-            "{$ticket->ticket_number}: {$ticket->title}",
-            'Status changed from ' . str_replace('_', ' ', $old) . ' to ' . str_replace('_', ' ', $new) . '.',
+        $this->notifications->send($ticket->user->email, "Support Ticket Status Changed: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+            'The status of your support ticket has been updated.',
+            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Previous Status: ' . str_replace('_', ' ', $old) . '. New Status: ' . str_replace('_', ' ', $new) . '. Updated By: ' . $actor->name . '. Updated At: ' . now()->toDateTimeString() . '.',
+            'Next Action: Please open the ticket to review the latest status and any related replies.',
         ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
     }
 }
