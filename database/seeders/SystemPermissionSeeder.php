@@ -39,6 +39,7 @@ class SystemPermissionSeeder extends Seeder
         ['name' => 'seo.articles', 'module' => 'seo', 'description' => 'Manage SEO fields for articles'],
         ['name' => 'seo.magazines', 'module' => 'seo', 'description' => 'Manage SEO fields for magazines'],
         ['name' => 'seo.cms-pages', 'module' => 'seo', 'description' => 'Manage SEO fields for CMS pages'],
+        ['name' => 'support_ticket_management', 'module' => 'support', 'description' => 'Manage support tickets'],
     ];
 
     public function run(): void
