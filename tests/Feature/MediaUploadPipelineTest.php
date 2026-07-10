@@ -203,6 +203,44 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertDatabaseCount('media_upload_sessions', 1);
     }
 
+    public function test_can_initiate_and_complete_detached_manuscript_upload(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        $fakePdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF";
+        $pdfSize = strlen($fakePdf);
+
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'attachable_id' => null,
+            'original_filename' => 'manuscript.pdf',
+            'size_bytes' => $pdfSize,
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'manuscript.pdf:' . $pdfSize . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        $this->assertNull($session->attachable_type);
+        $this->assertNull($session->attachable_id);
+
+        Storage::disk('s3')->put($session->s3_incoming_key, $fakePdf);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete", [
+            'parts' => null,
+        ])->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status);
+        $this->assertDatabaseCount('article_files', 0);
+    }
+
     public function test_actual_initiate_rate_limit_returns_structured_429(): void
     {
         RateLimiter::for('media-upload-initiate', function ($request) {

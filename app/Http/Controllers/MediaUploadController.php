@@ -240,6 +240,9 @@ class MediaUploadController extends Controller
         if (($config['target'] ?? null) === 'article') {
             /** @var Article $article */
             $article = $upload->attachable;
+            if (!$article) {
+                return [];
+            }
             $file = app(ArticleFileController::class)->createPendingDirectUploadFile($article, $upload, $config);
             $metadata = ['article_file_id' => $file->id];
 

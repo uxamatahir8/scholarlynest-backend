@@ -221,15 +221,15 @@ class ArticleFileController extends Controller
         return false;
     }
 
-    public function canUploadForDirectSession($user, Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
+    public function canUploadForDirectSession($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
         return $this->canUpload($user, $article, $fileType, $assignmentType, $assignmentId);
     }
 
-    private function canUpload($user, Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
+    private function canUpload($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
         if (
-            in_array($fileType, [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
+            $article && in_array($fileType, [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true)
             && !ArticleStatus::isEditableStatus($article->status)
         ) {
             return false;
@@ -237,6 +237,20 @@ class ArticleFileController extends Controller
 
         if ($this->isGlobal($user)) {
             return true;
+        }
+
+        if (!$article) {
+            if ($fileType === ArticleFile::MANUSCRIPT) {
+                return $user && (
+                    $user->hasPermission('articles.create')
+                    || $user->hasRole(['author', 'editor', 'magazine-editor'])
+                    || $this->isGlobal($user)
+                );
+            }
+            if ($fileType === ArticleFile::PUBLICATION_PDF) {
+                return $user && ($user->hasRole(['publisher', 'editor', 'magazine-editor']) || $this->isGlobal($user));
+            }
+            return false;
         }
 
         return match ($fileType) {
