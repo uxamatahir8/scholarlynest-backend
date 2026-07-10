@@ -17,6 +17,7 @@ use App\Http\Controllers\ContactController;
 use App\Http\Controllers\NewsletterController;
 use App\Http\Controllers\FaqController;
 use App\Http\Controllers\GlobalSearchController;
+use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\Admin\ArticleTypeController;
 use App\Http\Controllers\Admin\ArticleCategoryController;
 use App\Http\Controllers\Admin\SubjectAreaController;
@@ -161,6 +162,16 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         ->middleware(['super-admin-delete', 'permission:articles.manage-assets']);
     Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
+
+    // Support tickets
+    Route::get('/support/tickets', [SupportTicketController::class, 'index']);
+    Route::post('/support/tickets', [SupportTicketController::class, 'store']);
+    Route::get('/support/tickets/attachments/{attachment}/download', [SupportTicketController::class, 'downloadAttachment'])
+        ->middleware('throttle:media-download');
+    Route::get('/support/tickets/{ticket}', [SupportTicketController::class, 'show']);
+    Route::get('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'messages']);
+    Route::post('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'reply']);
+    Route::get('/support/tickets/{ticket}/activities', [SupportTicketController::class, 'activities']);
  
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
@@ -186,6 +197,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/contact-subjects', [ContactController::class, 'storeSubject']);
         Route::put('/contact-subjects/{id}', [ContactController::class, 'updateSubject']);
         Route::delete('/contact-subjects/{id}', [ContactController::class, 'deleteSubject'])->middleware('super-admin-delete');
+
+        Route::get('/support/tickets', [SupportTicketController::class, 'index'])->middleware('permission:support_ticket_management');
+        Route::get('/support/tickets/{ticket}', [SupportTicketController::class, 'show'])->middleware('permission:support_ticket_management');
+        Route::post('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'reply'])->middleware('permission:support_ticket_management');
+        Route::patch('/support/tickets/{ticket}/status', [SupportTicketController::class, 'updateStatus'])->middleware('permission:support_ticket_management');
+        Route::get('/support/tickets/{ticket}/activities', [SupportTicketController::class, 'activities'])->middleware('permission:support_ticket_management');
  
         // Newsletter Campaign Management (Admin only)
         Route::get('/newsletter/subscribers', [NewsletterController::class, 'listSubscribers'])->middleware('permission:newsletters.view-any');

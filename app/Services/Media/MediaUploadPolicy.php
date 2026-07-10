@@ -92,6 +92,14 @@ class MediaUploadPolicy
 
             return;
         }
+
+        if ($purpose === 'support_ticket_attachment') {
+            if (!$user) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
+        }
     }
 
     public function sanitizeFilename(string $filename): string
