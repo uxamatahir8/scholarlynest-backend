@@ -412,7 +412,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         Sanctum::actingAs($this->user('super_admin'));
 
-        foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
+        foreach (['editor', 'magazine_editor', 'publisher'] as $roleName) {
             $magazine = $this->magazine(Str::headline($roleName) . ' Magazine');
 
             $response = $this->postJson('/api/admin/users', [

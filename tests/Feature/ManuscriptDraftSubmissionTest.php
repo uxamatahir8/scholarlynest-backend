@@ -78,6 +78,27 @@ class ManuscriptDraftSubmissionTest extends TestCase
         Event::assertNotDispatched(ArticleSubmitted::class);
     }
 
+    public function test_author_can_create_empty_draft_without_submit_level_fields(): void
+    {
+        Event::fake([ArticleSubmitted::class]);
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $response = $this->postJson('/api/articles', [
+            'status' => ArticleStatus::DRAFT,
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('article.status', ArticleStatus::DRAFT);
+
+        $article = Article::findOrFail($response->json('article.id'));
+        $this->assertNull($article->title);
+        $this->assertNull($article->magazine_id);
+        $this->assertNull($article->abstract);
+        $this->assertStringStartsWith('draft-', $article->slug);
+        Event::assertNotDispatched(ArticleSubmitted::class);
+    }
+
     public function test_draft_submission_generates_tracking_code_and_persists_reviewer_preferences(): void
     {
         $author = $this->author();

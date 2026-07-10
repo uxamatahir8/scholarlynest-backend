@@ -113,7 +113,7 @@ class ProductionDashboardTest extends TestCase
             ->assertJsonPath('data.0.is_overdue', true);
     }
 
-    public function test_proofreader_production_dashboard_is_scoped_to_assigned_user_and_role(): void
+    public function test_proofreader_production_dashboard_is_inactive(): void
     {
         $owned = $this->article('Proofread Article', ArticleStatus::PROOFREADING, $this->magazine);
         $copyTask = $this->article('Copy Task Article', ArticleStatus::COPY_EDITING, $this->magazine);
@@ -136,12 +136,7 @@ class ProductionDashboardTest extends TestCase
         Sanctum::actingAs($this->proofreader);
 
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.article.title', 'Proofread Article')
-            ->assertJsonPath('data.0.role', 'proofreader')
-            ->assertJsonMissingPath('data.0.user_id')
-            ->assertJsonMissingPath('data.0.user');
+            ->assertStatus(422);
     }
 
     public function test_non_production_roles_cannot_access_production_assignment_dashboard(): void

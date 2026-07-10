@@ -35,13 +35,18 @@ class FinalWorkflowHardeningTest extends TestCase
     {
         parent::setUp();
 
-        foreach (array_merge(SystemRoles::names(), ['admin']) as $roleName) {
+        foreach (array_unique(array_merge(SystemRoles::names(), ['admin'])) as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
                 'is_system' => true,
             ]);
         }
+        $this->roles['proofreader'] = Role::create([
+            'name' => 'proofreader',
+            'display_name' => 'Proofreader',
+            'is_system' => false,
+        ]);
 
         foreach ([
             'articles.view-own',
@@ -570,7 +575,7 @@ class FinalWorkflowHardeningTest extends TestCase
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $ownProductionAssignment->id);
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertForbidden();
+            ->assertStatus(422);
     }
 
     private function user(string $roleName): User

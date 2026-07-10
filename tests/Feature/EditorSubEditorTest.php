@@ -195,7 +195,7 @@ class EditorSubEditorTest extends TestCase
         $response->assertStatus(201);
         $this->assertDatabaseHas('editor_sub_editor', [
             'editor_id' => $this->editor1->id,
-            'sub_editor_id' => $response->json('id'),
+            'sub_editor_id' => $response->json('data.id'),
         ]);
     }
 
@@ -212,7 +212,7 @@ class EditorSubEditorTest extends TestCase
         ]);
 
         $response->assertStatus(201);
-        $subId = $response->json('id');
+        $subId = $response->json('data.id');
         $this->assertDatabaseHas('editor_sub_editor', [
             'editor_id' => $this->editor1->id,
             'sub_editor_id' => $subId,

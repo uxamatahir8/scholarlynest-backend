@@ -308,7 +308,7 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         $this->getJson('/api/articles/workflow-completion-article')
             ->assertOk()
-            ->assertJsonPath('article.tracking_code', $this->article->fresh()->tracking_code)
+            ->assertJsonMissingPath('article.tracking_code')
             ->assertJsonPath('article.open_access_label', 'Open Access')
             ->assertJsonPath('article.is_peer_reviewed', true)
             ->assertJsonPath('article.article_images.0.title', 'Figure 1')
