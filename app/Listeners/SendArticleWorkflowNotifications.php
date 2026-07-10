@@ -204,8 +204,8 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 'body' => ['A post-publication action has been recorded for "' . $title . '".'],
             ],
             'article.resubmitted' => [
-                'subject' => 'Article Resubmitted: ' . $title,
-                'body' => ['The manuscript "' . $title . '" has been resubmitted for editorial review.', 'Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.', 'Base Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Revision Tracking Code: ' . $this->nextRevisionTrackingCode($article) . '.', 'Submitting author: ' . ($article->user?->name ?? 'Not recorded') . '.', 'Submitted: ' . now()->toDateTimeString() . '.', 'Next action: review the revised manuscript and continue editorial assessment.'],
+                'subject' => 'Article Resubmitted: ' . $title . ' — ' . $this->nextRevisionTrackingCode($article),
+                'body' => [($article->user?->name ?? $article->user?->email ?? 'The submitting author') . ' submitted a revised version of the article.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Base Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Revision Tracking Code: ' . $this->nextRevisionTrackingCode($article) . '. Revision Number: ' . max(1, (int) $article->versions()->max('version_number')) . '. Submitted By: ' . ($article->user?->name ?? $article->user?->email ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.', 'Change Summary: ' . strip_tags((string) ($article->change_summary ?? 'No change summary supplied.')), 'Next Action: Please review the revised manuscript and continue the editorial workflow.'],
             ],
             default => [
                 'subject' => 'Workflow Update: ' . $title,

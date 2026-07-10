@@ -208,3 +208,11 @@ The inventory above is expanded below so each code-discovered flow has a concret
 | Queue failure alert | Missing | Silent delivery degradation | Alert administrators on repeated failures | High |
 | Board rather than article-specific link | Partial | Extra navigation / possible wrong context | Use scoped workflow URL | Low |
 | External decline identity | Partial | Editorial notice may lack invitee identity | Carry invitee name/email in event payload | High |
+
+### Final implementation updates
+
+- `article.resubmitted` now uses the submitting user name with email fallback, includes base and revision tracking codes, revision number, timestamp, sanitized change summary, and an editor workflow action.
+- Contact notifications now use `New Contact Message from {{ sender_name }}` and include sender, email, subject, submitted timestamp, escaped message, and a support/admin next action.
+- Account setup/reset, password-change confirmation, newsletter subscription, article submission, reviewer invitation/response, editorial workflow, support-ticket, and resubmission subjects/bodies are implemented through `NotificationService` and the queued notification job.
+- Remaining deferred flows: reviewer reminders, queue-failure alerts, role/permission-change notifications, magazine-editor assignment, issue-publication notifications, and dedicated ticket-closed email; no clean existing trigger/scheduler was found. Recommended priorities are documented in the missing-flow register above.
+- Generic wording exception: the generic `The submitting author` fallback remains only when an article has neither a linked user name nor email; event paths otherwise use the available actor identity.
