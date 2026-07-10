@@ -22,8 +22,8 @@ class DefaultSuperAdminSeeder extends Seeder
             throw new RuntimeException('DEFAULT_SUPER_ADMIN_EMAIL and DEFAULT_SUPER_ADMIN_PASSWORD are required when seeding production.');
         }
 
-        $email = $email ?: 'superadmin@example.test';
-        $password = $password ?: 'LocalDevPassword123!';
+        $email = $email ?: 'info@scholarlynest.com';
+        $password = $password ?: 'Admin12345@';
 
         $role = Role::where('name', 'super_admin')->firstOrFail();
         $user = User::whereRaw('LOWER(email) = ?', [strtolower($email)])->first();
