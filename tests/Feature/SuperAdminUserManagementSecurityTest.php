@@ -12,6 +12,7 @@ use Tests\TestCase;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use App\Models\NotificationLog;
 
 class SuperAdminUserManagementSecurityTest extends TestCase
 {
@@ -276,10 +277,15 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
 
         $response->assertStatus(201);
-        $response->assertJsonPath('message', 'User created successfully.');
+        $response->assertJsonPath('message', 'User created and password setup email sent.');
         $this->assertDatabaseHas('users', [
             'email' => 'new.editor@example.com',
             'role_id' => $this->roles['editor']->id,
+            'needs_password_reset' => true,
+        ]);
+        $this->assertDatabaseHas('notification_logs', [
+            'recipient_email' => 'new.editor@example.com',
+            'subject' => 'Set your Scholarly Nest password',
         ]);
     }
 
@@ -327,23 +333,32 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     }
 
     /**
-     * Password confirmation validation works.
+     * Password fields are ignored for internally created users.
      */
-    public function test_create_user_password_confirmation_validation(): void
+    public function test_create_user_ignores_password_fields_and_sends_setup_link(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
         $magazine = $this->magazine();
 
         $response = $this->postJson('/api/admin/users', [
-            'name' => 'Mismatched User',
-            'email' => 'mismatch@example.com',
-            'password' => 'SecurePass123!',
+            'name' => 'Password Ignored User',
+            'email' => 'password.ignored@example.com',
+            'password' => 'AdminShouldNotSet123!',
             'password_confirmation' => 'DifferentPass123!',
             'role_id' => $this->roles['editor']->id,
+            'magazine_ids' => [$magazine->id],
         ]);
 
-        $response->assertStatus(422);
-        $response->assertJsonValidationErrors('password');
+        $response->assertStatus(201);
+        $user = User::where('email', 'password.ignored@example.com')->firstOrFail();
+        $this->assertNull($user->password);
+        $this->assertTrue((bool) $user->needs_password_reset);
+        $log = NotificationLog::where('recipient_email', 'password.ignored@example.com')->first();
+        $this->assertNotNull($log);
+        $this->assertSame('Set Password', $log->payload['action']['text']);
+        $this->assertStringContainsString('/reset-password?', $log->payload['action']['url']);
+        $this->assertStringContainsString('token=', $log->payload['action']['url']);
+        $this->assertStringNotContainsString('AdminShouldNotSet123!', json_encode($log->payload));
     }
 
     /**

@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Models\Role;
 use App\Models\Setting;
 use App\Services\NotificationService;
+use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -16,10 +17,12 @@ use Illuminate\Validation\Rules\Password;
 class AuthController extends Controller
 {
     protected NotificationService $notificationService;
+    protected PasswordSetupService $passwordSetupService;
 
-    public function __construct(NotificationService $notificationService)
+    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService)
     {
         $this->notificationService = $notificationService;
+        $this->passwordSetupService = $passwordSetupService;
     }
 
     /**
@@ -459,29 +462,21 @@ class AuthController extends Controller
     }
 
     /**
-     * Verify password reset code.
+     * Verify password reset token.
      */
     public function verifyPasswordResetCode(Request $request): JsonResponse
     {
         $request->validate([
             'email' => 'required|string|email',
-            'code' => 'required|string|size:6',
+            'token' => 'required|string|min:32',
         ]);
 
-        $reset = DB::table('password_reset_tokens')
-            ->where('email', $request->email)
-            ->first();
-
-        if (!$reset || !Hash::check($request->code, $reset->token)) {
-            return response()->json(['message' => 'Invalid password reset code.'], 400);
-        }
-
-        if (now()->subMinutes(15)->gt($reset->created_at)) {
-            return response()->json(['message' => 'Password reset code has expired.'], 400);
+        if (!$this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
+            return response()->json(['message' => 'Invalid or expired password reset token.'], 400);
         }
 
         return response()->json([
-            'message' => 'Code verified successfully.',
+            'message' => 'Reset token verified successfully.',
         ]);
     }
 
@@ -680,7 +675,7 @@ class AuthController extends Controller
     }
 
     /**
-     * Request password reset code.
+     * Request password reset link.
      */
     public function forgotPassword(Request $request): JsonResponse
     {
@@ -690,48 +685,23 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        // Account-enumeration-safe messaging
         if ($user) {
-            $code = strval(random_int(100000, 999999));
-
-            DB::table('password_reset_tokens')->updateOrInsert(
-                ['email' => $request->email],
-                [
-                    'token' => Hash::make($code),
-                    'created_at' => now(),
-                ]
-            );
-
-            $frontendUrl = env('APP_URL_FRONTEND', 'https://dev.scholarlynest.com');
-            $resetUrl = rtrim($frontendUrl, '/') . '/reset-password?email=' . urlencode($request->email) . '&code=' . urlencode($code);
-            $action = [
-                'text' => 'Reset Your Password',
-                'url' => $resetUrl,
-            ];
-
-            $this->sendHtmlEmail(
-                $request->email,
-                "Reset Your Password",
-                "Password Reset Request",
-                "We received a request to reset your password. Use the 6-digit confirmation code below or click the link to verify ownership and authorize.",
-                $code,
-                $action
-            );
+            $this->passwordSetupService->sendResetLink($user);
         }
 
         return response()->json([
-            'message' => 'Password reset code sent successfully.',
+            'message' => 'Password reset link sent successfully.',
         ]);
     }
 
     /**
-     * Reset password using the code.
+     * Reset password using a tokenized link.
      */
     public function resetPassword(Request $request): JsonResponse
     {
         $request->validate([
             'email' => 'required|string|email',
-            'code' => 'required|string|size:6',
+            'token' => 'required|string|min:32',
             'password' => [
                 'required',
                 'string',
@@ -741,31 +711,17 @@ class AuthController extends Controller
             ],
         ]);
 
-        $reset = DB::table('password_reset_tokens')
-            ->where('email', $request->email)
-            ->first();
-
-        if (!$reset || !Hash::check($request->code, $reset->token)) {
-            return response()->json(['message' => 'Invalid password reset code.'], 400);
-        }
-
-        if (now()->subMinutes(15)->gt($reset->created_at)) {
-            return response()->json(['message' => 'Password reset code has expired.'], 400);
-        }
-
         $user = User::where('email', $request->email)->first();
-        if (!$user) {
-            return response()->json(['message' => 'Invalid password reset code.'], 400);
+        if (!$user || !$this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
+            return response()->json(['message' => 'Invalid or expired password reset token.'], 400);
         }
 
         $user->update([
             'password' => Hash::make($request->password),
+            'needs_password_reset' => false,
         ]);
 
-        // Delete used token
-        DB::table('password_reset_tokens')
-            ->where('email', $request->email)
-            ->delete();
+        $this->passwordSetupService->consumeToken($request->email);
 
         return response()->json([
             'message' => 'Password has been reset successfully.',

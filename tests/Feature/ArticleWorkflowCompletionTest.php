@@ -8,6 +8,7 @@ use App\Models\ArticleAsset;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
 use App\Models\Magazine;
+use App\Models\NotificationLog;
 use App\Models\Permission;
 use App\Models\ReviewerAssignment;
 use App\Models\ReviewQuestion;
@@ -131,6 +132,12 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         $createdReviewer = User::where('email', 'external.accept@example.test')->firstOrFail();
         $this->assertTrue($createdReviewer->hasRole('reviewer'));
+        $this->assertNull($createdReviewer->password);
+        $this->assertTrue((bool) $createdReviewer->needs_password_reset);
+        $this->assertDatabaseHas('notification_logs', [
+            'recipient_email' => 'external.accept@example.test',
+            'subject' => 'Set your Scholarly Nest password',
+        ]);
         $this->assertDatabaseHas('reviewer_assignments', [
             'id' => $acceptAssignment->id,
             'reviewer_id' => $createdReviewer->id,

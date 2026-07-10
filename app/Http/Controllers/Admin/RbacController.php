@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\Setting;
 use App\Models\Magazine;
 use App\Services\NotificationService;
+use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +21,7 @@ use Illuminate\Support\Str;
 class RbacController extends Controller
 {
     protected NotificationService $notificationService;
+    protected PasswordSetupService $passwordSetupService;
 
     private const PROTECTED_ASSIGNMENT_PERMISSIONS = [
         'roles.view-any',
@@ -41,9 +43,10 @@ class RbacController extends Controller
         'proofreader',
     ];
 
-    public function __construct(NotificationService $notificationService)
+    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService)
     {
         $this->notificationService = $notificationService;
+        $this->passwordSetupService = $passwordSetupService;
     }
 
     /**
@@ -353,7 +356,7 @@ class RbacController extends Controller
     }
 
     /**
-     * Create a user with a password (restricted to super_admin).
+     * Create a system user and send a password setup email (restricted to super_admin).
      */
     public function store(Request $request): JsonResponse
     {
@@ -362,19 +365,10 @@ class RbacController extends Controller
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
-        $passwordRule = [
-            'required',
-            'string',
-            'min:8',
-            'confirmed',
-            \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols()
-        ];
-
         try {
             $request->validate([
                 'name' => 'required|string|max:255',
                 'email' => 'required|string|email|max:255|unique:users,email',
-                'password' => $passwordRule,
                 'role_id' => 'required|exists:roles,id',
                 'university_name' => 'nullable|string|max:255',
                 'status' => 'nullable|string|in:active,pending',
@@ -427,11 +421,13 @@ class RbacController extends Controller
             $user = DB::transaction(function() use ($request, $isSubEditor, $assignedRole, $magazineIds) {
                 $user = User::create([
                     'name' => $request->name,
-                    'email' => $request->email,
-                    'password' => Hash::make($request->password),
+                    'email' => strtolower($request->email),
+                    'password' => null,
                     'email_verified_at' => $request->input('status') === 'pending' ? null : now(),
                     'role_id' => $request->role_id,
                     'university_name' => $request->university_name,
+                    'needs_password_reset' => true,
+                    'current_email_verified' => $request->input('status') === 'pending' ? false : true,
                 ]);
 
                 if ($isSubEditor && $request->has('editor_ids')) {
@@ -449,9 +445,10 @@ class RbacController extends Controller
 
                 return $user;
             });
+            $this->passwordSetupService->sendSetupLink($user);
 
             return response()->json([
-                'message' => 'User created successfully.',
+                'message' => 'User created and password setup email sent.',
                 'data' => [
                     'id' => $user->id,
                     'name' => $user->name,
@@ -807,7 +804,7 @@ class RbacController extends Controller
     }
 
     /**
-     * Create a user with a specified role and without a password. Dispatches a welcome reset email.
+     * Create a system user and send a password setup email.
      */
     public function storeUser(Request $request): JsonResponse
     {
@@ -820,7 +817,7 @@ class RbacController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users,email',
             'role_id' => 'required|exists:roles,id',
-            'university_name' => 'required|string|max:255',
+            'university_name' => 'nullable|string|max:255',
             'magazine_ids' => 'nullable|array',
             'magazine_ids.*' => 'integer|exists:magazines,id',
         ]);
@@ -848,16 +845,16 @@ class RbacController extends Controller
             }
         }
 
-        $randomPassword = Str::random(32);
-
-        $user = DB::transaction(function() use ($request, $randomPassword, $isSubEditor) {
+        $user = DB::transaction(function() use ($request, $isSubEditor) {
             $user = User::create([
                 'name' => $request->name,
-                'email' => $request->email,
-                'password' => Hash::make($randomPassword),
+                'email' => strtolower($request->email),
+                'password' => null,
                 'email_verified_at' => now(),
                 'role_id' => $request->role_id,
                 'university_name' => $request->university_name,
+                'needs_password_reset' => true,
+                'current_email_verified' => true,
             ]);
 
             $assignedRole = Role::find($request->role_id);
@@ -876,22 +873,12 @@ class RbacController extends Controller
             return $user;
         });
 
-        // Generate reset code/token for password creation
-        $code = strval(random_int(100000, 999999));
-        DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $user->email],
-            [
-                'token' => Hash::make($code),
-                'created_at' => now(),
-            ]
-        );
+        $this->passwordSetupService->sendSetupLink($user);
 
-        $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
-        $createPasswordLink = "{$frontendUrl}/reset-password?email=" . urlencode($user->email) . "&code=" . urlencode($code);
-
-        $this->sendWelcomeHtmlEmail($user->email, $user->name, $createPasswordLink);
-
-        return response()->json($this->userPayload($user->load(['role', 'magazines'])), 201);
+        return response()->json([
+            'message' => 'User created and password setup email sent.',
+            'data' => $this->userPayload($user->load(['role', 'magazines'])),
+        ], 201);
     }
 
     /**

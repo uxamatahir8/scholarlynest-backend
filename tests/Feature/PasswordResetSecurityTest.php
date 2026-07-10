@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Role;
 use App\Models\User;
+use App\Models\NotificationLog;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -45,14 +46,14 @@ class PasswordResetSecurityTest extends TestCase
             'email' => 'john@example.com',
         ]);
         $response1->assertStatus(200);
-        $response1->assertJson(['message' => 'Password reset code sent successfully.']);
+        $response1->assertJson(['message' => 'Password reset link sent successfully.']);
 
         // Non-existing email
         $response2 = $this->postJson('/api/forgot-password', [
             'email' => 'nonexistent@example.com',
         ]);
         $response2->assertStatus(200);
-        $response2->assertJson(['message' => 'Password reset code sent successfully.']);
+        $response2->assertJson(['message' => 'Password reset link sent successfully.']);
     }
 
     /**
@@ -62,6 +63,8 @@ class PasswordResetSecurityTest extends TestCase
     {
         config(['app.url_frontend' => 'https://custom-frontend.com']);
         putenv('APP_URL_FRONTEND=https://custom-frontend.com');
+        $_ENV['APP_URL_FRONTEND'] = 'https://custom-frontend.com';
+        $_SERVER['APP_URL_FRONTEND'] = 'https://custom-frontend.com';
 
         $this->postJson('/api/forgot-password', [
             'email' => 'john@example.com',
@@ -69,12 +72,18 @@ class PasswordResetSecurityTest extends TestCase
 
         $reset = DB::table('password_reset_tokens')->where('email', 'john@example.com')->first();
         $this->assertNotNull($reset);
-        // The saved token must be hashed, so it shouldn't equal any 6 digit plaintext code
+        // The saved token must be hashed, so it should not look like a plaintext reset token.
         $this->assertNotEquals(6, strlen($reset->token));
+        $log = NotificationLog::where('recipient_email', 'john@example.com')->latest()->first();
+        $this->assertStringStartsWith('https://custom-frontend.com/reset-password?', $log->payload['action']['url']);
+        $this->assertStringContainsString('token=', $log->payload['action']['url']);
+        $this->assertStringNotContainsString('code=', $log->payload['action']['url']);
+        putenv('APP_URL_FRONTEND');
+        unset($_ENV['APP_URL_FRONTEND'], $_SERVER['APP_URL_FRONTEND']);
     }
 
     /**
-     * Reset API response never returns the reset code.
+     * Reset API response never returns the reset token.
      */
     public function test_reset_api_response_never_returns_the_reset_code(): void
     {
@@ -87,13 +96,13 @@ class PasswordResetSecurityTest extends TestCase
     }
 
     /**
-     * Missing email or code is rejected.
+     * Missing email or token is rejected.
      */
     public function test_missing_email_or_code_is_rejected(): void
     {
         // Missing email
         $response = $this->postJson('/api/password/verify-reset-code', [
-            'code' => '123456',
+            'token' => str_repeat('a', 64),
         ]);
         $response->assertStatus(422);
 
@@ -105,7 +114,7 @@ class PasswordResetSecurityTest extends TestCase
 
         // Reset password - missing email
         $response = $this->postJson('/api/reset-password', [
-            'code' => '123456',
+            'token' => str_repeat('a', 64),
             'password' => 'NewPassword@123',
             'password_confirmation' => 'NewPassword@123',
         ]);
@@ -113,9 +122,9 @@ class PasswordResetSecurityTest extends TestCase
     }
 
     /**
-     * Invalid code is rejected.
+     * Invalid token is rejected.
      */
-    public function test_invalid_code_is_rejected(): void
+    public function test_invalid_token_is_rejected(): void
     {
         // Generate a valid code in the DB first
         $this->postJson('/api/forgot-password', [
@@ -124,44 +133,44 @@ class PasswordResetSecurityTest extends TestCase
 
         $response = $this->postJson('/api/password/verify-reset-code', [
             'email' => 'john@example.com',
-            'code' => '000000', // Invalid code
+            'token' => str_repeat('0', 64),
         ]);
         $response->assertStatus(400);
-        $response->assertJson(['message' => 'Invalid password reset code.']);
+        $response->assertJson(['message' => 'Invalid or expired password reset token.']);
     }
 
     /**
-     * Reset code expires.
+     * Reset token expires.
      */
-    public function test_reset_code_expires(): void
+    public function test_reset_token_expires(): void
     {
         // Insert an expired token manually
         DB::table('password_reset_tokens')->updateOrInsert(
             ['email' => 'john@example.com'],
             [
-                'token' => Hash::make('123456'),
-                'created_at' => now()->subMinutes(16),
+                'token' => Hash::make(str_repeat('a', 64)),
+                'created_at' => now()->subMinutes(61),
             ]
         );
 
         $response = $this->postJson('/api/password/verify-reset-code', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('a', 64),
         ]);
         $response->assertStatus(400);
-        $response->assertJson(['message' => 'Password reset code has expired.']);
+        $response->assertJson(['message' => 'Invalid or expired password reset token.']);
     }
 
     /**
-     * Reset code cannot be used twice.
+     * Reset token cannot be used twice.
      */
-    public function test_reset_code_cannot_be_used_twice(): void
+    public function test_reset_token_cannot_be_used_twice(): void
     {
         // Insert a token manually
         DB::table('password_reset_tokens')->updateOrInsert(
             ['email' => 'john@example.com'],
             [
-                'token' => Hash::make('123456'),
+                'token' => Hash::make(str_repeat('b', 64)),
                 'created_at' => now(),
             ]
         );
@@ -169,7 +178,7 @@ class PasswordResetSecurityTest extends TestCase
         // First reset - succeeds
         $response = $this->postJson('/api/reset-password', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('b', 64),
             'password' => 'NewPassword@123',
             'password_confirmation' => 'NewPassword@123',
         ]);
@@ -178,7 +187,7 @@ class PasswordResetSecurityTest extends TestCase
         // Second reset with same code - fails
         $response2 = $this->postJson('/api/reset-password', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('b', 64),
             'password' => 'NewPassword@123',
             'password_confirmation' => 'NewPassword@123',
         ]);
@@ -186,14 +195,14 @@ class PasswordResetSecurityTest extends TestCase
     }
 
     /**
-     * Password is changed only with valid active code.
+     * Password is changed only with valid active token.
      */
-    public function test_password_is_changed_only_with_valid_active_code(): void
+    public function test_password_is_changed_only_with_valid_active_token(): void
     {
         // Attempt password change without a token
         $response = $this->postJson('/api/reset-password', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('c', 64),
             'password' => 'NewPassword@123',
             'password_confirmation' => 'NewPassword@123',
         ]);
@@ -203,7 +212,7 @@ class PasswordResetSecurityTest extends TestCase
         DB::table('password_reset_tokens')->updateOrInsert(
             ['email' => 'john@example.com'],
             [
-                'token' => Hash::make('123456'),
+                'token' => Hash::make(str_repeat('c', 64)),
                 'created_at' => now(),
             ]
         );
@@ -211,16 +220,16 @@ class PasswordResetSecurityTest extends TestCase
         // Reset with invalid password validation (too simple)
         $response = $this->postJson('/api/reset-password', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('c', 64),
             'password' => 'simple',
             'password_confirmation' => 'simple',
         ]);
         $response->assertStatus(422);
 
-        // Reset with valid code
+        // Reset with valid token
         $response = $this->postJson('/api/reset-password', [
             'email' => 'john@example.com',
-            'code' => '123456',
+            'token' => str_repeat('c', 64),
             'password' => 'NewPassword@123',
             'password_confirmation' => 'NewPassword@123',
         ]);

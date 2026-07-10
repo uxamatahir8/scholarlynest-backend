@@ -37,12 +37,12 @@ use App\Services\ArticleVersionService;
 use App\Services\CitationService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -51,7 +51,8 @@ class ArticleWorkflowController extends Controller
     public function __construct(
         private PdfGeneratorService $pdfService,
         private ArticleVersionService $versionService,
-        private CitationService $citationService
+        private CitationService $citationService,
+        private PasswordSetupService $passwordSetupService
     )
     {
     }
@@ -1527,17 +1528,22 @@ class ArticleWorkflowController extends Controller
 
     private function sendReviewerAccessEmail(ReviewerAssignment $assignment, User $user): void
     {
+        if ($user->needs_password_reset) {
+            $this->passwordSetupService->sendSetupLink($user);
+            return;
+        }
+
         app(\App\Services\NotificationService::class)->send(
             $user->email,
             'Reviewer Access Ready',
             'Dear ' . $user->name . ',',
             [
                 'Your reviewer access is ready for the article "' . ($assignment->article?->title ?? 'Untitled Article') . '".',
-                $user->needs_password_reset ? 'Please use password reset to set your password before signing in.' : 'You may sign in with your existing account.',
+                'You may sign in with your existing account.',
             ],
             [
-                'text' => $user->needs_password_reset ? 'Set Password' : 'Open Reviewer Desk',
-                'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . ($user->needs_password_reset ? '/forgot-password' : '/admin/reviewer'),
+                'text' => 'Open Reviewer Desk',
+                'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . '/admin/reviewer',
             ],
             'default',
             $user->id
@@ -1570,11 +1576,10 @@ class ArticleWorkflowController extends Controller
             return $user;
         }
 
-        $password = Str::random(16);
         $user = User::create([
             'name' => $assignment->invitee_name ?: $email,
             'email' => $email,
-            'password' => Hash::make($password),
+            'password' => null,
             'needs_password_reset' => true,
             'email_verified_at' => now(),
             'role_id' => $reviewerRole?->id,

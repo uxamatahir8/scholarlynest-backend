@@ -9,6 +9,10 @@ final class SystemRoles
             'display_name' => 'Super Admin',
             'description' => 'Global platform administrator with unrestricted operational access.',
         ],
+        'admin' => [
+            'display_name' => 'Admin',
+            'description' => 'Administrative operator for non-global platform management workflows.',
+        ],
         'author' => [
             'display_name' => 'Author',
             'description' => 'Creates, submits, revises, and tracks owned manuscripts.',
@@ -16,6 +20,10 @@ final class SystemRoles
         'editor' => [
             'display_name' => 'Editor',
             'description' => 'Screens manuscripts and manages peer review for assigned magazines.',
+        ],
+        'magazine_editor' => [
+            'display_name' => 'Magazine Editor',
+            'description' => 'Magazine-scoped editor for assigned publication areas.',
         ],
         'sub_editor' => [
             'display_name' => 'Sub Editor',
