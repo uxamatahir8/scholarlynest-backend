@@ -2358,7 +2358,12 @@ class ArticleWorkflowController extends Controller
             $payload['accepted_at'] = $assignment->accepted_at;
             $payload['declined_at'] = $assignment->declined_at;
             $payload['invitation_state'] = $this->reviewerInvitationState($assignment);
-            $payload['reviewer'] = $assignment->reviewer ? ['id' => $assignment->reviewer->id, 'name' => $assignment->reviewer->name] : null;
+            $payload['reviewer'] = $assignment->reviewer ? [
+                'id' => $assignment->reviewer->id,
+                'name' => $assignment->reviewer->name,
+                'email' => $assignment->reviewer->email,
+                'affiliation' => $assignment->reviewer->university_name,
+            ] : null;
             if ((int) $assignment->reviewer_id === (int) ($user?->id ?? 0) || $this->canViewEditorialInternals($user, $assignment->article)) {
                 $payload['recommendation'] = $assignment->recommendation;
             }
