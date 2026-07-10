@@ -25,6 +25,11 @@ class Magazine extends Model
         'seo_title',
         'seo_description',
         'seo_keywords',
+        'is_active',
+    ];
+
+    protected $casts = [
+        'is_active' => 'boolean',
     ];
 
     /**

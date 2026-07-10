@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Constants\ArticleStatus;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Models\ArticleAuditLog;
+use App\Models\Magazine;
 use App\Models\User;
 use App\Services\NotificationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -123,6 +124,17 @@ class SendArticleWorkflowNotifications implements ShouldQueue
 
             'article.resubmitted' => $this->editorialRecipients($article)->merge($this->subEditorRecipients($article))->merge($this->authorRecipients($article))->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
 
+            'transfer.requested' => $this->authorRecipients($article),
+            'transfer.accepted' => $this->authorRecipients($article)
+                ->merge($this->transferRequestedByRecipient($event))
+                ->merge($this->editorialRecipients($article))
+                ->merge($this->superAdmins())
+                ->pipe(fn ($items) => $this->dedupe($items)),
+            'transfer.rejected' => $this->authorRecipients($article)
+                ->merge($this->transferRequestedByRecipient($event))
+                ->merge($this->superAdmins())
+                ->pipe(fn ($items) => $this->dedupe($items)),
+
             default => collect(),
         };
     }
@@ -207,6 +219,9 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 'subject' => 'Article Resubmitted: ' . $title . ' — ' . $this->nextRevisionTrackingCode($article),
                 'body' => [($article->user?->name ?? $article->user?->email ?? 'The submitting author') . ' submitted a revised version of the article.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Base Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Revision Tracking Code: ' . $this->nextRevisionTrackingCode($article) . '. Revision Number: ' . max(1, (int) $article->versions()->max('version_number')) . '. Submitted By: ' . ($article->user?->name ?? $article->user?->email ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.', 'Change Summary: ' . strip_tags((string) ($article->change_summary ?? 'No change summary supplied.')), 'Next Action: Please review the revised manuscript and continue the editorial workflow.'],
             ],
+            'transfer.requested' => $this->transferRequestedMessage($article, $event),
+            'transfer.accepted' => $this->transferAcceptedMessage($article, $event),
+            'transfer.rejected' => $this->transferRejectedMessage($article, $event),
             default => [
                 'subject' => 'Workflow Update: ' . $title,
                 'body' => ['A workflow update has been recorded for "' . $title . '".'],
@@ -222,6 +237,53 @@ class SendArticleWorkflowNotifications implements ShouldQueue
     { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; $name = $reviewer?->name ?? ($event->payload['reviewer_name'] ?? 'Reviewer'); $email = $reviewer?->email ?? ($event->payload['reviewer_email'] ?? 'email unavailable'); return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . $name . ' — ' . $article->title, 'body' => ['A reviewer has ' . ($accepted ? 'accepted' : 'declined') . ' the review invitation.', 'Reviewer Details: Reviewer Name: ' . $name . '. Reviewer Email: ' . $email . '. Response: ' . ($accepted ? 'Accepted' : 'Declined') . '. Responded At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: ' . ($accepted ? 'The reviewer can now access permitted manuscript files and submit their recommendation from the reviewer dashboard.' : 'Please assign another reviewer or continue the editorial workflow according to your review policy.')]]; }
 
     private function reviewSubmittedMessage($article, ArticleWorkflowEventOccurred $event): array { $reviewer = $event->actor; return ['subject' => 'Review Submitted: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['A reviewer has submitted their review.', 'Reviewer Details: Reviewer Name: ' . ($reviewer?->name ?? 'Reviewer') . '. Reviewer Email: ' . ($reviewer?->email ?? 'email unavailable') . '. Recommendation: ' . ($event->payload['recommendation'] ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: Please review the recommendation and continue the editorial decision process.', 'Privacy Note: Reviewer comments and confidential recommendations are visible only to authorized editorial users.']]; }
+
+    private function transferRequestedMessage($article, ArticleWorkflowEventOccurred $event): array
+    {
+        $fromMagazine = $this->magazineTitle($event->payload['from_magazine_id'] ?? null, $article->magazine?->title);
+        $toMagazine = $this->magazineTitle($event->payload['to_magazine_id'] ?? null, $event->payload['target_magazine'] ?? 'the suggested magazine');
+
+        return [
+            'subject' => 'Magazine Transfer Request: ' . $article->title,
+            'body' => [
+                'The editor of ' . $fromMagazine . ' feels that your article may be more suitable for ' . $toMagazine . '.',
+                'Article Details: Article Title: ' . $article->title . '. Current Magazine: ' . $fromMagazine . '. Suggested Magazine: ' . $toMagazine . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Requested By: ' . ($event->actor?->name ?? 'Editorial team') . '. Requested At: ' . now()->toDateTimeString() . '.',
+                'Editor Comments: ' . strip_tags((string) ($event->payload['editor_comments'] ?? 'No comments provided.')),
+                'Please log in to your Scholarly Nest account to accept or reject this transfer request.',
+            ],
+        ];
+    }
+
+    private function transferAcceptedMessage($article, ArticleWorkflowEventOccurred $event): array
+    {
+        $fromMagazine = $this->magazineTitle($event->payload['from_magazine_id'] ?? null, 'Original magazine');
+        $toMagazine = $this->magazineTitle($event->payload['to_magazine_id'] ?? null, $article->magazine?->title);
+
+        return [
+            'subject' => 'Magazine Transfer Accepted: ' . $article->title,
+            'body' => [
+                'The author accepted the magazine transfer request.',
+                'Article Details: Article Title: ' . $article->title . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Old Magazine: ' . $fromMagazine . '. New Magazine: ' . $toMagazine . '. Accepted By: ' . ($event->actor?->name ?? 'Author') . '. Accepted At: ' . now()->toDateTimeString() . '.',
+                'Next Action: The article has returned to Screening in the new magazine.',
+            ],
+        ];
+    }
+
+    private function transferRejectedMessage($article, ArticleWorkflowEventOccurred $event): array
+    {
+        $fromMagazine = $this->magazineTitle($event->payload['from_magazine_id'] ?? null, $article->magazine?->title);
+        $toMagazine = $this->magazineTitle($event->payload['to_magazine_id'] ?? null, 'Suggested magazine');
+
+        return [
+            'subject' => 'Magazine Transfer Rejected: ' . $article->title,
+            'body' => [
+                'The author rejected the magazine transfer request.',
+                'Article Details: Article Title: ' . $article->title . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Original Magazine: ' . $fromMagazine . '. Suggested Magazine: ' . $toMagazine . '. Rejected By: ' . ($event->actor?->name ?? 'Author') . '. Rejected At: ' . now()->toDateTimeString() . '.',
+                'Rejection Reason: ' . strip_tags((string) ($event->payload['author_rejection_reason'] ?? 'No reason provided.')),
+                'Next Action: The article remains in Screening in the original magazine.',
+            ],
+        ];
+    }
 
     private function workflowContextLines($article, ArticleWorkflowEventOccurred $event): array
     {
@@ -265,6 +327,16 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ->all());
     }
 
+    private function transferRequestedByRecipient(ArticleWorkflowEventOccurred $event): Collection
+    {
+        $userId = $event->payload['requested_by_user_id'] ?? null;
+        if (!$userId) {
+            return collect();
+        }
+
+        return collect([$this->userRecipient(User::find($userId), 'requesting_editor')]);
+    }
+
     private function publisherRecipients($article): Collection
     {
         return collect(User::query()
@@ -284,6 +356,15 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ->get()
             ->map(fn (User $user) => $this->userRecipient($user, 'super_admin'))
             ->all());
+    }
+
+    private function magazineTitle(?int $magazineId, ?string $fallback): string
+    {
+        if (!$magazineId) {
+            return $fallback ?: 'ScholarlyNest';
+        }
+
+        return Magazine::find($magazineId)?->title ?: ($fallback ?: 'ScholarlyNest');
     }
 
     private function userRecipient(?User $user, string $type): ?array

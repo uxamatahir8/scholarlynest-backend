@@ -80,6 +80,10 @@ class ArticleWorkflowController extends Controller
             'auditLogs.actor:id,name',
             'versions.creator:id,name',
             'versions.files.uploader:id,name',
+            'pendingTransferRequest.fromMagazine:id,title,slug',
+            'pendingTransferRequest.toMagazine:id,title,slug',
+            'pendingTransferRequest.requestedBy:id,name,email',
+            'pendingTransferRequest.respondedBy:id,name,email',
         ]);
 
         $articlePayload = $this->workflowArticlePayload($article, $request->user());
@@ -360,6 +364,7 @@ class ArticleWorkflowController extends Controller
     {
         $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
+        $this->rejectInTransitMutation($article);
         $oldStatus = $article->status;
 
         DB::transaction(function () use ($request, $article, $oldStatus) {
@@ -2040,6 +2045,67 @@ class ArticleWorkflowController extends Controller
         });
     }
 
+    private function canRequestTransfer($user, Article $article): bool
+    {
+        return $user
+            && ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED
+            && ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']))
+            && !$article->pendingTransferRequest;
+    }
+
+    private function canRespondTransferRequest($user, Article $article): bool
+    {
+        return $user
+            && ArticleStatus::normalize($article->status) === ArticleStatus::IN_TRANSIT
+            && (bool) $article->pendingTransferRequest
+            && (
+                (int) $article->user_id === (int) $user->id
+                || $article->articleAuthors->contains(function ($author) use ($user) {
+                    if (!$author->is_owner && !$author->is_corresponding) {
+                        return false;
+                    }
+
+                    return (int) $author->user_id === (int) $user->id
+                        || strtolower((string) $author->co_author_email) === strtolower((string) $user->email);
+                })
+            );
+    }
+
+    private function transferRequestPayload($transferRequest, bool $includePrivateReason = false): ?array
+    {
+        if (!$transferRequest) {
+            return null;
+        }
+
+        return [
+            'id' => $transferRequest->id,
+            'article_id' => $transferRequest->article_id,
+            'status' => $transferRequest->status,
+            'from_magazine' => $transferRequest->fromMagazine ? [
+                'id' => $transferRequest->fromMagazine->id,
+                'title' => $transferRequest->fromMagazine->title,
+                'slug' => $transferRequest->fromMagazine->slug,
+            ] : null,
+            'to_magazine' => $transferRequest->toMagazine ? [
+                'id' => $transferRequest->toMagazine->id,
+                'title' => $transferRequest->toMagazine->title,
+                'slug' => $transferRequest->toMagazine->slug,
+            ] : null,
+            'requested_by' => $transferRequest->requestedBy ? [
+                'id' => $transferRequest->requestedBy->id,
+                'name' => $transferRequest->requestedBy->name,
+            ] : null,
+            'responded_by' => $transferRequest->respondedBy ? [
+                'id' => $transferRequest->respondedBy->id,
+                'name' => $transferRequest->respondedBy->name,
+            ] : null,
+            'editor_comments' => $transferRequest->editor_comments,
+            'author_rejection_reason' => $includePrivateReason ? $transferRequest->author_rejection_reason : null,
+            'requested_at' => optional($transferRequest->requested_at)->toISOString(),
+            'responded_at' => optional($transferRequest->responded_at)->toISOString(),
+        ];
+    }
+
     private function reviewerInvitationState(ReviewerAssignment $assignment): string
     {
         if ($assignment->completed_at) {
@@ -2187,6 +2253,9 @@ class ArticleWorkflowController extends Controller
             'can_author_final_review' => $this->canApproveAuthorFinalReview($user, $article)
                 && ArticleStatus::normalize($article->status) === ArticleStatus::ACCEPTED
                 && !$article->author_final_approved_at,
+            'pending_transfer_request' => $this->transferRequestPayload($article->pendingTransferRequest, $this->canViewEditorialInternals($user, $article)),
+            'can_request_transfer' => $this->canRequestTransfer($user, $article),
+            'can_respond_transfer_request' => $this->canRespondTransferRequest($user, $article),
             'created_at' => $article->created_at,
             'updated_at' => $article->updated_at,
         ];
@@ -2536,6 +2605,15 @@ class ArticleWorkflowController extends Controller
         if ($request->has('observer_user_id')) {
             throw new HttpResponseException(response()->json([
                 'message' => 'Observer mode is read-only. Clear observer mode before performing workflow actions.',
+            ], 422));
+        }
+    }
+
+    private function rejectInTransitMutation(Article $article): void
+    {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::IN_TRANSIT) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'This article is in transit awaiting author transfer approval. Resolve the transfer request before continuing editorial workflow actions.',
             ], 422));
         }
     }

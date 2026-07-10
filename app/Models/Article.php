@@ -224,6 +224,18 @@ class Article extends Model
         return $this->hasMany(ArticleAuditLog::class);
     }
 
+    public function transferRequests(): HasMany
+    {
+        return $this->hasMany(ArticleTransferRequest::class);
+    }
+
+    public function pendingTransferRequest()
+    {
+        return $this->hasOne(ArticleTransferRequest::class)
+            ->where('status', ArticleTransferRequest::STATUS_PENDING)
+            ->latestOfMany();
+    }
+
     public function getFeaturedImageUrlAttribute(): ?string
     {
         return app(MediaStorageService::class)->publicOrTemporaryUrl($this->featured_image);

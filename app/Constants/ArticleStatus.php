@@ -6,6 +6,7 @@ final class ArticleStatus
 {
     public const DRAFT = 'draft';
     public const SUBMITTED = 'submitted';
+    public const IN_TRANSIT = 'in_transit';
     public const UNDER_REVIEW = 'under_review';
     public const ASSIGNED_TO_SUB_EDITOR = 'assigned_to_sub_editor';
     public const REVIEWER_ASSIGNED = 'reviewer_assigned';
@@ -26,6 +27,7 @@ final class ArticleStatus
     public const ALL = [
         self::DRAFT,
         self::SUBMITTED,
+        self::IN_TRANSIT,
         self::UNDER_REVIEW,
         self::ASSIGNED_TO_SUB_EDITOR,
         self::REVIEWER_ASSIGNED,
@@ -53,7 +55,8 @@ final class ArticleStatus
 
     public const TRANSITIONS = [
         self::DRAFT => [self::SUBMITTED, self::WITHDRAWN],
-        self::SUBMITTED => [self::UNDER_REVIEW, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED, self::WITHDRAWN],
+        self::SUBMITTED => [self::IN_TRANSIT, self::UNDER_REVIEW, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED, self::WITHDRAWN],
+        self::IN_TRANSIT => [self::SUBMITTED],
         self::UNDER_REVIEW => [self::ASSIGNED_TO_SUB_EDITOR, self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED],
         self::ASSIGNED_TO_SUB_EDITOR => [self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVIEWER_ASSIGNED => [self::REVIEW_IN_PROGRESS, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
@@ -72,6 +75,7 @@ final class ArticleStatus
     public const AUTHOR_VISIBLE = [
         self::DRAFT => 'Draft',
         self::SUBMITTED => 'Submitted',
+        self::IN_TRANSIT => 'In Transit',
         self::UNDER_REVIEW => 'Under review',
         self::ASSIGNED_TO_SUB_EDITOR => 'Under review',
         self::REVIEWER_ASSIGNED => 'Under review',

@@ -11,6 +11,7 @@ use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\CmsPageController;
 use App\Http\Controllers\MagazineController;
 use App\Http\Controllers\ArticleController;
+use App\Http\Controllers\ArticleTransferController;
 use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\TagController;
 use App\Http\Controllers\ContactController;
@@ -135,6 +136,11 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Article submissions
     Route::post('/articles', [ArticleController::class, 'store'])->middleware('permission:articles.create');
+    Route::get('/articles/{article}/transfer-target-magazines', [ArticleTransferController::class, 'targetMagazines'])->middleware('permission:articles.view-own');
+    Route::post('/articles/{article}/transfer-requests', [ArticleTransferController::class, 'store'])->middleware('permission:articles.approve');
+    Route::get('/articles/{article}/transfer-request', [ArticleTransferController::class, 'show'])->middleware('permission:articles.view-own');
+    Route::post('/articles/{article}/transfer-requests/{transferRequest}/accept', [ArticleTransferController::class, 'accept'])->middleware('permission:articles.view-own');
+    Route::post('/articles/{article}/transfer-requests/{transferRequest}/reject', [ArticleTransferController::class, 'reject'])->middleware('permission:articles.view-own');
     Route::get('/tags', [TagController::class, 'index']);
     
     // Article classifications (lists for dropdown selects in form)
