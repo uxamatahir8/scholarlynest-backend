@@ -134,10 +134,12 @@ class SendArticleWorkflowNotifications implements ShouldQueue
 
         return match ($event->event) {
             'sub_editor.assigned' => [
-                'subject' => 'Sub Editor Assignment: ' . $title,
+                'subject' => 'Sub Editor Assigned: ' . $title,
                 'body' => [
-                    'A Sub Editor assignment has been created for "' . $title . '".',
-                    'Current manuscript status: ' . $statusLabel . '.',
+                    'You have been assigned as Sub Editor for an article.',
+                    'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Assigned By: ' . ($event->actor?->name ?? 'System workflow') . '. Assigned At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.',
+                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
+                    'Next Action: Please review the article details and continue with the assigned editorial responsibilities.',
                 ],
             ],
             'reviewer.assigned' => [
@@ -165,19 +167,21 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                 'body' => ['A reviewer assignment has been reopened for "' . $title . '".'],
             ],
             'revision.requested' => [
-                'subject' => 'Revision Requested: ' . $title,
+                'subject' => 'Revision Required: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
                 'body' => [
-                    'A revision has been requested for your manuscript "' . $title . '".',
-                    'Please review the author-facing comments in your dashboard.',
+                    'The editorial team has requested revisions for your article.',
+                    'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Current Status: Revision Required. Decision Date: ' . now()->toDateTimeString() . '.',
+                    'Revision Notes: ' . strip_tags((string) ($article->rejection_reason ?? 'Please review the author-visible comments in your workflow.')),
+                    'Next Action: Please revise your article and submit the updated manuscript from your article workflow page. After resubmission, the system creates a revision tracking code ending in -R1.',
                 ],
             ],
             'article.accepted' => [
-                'subject' => 'Article Accepted: ' . $title,
-                'body' => ['The manuscript "' . $title . '" has been accepted.'],
+                'subject' => 'Article Accepted: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
+                'body' => ['Congratulations. Your article has been accepted.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Accepted At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.', 'Next Action: The article will now proceed to the next production or author final review step according to the editorial workflow.'],
             ],
             'article.rejected' => [
-                'subject' => 'Article Decision: ' . $title,
-                'body' => ['A final editorial decision has been recorded for "' . $title . '".'],
+                'subject' => 'Article Decision: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
+                'body' => ['After editorial review, a decision has been made on your article.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Decision: Rejected. Decision Date: ' . now()->toDateTimeString() . '.', 'Decision Notes: ' . strip_tags((string) ($article->rejection_reason ?? 'No author-visible decision notes were recorded.')), 'Thank you for submitting your work to Scholarly Nest.'],
             ],
             'production.assigned' => [
                 'subject' => 'Production Assignment: ' . $title,
