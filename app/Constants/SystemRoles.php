@@ -41,10 +41,6 @@ final class SystemRoles
             'display_name' => 'Copy Editor',
             'description' => 'Handles accepted manuscript copy editing production work.',
         ],
-        'proofreader' => [
-            'display_name' => 'Proofreader',
-            'description' => 'Handles final proof review before publication.',
-        ],
     ];
 
     public static function names(): array

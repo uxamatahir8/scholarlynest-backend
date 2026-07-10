@@ -111,7 +111,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         $this->getJson("/api/admin/issues/{$blockedIssue->id}")->assertForbidden();
     }
 
-    public function test_proofreader_requires_task_assignment_and_magazine_assignment(): void
+    public function test_proofreader_production_access_is_inactive(): void
     {
         $proofreader = $this->user('proofreader');
         $proofreader->magazines()->attach($this->magazineA->id, ['role' => 'proofreader']);
@@ -137,9 +137,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         Sanctum::actingAs($proofreader);
 
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.article.id', $allowedArticle->id);
+            ->assertStatus(422);
 
         $this->getJson("/api/admin/articles/{$blockedArticle->id}")->assertForbidden();
         $this->getJson("/api/admin/articles/{$blockedArticle->id}/workflow")->assertForbidden();
@@ -175,7 +173,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         $this->getJson("/api/articles/files/{$file->id}/download")->assertForbidden();
     }
 
-    public function test_removing_magazine_assignment_removes_future_access_without_deleting_history(): void
+    public function test_legacy_proofreader_role_cannot_be_reassigned_and_history_remains(): void
     {
         $proofreader = $this->user('proofreader');
         $proofreader->magazines()->attach($this->magazineA->id, ['role' => 'proofreader']);
@@ -191,8 +189,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
 
         Sanctum::actingAs($proofreader);
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertOk()
-            ->assertJsonCount(1, 'data');
+            ->assertStatus(422);
 
         Sanctum::actingAs($this->superAdmin);
         $this->patchJson("/api/admin/users/{$proofreader->id}", [
@@ -201,14 +198,13 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
             'role_id' => $this->roles['proofreader']->id,
             'status' => 'active',
             'magazine_ids' => [$this->magazineB->id],
-        ])->assertOk();
+        ])->assertStatus(422);
 
         $this->assertDatabaseHas('production_assignments', ['id' => $assignment->id]);
 
         Sanctum::actingAs($proofreader->fresh());
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertOk()
-            ->assertJsonCount(0, 'data');
+            ->assertStatus(422);
         $this->getJson("/api/admin/articles/{$article->id}")->assertForbidden();
     }
 

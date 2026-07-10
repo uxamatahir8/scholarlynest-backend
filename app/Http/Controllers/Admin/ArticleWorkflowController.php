@@ -24,6 +24,7 @@ use App\Models\ArticleReviewerPreference;
 use App\Models\EditorialDecision;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
+use App\Models\MediaUploadSession;
 use App\Models\PostPublicationAction;
 use App\Models\ProductionAssignment;
 use App\Models\ReviewerAssignment;
@@ -38,6 +39,7 @@ use App\Services\CitationService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\PasswordSetupService;
+use App\Services\Security\HtmlSanitizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -59,13 +61,14 @@ class ArticleWorkflowController extends Controller
 
     public function context(Request $request, int $articleId): JsonResponse
     {
-        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
 
         $article->load([
             'issue',
             'articleAuthors',
             'reviewerPreferences',
             'publicationSections',
+            'assets',
             'files.uploader:id,name',
             'subEditorAssignments.subEditor:id,name',
             'reviewerAssignments.reviewer:id,name,email',
@@ -90,7 +93,7 @@ class ArticleWorkflowController extends Controller
 
     public function versions(Request $request, int $articleId): JsonResponse
     {
-        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
         $article->load(['versions.creator:id,name', 'versions.files.uploader:id,name']);
 
         return response()->json([
@@ -101,7 +104,7 @@ class ArticleWorkflowController extends Controller
     public function assignees(Request $request): JsonResponse
     {
         $request->validate([
-            'role' => 'required|in:editor,sub_editor,reviewer,publisher,copy_editor,proofreader',
+            'role' => 'required|in:editor,sub_editor,reviewer,publisher,copy_editor',
             'magazine_id' => 'nullable|exists:magazines,id',
         ]);
 
@@ -241,7 +244,7 @@ class ArticleWorkflowController extends Controller
         $user = $request->user();
         $role = $request->query('role');
 
-        if ($role && !in_array($role, ['copy_editor', 'proofreader'], true)) {
+        if ($role && !in_array($role, ['copy_editor'], true)) {
             return response()->json(['message' => 'Invalid production role.'], 422);
         }
 
@@ -250,17 +253,17 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Invalid assignment status.'], 422);
         }
 
-        $observerRole = $role ?: ['copy_editor', 'proofreader'];
+        $observerRole = $role ?: ['copy_editor'];
         $observedUser = DeskObserverController::resolveObservedUser($request, $observerRole);
         $deskUser = $observedUser ?: $user;
         $allowedRole = $role ?: null;
         if ($observedUser) {
-            $allowedRole = $role ?: ($deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader');
+            $allowedRole = $role ?: 'copy_editor';
         } elseif (!$this->isGlobal($user)) {
-            if (!$deskUser->hasRole('copy_editor') && !$deskUser->hasRole('proofreader')) {
+            if (!$deskUser->hasRole('copy_editor')) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
-            $allowedRole = $deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
+            $allowedRole = 'copy_editor';
             if ($role && $role !== $allowedRole) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
@@ -280,12 +283,6 @@ class ArticleWorkflowController extends Controller
             ->orderBy('due_date')
             ->orderByDesc('updated_at')
             ->orderByDesc('created_at');
-
-        if (($observedUser || !$this->isGlobal($user)) && $allowedRole === 'proofreader') {
-            $query->whereHas('article', function ($articleQuery) use ($deskUser) {
-                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($deskUser, ['proofreader']));
-            });
-        }
 
         $perPage = max(5, min(50, $request->integer('per_page', 15)));
         $assignments = $query->paginate($perPage);
@@ -365,29 +362,13 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
-        $storedFile = null;
-
-        DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
+        DB::transaction(function () use ($request, $article, $oldStatus) {
             $nextStatus = $request->decision === 'reject'
                 ? ArticleStatus::REJECTED
                 : ArticleStatus::UNDER_REVIEW;
 
-            if ($request->hasFile('plagiarism_report')) {
-                throw new HttpResponseException(response()->json([
-                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
-                ], 410));
-            }
-
-            if ($request->filled('plagiarism_report_upload_id')) {
-                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->plagiarism_report_upload_id, 'article_plagiarism_report');
-                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_plagiarism_report'));
-            }
-
             $article->update([
                 'status' => $nextStatus,
-                'plagiarism_status' => $request->plagiarism_status,
-                'plagiarism_score' => $request->plagiarism_score,
-                'plagiarism_report_path' => $storedFile?->file_path ?? $request->plagiarism_report_path,
                 'screened_at' => now(),
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
@@ -399,7 +380,6 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Article screening recorded.',
             'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue', 'files.uploader:id,name']), $request->user()),
-            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -871,12 +851,55 @@ class ArticleWorkflowController extends Controller
         ], 201);
     }
 
+    public function authorFinalReview(Request $request, int $articleId): JsonResponse
+    {
+        $this->rejectObserverMutation($request);
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
+        $user = $request->user();
+        $oldStatus = ArticleStatus::normalize($article->status);
+
+        if ($oldStatus !== ArticleStatus::ACCEPTED) {
+            return response()->json(['message' => 'Only accepted manuscripts can be approved for final production review.'], 422);
+        }
+
+        if ($article->author_final_approved_at) {
+            return response()->json(['message' => 'This manuscript has already been approved for final review.'], 422);
+        }
+
+        if (!$this->canApproveAuthorFinalReview($user, $article)) {
+            return response()->json(['message' => 'Only the manuscript owner or corresponding author may approve final review.'], 403);
+        }
+
+        DB::transaction(function () use ($article, $user, $oldStatus) {
+            $article->update([
+                'status' => ArticleStatus::COPY_EDITING,
+                'author_final_approved_at' => now(),
+                'author_final_approved_by' => $user->id,
+            ]);
+
+            $this->audit($article, $user->id, 'author.final_review_approved', $oldStatus, ArticleStatus::COPY_EDITING, [
+                'approved_by' => $user->id,
+            ]);
+        });
+
+        $fresh = $article->fresh(['magazine:id,title,slug', 'issue', 'articleAuthors', 'files.uploader:id,name']);
+        event(new ArticleWorkflowEventOccurred($fresh, 'author.final_review_approved', $user, [
+            'from_status' => $oldStatus,
+            'to_status' => ArticleStatus::COPY_EDITING,
+        ]));
+
+        return response()->json([
+            'message' => 'Author final review approved.',
+            'article' => $this->workflowArticlePayload($fresh, $user),
+        ]);
+    }
+
     public function assignProduction(ProductionAssignmentRequest $request, int $articleId): JsonResponse
     {
         $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher']);
         $oldStatus = $article->status;
-        $nextStatus = $request->role === 'copy_editor' ? ArticleStatus::COPY_EDITING : ArticleStatus::PROOFREADING;
+        $nextStatus = ArticleStatus::COPY_EDITING;
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $nextStatus) {
             $assignment = ProductionAssignment::updateOrCreate(
@@ -930,15 +953,12 @@ class ArticleWorkflowController extends Controller
         }
 
         if (!$this->isGlobal($user)
-            && (($user->hasRole('copy_editor') && $assignment->role !== 'copy_editor')
-                || ($user->hasRole('proofreader') && $assignment->role !== 'proofreader'))) {
+            && (!$user->hasRole('copy_editor') || $assignment->role !== 'copy_editor')) {
             return response()->json(['message' => 'Forbidden. Production assignment role mismatch.'], 403);
         }
 
-        if (!$this->isGlobal($user)
-            && $assignment->role === 'proofreader'
-            && !$this->isAssignedToMagazine($user, $assignment->article->magazine_id, ['proofreader'])) {
-            return response()->json(['message' => 'Forbidden. Proofreader magazine assignment required.'], 403);
+        if ($assignment->role !== 'copy_editor') {
+            return response()->json(['message' => 'Proofreader assignments are inactive.'], 403);
         }
 
         $storedFile = null;
@@ -951,7 +971,7 @@ class ArticleWorkflowController extends Controller
         }
 
         if ($request->filled('production_file_upload_id')) {
-            $purpose = $assignment->role === 'proofreader' ? 'article_proof_file' : 'article_production_file';
+            $purpose = 'article_production_file';
             $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
             $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
                 $assignment->article,
@@ -996,9 +1016,17 @@ class ArticleWorkflowController extends Controller
 
     public function issues(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $query = MagazineIssue::with('magazine:id,title,slug')
             ->withCount('articles')
-            ->orderByDesc('created_at');
+            ->orderByDesc('published_at')
+            ->orderByDesc('issue_year')
+            ->orderByRaw($this->issueMonthOrderSql() . ' DESC')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
 
         if (!$this->isGlobal($request->user())) {
             $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
@@ -1013,6 +1041,10 @@ class ArticleWorkflowController extends Controller
 
     public function issueMagazines(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $query = Magazine::query()->select(['id', 'title', 'slug'])->orderBy('title');
 
         if (!$this->isGlobal($request->user())) {
@@ -1030,7 +1062,7 @@ class ArticleWorkflowController extends Controller
         ])->withCount('articles')->findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         return response()->json(['issue' => $this->issuePayload($issue)]);
@@ -1038,8 +1070,8 @@ class ArticleWorkflowController extends Controller
 
     public function storeIssue(MagazineIssueRequest $request): JsonResponse
     {
-        if (!$this->isGlobal($request->user()) && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+        if (!$this->canUseIssueManager($request->user()) || (!$request->user()->hasRole('super_admin') && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id))) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         if ($this->requestChangesIssuePublicationState($request)
@@ -1060,11 +1092,11 @@ class ArticleWorkflowController extends Controller
         $issue = MagazineIssue::findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         if ((int) $issue->magazine_id !== (int) $request->integer('magazine_id')
-            && !$this->isGlobal($request->user())
+            && !$request->user()->hasRole('super_admin')
             && !$this->canManageIssueMagazine($request->user(), $request->integer('magazine_id'))) {
             return response()->json(['message' => 'Forbidden. Issue manager assignment required for target magazine.'], 403);
         }
@@ -1124,6 +1156,10 @@ class ArticleWorkflowController extends Controller
 
     public function eligibleIssueArticles(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $request->validate([
             'magazine_id' => 'nullable|exists:magazines,id',
             'issue_id' => 'nullable|exists:magazine_issues,id',
@@ -1217,7 +1253,7 @@ class ArticleWorkflowController extends Controller
                 'page_end' => $request->page_end,
                 'published_at' => $request->input('published_at') ?: now(),
             ]);
-            $this->persistPublicationSections($article, $request->input('publication_sections', []));
+            $this->persistPublicationSections($article, $request->input('publication_sections', []), $request->user());
 
             if (empty($article->pdf_path)) {
                 $article->pdf_path = $this->pdfService->generate($article);
@@ -1299,6 +1335,34 @@ class ArticleWorkflowController extends Controller
             'action' => $this->postPublicationActionPayload($action->fresh(['performer:id,name'])),
             'article' => $this->publicationArticlePayload($article->fresh(['magazine:id,title,slug', 'issue', 'articleAuthors'])),
         ], 201);
+    }
+
+    public function publicationSectionImage(Request $request, int $sectionId)
+    {
+        $section = ArticlePublicationSection::with('article')->find($sectionId);
+        if (!$section || !$section->article || !$section->media_upload_session_id) {
+            return response()->json(['message' => 'The requested image is not available.'], 404);
+        }
+
+        if (ArticleStatus::normalize($section->article->status) !== ArticleStatus::PUBLISHED) {
+            return response()->json(['message' => 'The requested image is not available.'], 404);
+        }
+
+        $upload = MediaUploadSession::whereKey($section->media_upload_session_id)
+            ->where('purpose', 'publication_section_image')
+            ->where('status', MediaUploadSession::STATUS_CLEAN)
+            ->first();
+
+        if (!$upload || !$upload->s3_clean_key) {
+            return response()->json(['message' => 'The requested image is not available.'], 404);
+        }
+
+        return app(MediaStorageService::class)->downloadResponse(
+            $upload->s3_clean_key,
+            $upload->safe_display_filename ?: $upload->original_filename ?: 'section-image',
+            $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'inline'
+        );
     }
 
     public function auditLogs(Request $request, int $articleId): JsonResponse
@@ -1450,23 +1514,41 @@ class ArticleWorkflowController extends Controller
         ];
     }
 
-    private function persistPublicationSections(Article $article, array $sections): void
+    private function persistPublicationSections(Article $article, array $sections, User $user): void
     {
-        foreach ($sections as $section) {
-            $key = $section['section_key'] ?? null;
-            if (!$key || !in_array($key, ArticlePublicationSection::KEYS, true)) {
+        $keptIds = [];
+
+        foreach (array_values($sections) as $index => $section) {
+            $title = trim((string) ($section['title'] ?? ''));
+            $html = $this->sanitizeRichText((string) ($section['content_html'] ?? ''));
+            if ($title === '' && $html === '') {
                 continue;
             }
 
-            $html = $this->sanitizeRichText((string) ($section['content_html'] ?? ''));
-            ArticlePublicationSection::updateOrCreate(
+            $key = Str::slug((string) ($section['section_key'] ?? '')) ?: Str::slug($title);
+            $key = $key ?: 'section-' . ($index + 1);
+            $key = str_replace('-', '_', Str::limit($key, 120, ''));
+            $mediaUploadId = $section['media_upload_session_id'] ?? null;
+            if ($mediaUploadId) {
+                app(CleanUploadResolver::class)->resolveOwned($user, $mediaUploadId, 'publication_section_image');
+            }
+
+            $record = ArticlePublicationSection::updateOrCreate(
                 ['article_id' => $article->id, 'section_key' => $key],
                 [
+                    'title' => $title ?: Str::headline(str_replace('_', ' ', $key)),
                     'content_html' => $html,
                     'content_text' => trim(html_entity_decode(strip_tags($html))),
+                    'sort_order' => (int) ($section['sort_order'] ?? ($index + 1)),
+                    'media_upload_session_id' => $mediaUploadId ?: ($section['existing_media_upload_session_id'] ?? null),
                 ]
             );
+            $keptIds[] = $record->id;
         }
+
+        $article->publicationSections()
+            ->when(count($keptIds) > 0, fn ($query) => $query->whereNotIn('id', $keptIds))
+            ->delete();
     }
 
     private function sanitizeRichText(string $html): string
@@ -1759,10 +1841,16 @@ class ArticleWorkflowController extends Controller
             ],
             'publication_sections' => $article->publicationSections
                 ->map(fn ($section) => [
+                    'id' => $section->id,
                     'section_key' => $section->section_key,
+                    'title' => $section->title,
                     'content_html' => $section->content_html,
                     'content_text' => $section->content_text,
+                    'sort_order' => $section->sort_order,
+                    'has_image' => !empty($section->media_upload_session_id),
+                    'image_url' => $section->media_upload_session_id ? url("/api/articles/publication-sections/{$section->id}/image") : null,
                 ])
+                ->sortBy('sort_order')
                 ->values(),
             'created_at' => $article->created_at,
             'updated_at' => $article->updated_at,
@@ -1781,27 +1869,42 @@ class ArticleWorkflowController extends Controller
 
     private function canManageIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->canManageIssueMagazine($user, $issue->magazine_id);
+        return $this->canUseIssueManager($user)
+            && ($user->hasRole('super_admin') || $this->canManageIssueMagazine($user, $issue->magazine_id));
     }
 
     private function canPublishIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->canPublishIssueMagazine($user, $issue->magazine_id);
+        return $this->canManageIssue($user, $issue);
     }
 
     private function canPublishIssueMagazine($user, int $magazineId): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
+        return $this->canUseIssueManager($user)
+            && ($user->hasRole('super_admin') || $this->isAssignedToMagazine($user, $magazineId, ['publisher']));
     }
 
     private function canManageIssueMagazine($user, int $magazineId): bool
     {
-        return $this->isAssignedToMagazine($user, $magazineId, ['publisher', 'editor', 'magazine_editor']);
+        return $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
     }
 
     private function issueManagerMagazineIds($user): array
     {
-        return $this->assignedMagazineIds($user, ['publisher', 'editor', 'magazine_editor']);
+        return $this->assignedMagazineIds($user, ['publisher']);
+    }
+
+    private function canUseIssueManager($user): bool
+    {
+        return $user && ($user->hasRole('super_admin') || $user->hasRole('publisher'));
+    }
+
+    private function issueMonthOrderSql(): string
+    {
+        return match (DB::getDriverName()) {
+            'sqlite' => "CASE lower(issue_month) WHEN 'january' THEN 1 WHEN 'february' THEN 2 WHEN 'march' THEN 3 WHEN 'april' THEN 4 WHEN 'may' THEN 5 WHEN 'june' THEN 6 WHEN 'july' THEN 7 WHEN 'august' THEN 8 WHEN 'september' THEN 9 WHEN 'october' THEN 10 WHEN 'november' THEN 11 WHEN 'december' THEN 12 ELSE CAST(issue_month AS INTEGER) END",
+            default => "CASE lower(issue_month) WHEN 'january' THEN 1 WHEN 'february' THEN 2 WHEN 'march' THEN 3 WHEN 'april' THEN 4 WHEN 'may' THEN 5 WHEN 'june' THEN 6 WHEN 'july' THEN 7 WHEN 'august' THEN 8 WHEN 'september' THEN 9 WHEN 'october' THEN 10 WHEN 'november' THEN 11 WHEN 'december' THEN 12 ELSE CAST(issue_month AS UNSIGNED) END",
+        };
     }
 
     private function requestChangesIssuePublicationState(Request $request): bool
@@ -1866,18 +1969,11 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if (in_array('proofreader', $roles, true)
-            && $this->hasProductionAssignment($user, $article, 'proofreader')
-            && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader'])) {
-            return $article;
-        }
-
         if (in_array('publisher', $roles, true)
             && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])
             && in_array(ArticleStatus::normalize($article->status), [
                 ArticleStatus::ACCEPTED,
                 ArticleStatus::COPY_EDITING,
-                ArticleStatus::PROOFREADING,
                 ArticleStatus::READY_FOR_PUBLICATION,
                 ArticleStatus::PUBLISHED,
             ], true)) {
@@ -1891,11 +1987,53 @@ class ArticleWorkflowController extends Controller
         throw new HttpResponseException(response()->json(['message' => 'Forbidden. Magazine assignment required.'], 403));
     }
 
+    private function canApproveAuthorFinalReview($user, Article $article): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ((int) $article->user_id === (int) $user->id) {
+            return true;
+        }
+
+        $article->loadMissing('articleAuthors');
+
+        return $article->articleAuthors->contains(function ($author) use ($user) {
+            if (!$author->is_corresponding) {
+                return false;
+            }
+
+            return (int) $author->user_id === (int) $user->id
+                || strtolower((string) $author->co_author_email) === strtolower((string) $user->email);
+        });
+    }
+
+    private function reviewerInvitationState(ReviewerAssignment $assignment): string
+    {
+        if ($assignment->completed_at) {
+            return 'completed';
+        }
+
+        if ($assignment->declined_at || $assignment->status === 'declined') {
+            return 'declined';
+        }
+
+        if ($assignment->accepted_at || in_array($assignment->status, ['accepted', 'in_progress'], true)) {
+            return 'accepted';
+        }
+
+        return 'invited';
+    }
+
     private function assignmentRelations(): array
     {
         return [
             'article.issue',
             'article.magazine:id,title,slug',
+            'article.articleAuthors',
+            'article.assets',
+            'article.publicationSections',
             'article.files.uploader:id,name',
             'article.subEditorAssignments.subEditor:id,name',
             'article.reviewerAssignments.reviewer:id,name',
@@ -1923,8 +2061,7 @@ class ArticleWorkflowController extends Controller
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         $canViewProduction = $canViewPublication
-            || $this->hasProductionAssignment($user, $article, 'copy_editor')
-            || ($this->hasProductionAssignment($user, $article, 'proofreader') && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader']));
+            || $this->hasProductionAssignment($user, $article, 'copy_editor');
 
         $data = [
             'id' => $article->id,
@@ -1958,7 +2095,67 @@ class ArticleWorkflowController extends Controller
             'page_end' => $article->page_end,
             'has_pdf' => !empty($article->pdf_path),
             'files' => app(ArticleFileController::class)->filterVisibleFiles($user, $article->files ?? []),
+            'assets' => collect($article->assets ?? [])
+                ->filter(fn ($asset) => ($asset->scan_status ?? 'clean') === 'clean')
+                ->map(fn ($asset) => [
+                    'id' => $asset->id,
+                    'asset_type' => $asset->asset_type ?: 'supplementary',
+                    'title' => $asset->title,
+                    'caption' => $asset->caption,
+                    'description' => $asset->description,
+                    'original_filename' => $asset->original_filename,
+                    'file_size' => $asset->file_size,
+                    'mime_type' => $asset->mime_type,
+                    'download_url' => url("/api/articles/assets/{$asset->id}/download"),
+                ])
+                ->values(),
+            'publication_sections' => $article->publicationSections
+                ->map(fn ($section) => [
+                    'id' => $section->id,
+                    'section_key' => $section->section_key,
+                    'title' => $section->title,
+                    'content_html' => app(HtmlSanitizer::class)->sanitize($section->content_html),
+                    'content_text' => $section->content_text,
+                    'sort_order' => $section->sort_order,
+                    'media_upload_session_id' => $section->media_upload_session_id,
+                    'has_image' => !empty($section->media_upload_session_id),
+                    'image_url' => $section->media_upload_session_id ? url("/api/articles/publication-sections/{$section->id}/image") : null,
+                ])
+                ->sortBy('sort_order')
+                ->values(),
             'versions' => $this->serializedVersions($article, $user),
+            'article_authors' => $article->articleAuthors
+                ->sortBy('author_order')
+                ->map(fn ($author) => [
+                    'id' => $author->id,
+                    'user_id' => $author->user_id,
+                    'co_author_name' => $author->co_author_name,
+                    'co_author_email' => $canViewEditorial || (int) $article->user_id === (int) ($user?->id ?? 0) || $this->isArticleAuthorRecord($user, $article) ? $author->co_author_email : null,
+                    'affiliation' => $author->affiliation,
+                    'university_name' => $author->university_name,
+                    'department' => $author->department,
+                    'country' => $author->country,
+                    'orcid' => $author->orcid,
+                    'author_order' => $author->author_order,
+                    'is_owner' => $author->is_owner,
+                    'is_corresponding' => $author->is_corresponding,
+                ])
+                ->values(),
+            'keywords' => $article->keywords,
+            'article_category' => $article->article_category,
+            'article_type' => $article->article_type,
+            'subject_area' => $article->subject_area,
+            'language' => $article->language,
+            'ethical_approval_statement' => $article->ethical_approval_statement,
+            'conflict_of_interest_statement' => $article->conflict_of_interest_statement,
+            'funding_statement' => $article->funding_statement,
+            'data_availability_statement' => $article->data_availability_statement,
+            'author_contribution_statement' => $article->author_contribution_statement,
+            'author_final_approved_at' => $article->author_final_approved_at,
+            'author_final_approved_by' => $article->author_final_approved_by,
+            'can_author_final_review' => $this->canApproveAuthorFinalReview($user, $article)
+                && ArticleStatus::normalize($article->status) === ArticleStatus::ACCEPTED
+                && !$article->author_final_approved_at,
             'created_at' => $article->created_at,
             'updated_at' => $article->updated_at,
         ];
@@ -2056,10 +2253,11 @@ class ArticleWorkflowController extends Controller
         } elseif ($assignment instanceof ReviewerAssignment) {
             $payload['reviewer_id'] = $assignment->reviewer_id;
             $payload['invitee_name'] = $assignment->invitee_name;
-            $payload['invitee_email'] = $this->canViewEditorialInternals($user, $assignment->article) ? $assignment->invitee_email : null;
+            $payload['invitee_email'] = ($this->canViewEditorialInternals($user, $assignment->article) || $this->hasSubEditorAssignment($user, $assignment->article)) ? $assignment->invitee_email : null;
             $payload['invited_at'] = $assignment->invited_at;
             $payload['accepted_at'] = $assignment->accepted_at;
             $payload['declined_at'] = $assignment->declined_at;
+            $payload['invitation_state'] = $this->reviewerInvitationState($assignment);
             $payload['reviewer'] = $assignment->reviewer ? ['id' => $assignment->reviewer->id, 'name' => $assignment->reviewer->name] : null;
             if ((int) $assignment->reviewer_id === (int) ($user?->id ?? 0) || $this->canViewEditorialInternals($user, $assignment->article)) {
                 $payload['recommendation'] = $assignment->recommendation;

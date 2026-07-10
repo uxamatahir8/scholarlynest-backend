@@ -61,6 +61,8 @@ class Article extends Model
         'clicks',
         'impressions',
         'published_at',
+        'author_final_approved_at',
+        'author_final_approved_by',
         'published_year',
         'published_month',
         'page_start',
@@ -75,6 +77,7 @@ class Article extends Model
         'plagiarism_score' => 'decimal:2',
         'screened_at' => 'datetime',
         'published_at' => 'datetime',
+        'author_final_approved_at' => 'datetime',
         'received_at' => 'date',
         'accepted_at' => 'date',
         'is_peer_reviewed' => 'boolean',
@@ -116,6 +119,11 @@ class Article extends Model
     public function screener(): BelongsTo
     {
         return $this->belongsTo(User::class, 'screened_by');
+    }
+
+    public function finalApprover(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'author_final_approved_by');
     }
 
     /**

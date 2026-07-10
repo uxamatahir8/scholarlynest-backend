@@ -6,19 +6,19 @@ use App\Events\ArticleSubmitted;
 use App\Models\ArticleAuditLog;
 use App\Models\User;
 use App\Services\NotificationService;
+use App\Services\PasswordSetupService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Collection;
 
 class SendArticleSubmissionNotifications implements ShouldQueue
 {
-    protected NotificationService $notificationService;
-
     /**
      * Create the event listener.
      */
-    public function __construct(NotificationService $notificationService)
-    {
-        $this->notificationService = $notificationService;
+    public function __construct(
+        protected NotificationService $notificationService,
+        protected PasswordSetupService $passwordSetupService
+    ) {
     }
 
     /**
@@ -66,34 +66,10 @@ class SendArticleSubmissionNotifications implements ShouldQueue
         foreach ($coAuthorsData as $coAuthor) {
             $email = $coAuthor['email'];
             $name = $coAuthor['name'];
-            $hasTempPassword = !empty($coAuthor['temporary_password']);
+            $createdAccount = !empty($coAuthor['account_provisioned']) && !empty($coAuthor['user_id']);
 
-            if ($hasTempPassword) {
-                // Account was generated
-                $subject = 'Onboarding Welcome: Co-Author Invitation';
-                $greeting = 'Dear ' . $name . ',';
-                $bodyLines = [
-                    'You have been designated as a co-author on the newly submitted article: "' . $article->title . '".',
-                    'An official author profile has been automatically generated for you on ScholarlyNest.',
-                    'Your temporary credentials are:',
-                    'Login Email: ' . $email,
-                    'Temporary Password: ' . $coAuthor['temporary_password'],
-                    'Please log in and update your password immediately to secure your account.'
-                ];
-                $action = [
-                    'text' => 'Reset Password',
-                    'url' => $frontendUrl . '/reset-password',
-                ];
-
-                $this->notificationService->send(
-                    $email,
-                    $subject,
-                    $greeting,
-                    $bodyLines,
-                    $action,
-                    'high',
-                    $coAuthor['user_id'] ?? null
-                );
+            if ($createdAccount && ($createdUser = User::find($coAuthor['user_id']))) {
+                $this->passwordSetupService->sendSetupLink($createdUser);
                 $recipientCount++;
             } else {
                 // Text-only informational notification email (for existing account or create_account = false)

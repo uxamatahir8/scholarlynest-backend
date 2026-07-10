@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\Setting;
 use App\Models\Magazine;
 use App\Services\NotificationService;
+use App\Services\Media\MediaStorageService;
 use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,7 +41,6 @@ class RbacController extends Controller
         'editor',
         'magazine_editor',
         'publisher',
-        'proofreader',
     ];
 
     public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService)
@@ -338,7 +338,8 @@ class RbacController extends Controller
                     'id' => $user->id,
                     'name' => $user->name,
                     'email' => $user->email,
-                    'profile_image' => $user->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                     'roles' => $user->role ? [[
                         'id' => $user->role->id,
                         'name' => $user->role->name,
@@ -381,6 +382,9 @@ class RbacController extends Controller
         }
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to new users.'], 422);
+        }
         $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
@@ -453,7 +457,8 @@ class RbacController extends Controller
                     'id' => $user->id,
                     'name' => $user->name,
                     'email' => $user->email,
-                    'profile_image' => $user->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                     'roles' => $user->role ? [[
                         'id' => $user->role->id,
                         'name' => $user->role->name,
@@ -486,7 +491,8 @@ class RbacController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-                'profile_image' => $user->profile_image,
+                'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                 'university' => $user->university_name,
                 'organization' => null,
                 'status' => $user->email_verified_at ? 'active' : 'pending',
@@ -556,6 +562,9 @@ class RbacController extends Controller
 
         $previousRole = $user->role;
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
@@ -632,7 +641,8 @@ class RbacController extends Controller
                     'id' => $updatedUser->id,
                     'name' => $updatedUser->name,
                     'email' => $updatedUser->email,
-                    'profile_image' => $updatedUser->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($updatedUser->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($updatedUser->profile_image),
                     'roles' => $updatedUser->role ? [[
                         'id' => $updatedUser->role->id,
                         'name' => $updatedUser->role->name,
@@ -709,7 +719,7 @@ class RbacController extends Controller
                     ->whereHas('role', function ($roleQuery) {
                         $roleQuery->whereIn('name', self::MAGAZINE_ASSIGNMENT_ROLE_NAMES);
                     })
-                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher', 'proofreader'])
+                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher'])
                     ->orderBy('users.name');
             }])
             ->orderBy('title')
@@ -718,7 +728,6 @@ class RbacController extends Controller
                 $summary = [
                     'editors' => [],
                     'publishers' => [],
-                    'proofreaders' => [],
                 ];
 
                 foreach ($magazine->editors as $user) {
@@ -729,8 +738,6 @@ class RbacController extends Controller
                         $summary['editors'][] = ['id' => $user->id, 'name' => $user->name];
                     } elseif ($pivotRole === 'publisher' || $roleName === 'publisher') {
                         $summary['publishers'][] = ['id' => $user->id, 'name' => $user->name];
-                    } elseif ($pivotRole === 'proofreader' || $roleName === 'proofreader') {
-                        $summary['proofreaders'][] = ['id' => $user->id, 'name' => $user->name];
                     }
                 }
 
@@ -767,6 +774,9 @@ class RbacController extends Controller
         }
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -817,12 +827,15 @@ class RbacController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users,email',
             'role_id' => 'required|exists:roles,id',
-            'university_name' => 'nullable|string|max:255',
+            'university_name' => 'required|string|max:255',
             'magazine_ids' => 'nullable|array',
             'magazine_ids.*' => 'integer|exists:magazines,id',
         ]);
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -1104,8 +1117,12 @@ class RbacController extends Controller
             'editor',
             'publisher',
             'magazine_editor',
-            'proofreader',
         ], true);
+    }
+
+    private function isInactiveRole(?Role $role): bool
+    {
+        return $role && str_replace('-', '_', $role->name) === 'proofreader';
     }
 
     private function validateMagazineAssignmentRequest(Request $request, ?Role $role): array
@@ -1203,7 +1220,6 @@ class RbacController extends Controller
         return match ($normalizedRole) {
             'editor', 'magazine_editor' => 'editor',
             'publisher' => 'publisher',
-            'proofreader' => 'proofreader',
             default => null,
         };
     }
@@ -1328,7 +1344,8 @@ class RbacController extends Controller
             'email' => $user->email,
             'role_id' => $user->role_id,
             'university_name' => $user->university_name,
-            'profile_image' => $user->profile_image,
+            'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+            'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
             'email_verified_at' => $user->email_verified_at,
             'needs_password_reset' => (bool) $user->needs_password_reset,
             'role' => $user->role ? [

@@ -19,8 +19,11 @@ class ArticlePublicationSection extends Model
     protected $fillable = [
         'article_id',
         'section_key',
+        'title',
         'content_html',
         'content_text',
+        'sort_order',
+        'media_upload_session_id',
     ];
 
     public function article(): BelongsTo

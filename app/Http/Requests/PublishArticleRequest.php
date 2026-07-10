@@ -46,8 +46,11 @@ class PublishArticleRequest extends FormRequest
             'abbreviations' => 'nullable|string|max:10000',
             'citation_text' => 'nullable|string|max:10000',
             'publication_sections' => 'nullable|array',
-            'publication_sections.*.section_key' => 'required_with:publication_sections|in:introduction,materials_and_methods,discussion,supporting_information,acknowledgements,references',
+            'publication_sections.*.section_key' => 'nullable|string|max:120',
+            'publication_sections.*.title' => 'nullable|string|max:255',
             'publication_sections.*.content_html' => 'nullable|string',
+            'publication_sections.*.sort_order' => 'nullable|integer|min:1|max:1000',
+            'publication_sections.*.media_upload_session_id' => 'nullable|string|exists:media_upload_sessions,id',
         ];
     }
 }

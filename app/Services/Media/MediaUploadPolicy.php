@@ -76,6 +76,30 @@ class MediaUploadPolicy
 
             return;
         }
+
+        if ($purpose === 'profile_image') {
+            if (!$user) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
+        }
+
+        if ($purpose === 'publication_section_image') {
+            if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('publisher'))) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
+        }
+
+        if ($purpose === 'support_ticket_attachment') {
+            if (!$user) {
+                abort(403, 'This action is unauthorized.');
+            }
+
+            return;
+        }
     }
 
     public function sanitizeFilename(string $filename): string

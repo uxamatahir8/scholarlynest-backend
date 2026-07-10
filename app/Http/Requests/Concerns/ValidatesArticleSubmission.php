@@ -148,12 +148,16 @@ trait ValidatesArticleSubmission
 
     protected function articleRules(bool $isUpdate = false): array
     {
+        $isDraft = ArticleStatus::normalize($this->input('status')) === ArticleStatus::DRAFT;
         $required = $isUpdate ? 'sometimes|required' : 'required';
+        $draftRequired = $isDraft ? 'nullable' : $required;
+        $authorRule = $isDraft ? 'nullable|array' : 'required|array|min:1';
+        $authorFieldRule = $isDraft ? 'nullable' : 'required';
 
         return [
-            'magazine_id' => "{$required}|exists:magazines,id",
-            'title' => "{$required}|string|max:255",
-            'abstract' => "{$required}|string",
+            'magazine_id' => "{$draftRequired}|integer|exists:magazines,id",
+            'title' => "{$draftRequired}|string|max:255",
+            'abstract' => "{$draftRequired}|string",
             'pdf_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
             'pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'tags' => 'nullable',
@@ -168,9 +172,9 @@ trait ValidatesArticleSubmission
             'funding_statement' => 'nullable|string|max:5000',
             'data_availability_statement' => 'nullable|string|max:5000',
             'author_contribution_statement' => 'nullable|string|max:5000',
-            'authors' => 'required|array|min:1',
-            'authors.*.name' => 'required|string|max:255',
-            'authors.*.email' => 'required|email|max:255',
+            'authors' => $authorRule,
+            'authors.*.name' => "{$authorFieldRule}|string|max:255",
+            'authors.*.email' => "{$authorFieldRule}|email|max:255",
             'authors.*.affiliation' => 'nullable|string|max:255',
             'authors.*.department' => 'nullable|string|max:255',
             'authors.*.country' => 'nullable|string|max:120',
@@ -203,6 +207,11 @@ trait ValidatesArticleSubmission
     protected function articleAfterValidation(ValidationValidator $validator, bool $enforceSubmittingOwner = true): void
     {
         $authors = $this->normalizedAuthors;
+        $isDraft = ArticleStatus::normalize($this->input('status')) === ArticleStatus::DRAFT;
+        if ($isDraft && count($authors) === 0) {
+            return;
+        }
+
         $emails = array_filter(array_map(fn ($author) => $author['email'] ?? null, $authors));
 
         if (count($emails) !== count(array_unique($emails))) {
@@ -219,7 +228,7 @@ trait ValidatesArticleSubmission
             $validator->errors()->add('authors', 'At least one corresponding author is required.');
         }
 
-        if ($enforceSubmittingOwner && !$this->user()?->hasRole('super_admin')) {
+        if (!$isDraft && $enforceSubmittingOwner && !$this->user()?->hasRole('super_admin')) {
             $currentEmail = strtolower((string) $this->user()?->email);
             $owner = collect($authors)->firstWhere('is_owner', true);
             if (!$owner || ($owner['email'] ?? null) !== $currentEmail) {

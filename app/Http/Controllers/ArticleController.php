@@ -18,6 +18,7 @@ use App\Services\NotificationService;
 use App\Services\ArticleVersionService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\Security\HtmlSanitizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -245,11 +246,13 @@ class ArticleController extends Controller
         $articleOwner = $authorResolution['owner'] ?? $user;
         $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
-        $slug = Str::slug($validated['title']);
+        $slug = !empty($validated['title'])
+            ? Str::slug($validated['title']) . '-' . Str::lower(Str::random(6))
+            : 'draft-' . Str::lower(Str::random(16));
 
         $articleData = array_merge($request->articlePayload(), [
             'user_id' => $articleOwner->id,
-            'title' => $validated['title'],
+            'title' => $validated['title'] ?? null,
             'slug' => $slug,
             'full_text' => '',
             'pdf_path' => null,
@@ -767,15 +770,13 @@ class ArticleController extends Controller
         foreach ($authors as $author) {
             $email = strtolower(trim($author['email']));
             $linkedUser = User::whereRaw('LOWER(email) = ?', [$email])->first();
-            $temporaryPassword = null;
             $shouldCreateAccount = !$linkedUser && ($createMissingAuthors || $author['create_account'] || $author['can_edit'] || $author['is_owner']);
 
             if ($shouldCreateAccount) {
-                $temporaryPassword = Str::random(12);
                 $linkedUser = User::create([
                     'name' => $author['name'],
                     'email' => $email,
-                    'password' => \Illuminate\Support\Facades\Hash::make($temporaryPassword),
+                    'password' => null,
                     'needs_password_reset' => true,
                     'email_verified_at' => now(),
                     'role_id' => $authorRole?->id,
@@ -793,8 +794,7 @@ class ArticleController extends Controller
 
             $resolved[] = array_merge($author, [
                 'user_id' => $linkedUser?->id,
-                'account_provisioned' => (bool) $temporaryPassword,
-                'temporary_password' => $temporaryPassword,
+                'account_provisioned' => (bool) ($shouldCreateAccount && $linkedUser),
             ]);
         }
 
@@ -863,7 +863,6 @@ class ArticleController extends Controller
                 'create_account' => $author['create_account'],
                 'user_id' => $author['user_id'] ?? null,
                 'account_provisioned' => (bool) ($author['account_provisioned'] ?? false),
-                'temporary_password' => $author['temporary_password'] ?? null,
             ])
             ->values()
             ->all();
@@ -1044,12 +1043,12 @@ class ArticleController extends Controller
 
         $payload = [
             'id' => $article->id,
-            'tracking_code' => $article->tracking_code,
             'title' => $article->title,
             'subtitle' => $article->subtitle,
             'slug' => $article->slug,
-            'abstract' => $article->abstract,
-            'featured_image' => $article->featured_image,
+            'abstract' => app(HtmlSanitizer::class)->sanitize($article->abstract),
+            'abstract_text' => trim(html_entity_decode(strip_tags(app(HtmlSanitizer::class)->sanitize($article->abstract)))),
+            'featured_image' => $article->featured_image_url,
             'featured_image_url' => $article->featured_image_url,
             'doi' => $article->doi,
             'open_access_label' => $article->open_access_label,
@@ -1081,7 +1080,7 @@ class ArticleController extends Controller
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
-                'cover_image' => $article->magazine->cover_image,
+                'cover_image' => $article->magazine->cover_image_url,
                 'cover_image_url' => $article->magazine->cover_image_url,
             ] : null,
             'user' => $article->user ? [
@@ -1103,6 +1102,9 @@ class ArticleController extends Controller
                     'co_author_name' => $author->co_author_name,
                     'affiliation' => $author->affiliation,
                     'university_name' => $author->university_name,
+                    'department' => $author->department,
+                    'country' => $author->country,
+                    'orcid' => $author->orcid,
                     'author_order' => $author->author_order,
                     'is_owner' => $author->is_owner,
                     'is_corresponding' => $author->is_corresponding,
@@ -1138,10 +1140,16 @@ class ArticleController extends Controller
                 ->values(),
             'publication_sections' => $article->publicationSections
                 ->map(fn ($section) => [
+                    'id' => $section->id,
                     'section_key' => $section->section_key,
-                    'content_html' => $section->content_html,
+                    'title' => $section->title,
+                    'content_html' => app(HtmlSanitizer::class)->sanitize($section->content_html),
                     'content_text' => $section->content_text,
+                    'sort_order' => $section->sort_order,
+                    'has_image' => !empty($section->media_upload_session_id),
+                    'image_url' => $section->media_upload_session_id ? url("/api/articles/publication-sections/{$section->id}/image") : null,
                 ])
+                ->sortBy('sort_order')
                 ->values(),
         ];
 
@@ -1239,6 +1247,9 @@ class ArticleController extends Controller
                         'co_author_name' => $author->co_author_name,
                         'affiliation' => $author->affiliation,
                         'university_name' => $author->university_name,
+                        'department' => $author->department,
+                        'country' => $author->country,
+                        'orcid' => $author->orcid,
                         'author_order' => $author->author_order,
                         'is_owner' => $author->is_owner,
                         'is_corresponding' => $author->is_corresponding,
@@ -1257,8 +1268,12 @@ class ArticleController extends Controller
                     'original_filename' => $asset->original_filename,
                     'file_size' => $asset->file_size,
                     'mime_type' => $asset->mime_type,
+                    'download_url' => url("/api/articles/assets/{$asset->id}/download"),
                 ])
                 ->values(),
+            'resume_step' => $this->draftResumeStep($article),
+            'next_step' => $this->draftResumeStep($article),
+            'completion_step' => $this->draftResumeStep($article),
         ];
 
         if ($canViewEditorial) {
@@ -1279,6 +1294,51 @@ class ArticleController extends Controller
         }
 
         return $payload;
+    }
+
+    private function draftResumeStep(Article $article): int
+    {
+        $article->loadMissing(['articleAuthors', 'reviewerPreferences', 'assets']);
+
+        $hasBasics = (bool) (
+            $article->magazine_id
+            || trim((string) $article->title) !== ''
+            || trim(strip_tags((string) $article->abstract)) !== ''
+        );
+        if (!$hasBasics) {
+            return 1;
+        }
+
+        $hasCollaborators = $article->articleAuthors
+            ->filter(fn ($author) => !$author->is_owner || (int) $author->author_order > 1)
+            ->isNotEmpty();
+        if (!$hasCollaborators) {
+            return 2;
+        }
+
+        if ($article->reviewerPreferences->isEmpty()) {
+            return 3;
+        }
+
+        $hasClassificationOrDeclaration = (bool) (
+            !empty($article->keywords)
+            || trim((string) $article->article_category) !== ''
+            || trim((string) $article->article_type) !== ''
+            || trim((string) $article->subject_area) !== ''
+            || trim((string) $article->language) !== ''
+            || trim((string) $article->ethical_approval_statement) !== ''
+            || trim((string) $article->conflict_of_interest_statement) !== ''
+            || trim((string) $article->funding_statement) !== ''
+            || trim((string) $article->data_availability_statement) !== ''
+            || trim((string) $article->author_contribution_statement) !== ''
+        );
+
+        $hasUploads = !empty($article->pdf_path) || $article->assets->isNotEmpty();
+        if (!$hasClassificationOrDeclaration && !$hasUploads) {
+            return 4;
+        }
+
+        return 5;
     }
 
     private function reviewerPreferencePayload(Article $article, User $viewer): array

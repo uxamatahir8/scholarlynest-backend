@@ -334,8 +334,6 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
         } elseif (!empty($validated['cover_image_upload_id'])) {
             $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
-        } elseif (is_string($request->input('cover_image'))) {
-            $coverImagePath = $request->input('cover_image');
         }
 
         $slug = Str::slug($validated['title']) . '-' . Str::random(5);
@@ -496,8 +494,8 @@ class MagazineController extends Controller
         } elseif (!empty($validated['cover_image_upload_id'])) {
             $this->mediaStorage->delete($coverImagePath);
             $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
-        } elseif ($request->has('cover_image')) {
-            $coverImagePath = $request->input('cover_image');
+        } elseif ($request->has('cover_image') && !$request->input('cover_image')) {
+            $coverImagePath = null;
         }
 
         $updateData = [
@@ -649,7 +647,7 @@ class MagazineController extends Controller
             'id' => $magazine->id,
             'title' => $magazine->title,
             'slug' => $magazine->slug,
-            'cover_image' => $magazine->cover_image,
+            'cover_image' => $magazine->cover_image_url,
             'cover_image_url' => $magazine->cover_image_url,
             'description' => $magazine->description,
             'seo_title' => $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest',

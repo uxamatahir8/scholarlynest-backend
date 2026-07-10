@@ -285,7 +285,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'new.editor@example.com',
-            'subject' => 'Set your Scholarly Nest password',
+            'subject' => 'Set your ScholarlyNest password',
         ]);
     }
 
@@ -412,7 +412,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         Sanctum::actingAs($this->user('super_admin'));
 
-        foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
+        foreach (['editor', 'magazine_editor', 'publisher'] as $roleName) {
             $magazine = $this->magazine(Str::headline($roleName) . ' Magazine');
 
             $response = $this->postJson('/api/admin/users', [
@@ -1066,7 +1066,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         $response->assertOk();
         $user = User::find($subEditor->id);
         $this->assertEquals($this->roles['author']->id, $user->role_id);
-        
+
         $pivotCount = DB::table('editor_sub_editor')
             ->where('sub_editor_id', $subEditor->id)
             ->count();
@@ -1096,7 +1096,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
 
         $response->assertStatus(500);
-        
+
         // Assert name and role are rolled back
         $user = User::find($subEditor->id);
         $this->assertEquals('Original Sub Editor Name', $user->name);
