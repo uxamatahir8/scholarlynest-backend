@@ -334,6 +334,9 @@ class ArticleFileController extends Controller
         return DB::table('reviewer_assignments')
             ->where('article_id', $article->id)
             ->where('reviewer_id', $user->id)
+            // A reviewer may access permitted manuscript files only during an accepted,
+            // active review. Pending invitations and completed reviews never grant access.
+            ->where('status', 'accepted')
             ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
             ->exists();
     }

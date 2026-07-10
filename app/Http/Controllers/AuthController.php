@@ -402,9 +402,9 @@ class AuthController extends Controller
 
         $this->sendHtmlEmail(
             $user->email,
-            "Request to Change Password",
-            "Change Password Authorization",
-            "We received a request to update your ScholarlyNest account password. Please enter the 6-digit validation code below to proceed.",
+            'Verify Your Password Change Request',
+            'Dear ' . $user->name . ',',
+            'A password change was requested for your Scholarly Nest account. Verification Details: Account Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '. Enter the verification code below in Scholarly Nest to continue changing your password. If you did not request this change, secure your account immediately and contact support. Security Note: Do not share this verification code with anyone.',
             $code
         );
 
@@ -451,6 +451,12 @@ class AuthController extends Controller
             'password_change_verified_at' => null,
             'password_change_failed_attempts' => 0,
         ]);
+
+        $this->notificationService->send($user->email, 'Your Scholarly Nest Password Was Changed', 'Dear ' . $user->name . ',', [
+            'Your Scholarly Nest account password was changed successfully.',
+            'Account: Email: ' . $user->email . '. Changed At: ' . now()->toDateTimeString() . '.',
+            'If you made this change, no further action is required. If you did not make this change, please contact support immediately.',
+        ], null, 'high', $user->id);
 
         return response()->json([
             'message' => 'Password updated successfully.',

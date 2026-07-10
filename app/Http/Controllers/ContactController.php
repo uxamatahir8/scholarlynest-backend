@@ -106,15 +106,17 @@ class ContactController extends Controller
         $msgSubject = $request->input('subject');
         $msgContent = nl2br(e($request->input('message')));
 
-        $emailSubject = "[Contact Inquiry] {$msgSubject} - from {$senderName}";
+        $emailSubject = "New Contact Message from {$senderName}";
 
         // Premium HTML Email Template
         $bodyLines = [
             '<div class="field-label">Sender Name</div><div class="field-value">' . htmlspecialchars($senderName) . '</div>',
             '<div class="field-label">Sender Email</div><div class="field-value">' . htmlspecialchars($senderEmail) . '</div>',
             '<div class="field-label">Academic Affiliation</div><div class="field-value">' . htmlspecialchars($senderAffiliation) . '</div>',
-            '<div class="field-label">Subject Matter</div><div class="field-value">' . htmlspecialchars($msgSubject) . '</div>',
-            '<div class="field-label">Message Details</div><div class="message-box">' . $msgContent . '</div>',
+            '<div class="field-label">Subject</div><div class="field-value">' . htmlspecialchars($msgSubject) . '</div>',
+            '<div class="field-label">Submitted At</div><div class="field-value">' . now()->toDateTimeString() . '</div>',
+            '<div class="field-label">Message</div><div class="message-box">' . $msgContent . '</div>',
+            '<div class="field-label">Next Action</div><div class="field-value">Please review and respond from the appropriate support/admin channel.</div>',
         ];
 
         try {

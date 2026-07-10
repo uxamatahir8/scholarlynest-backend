@@ -61,7 +61,7 @@ class NewsletterTest extends TestCase
  
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'scholar@scholarlynest.com',
-            'subject' => 'Welcome to ScholarlyNest!',
+            'subject' => 'Newsletter Subscription Confirmed',
         ]);
  
         Queue::assertPushed(\App\Jobs\SendNotificationJob::class);
@@ -118,7 +118,7 @@ class NewsletterTest extends TestCase
  
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'author@scholarlynest.com',
-            'subject' => 'Welcome to ScholarlyNest!',
+            'subject' => 'Newsletter Subscription Confirmed',
         ]);
  
         Queue::assertPushed(\App\Jobs\SendNotificationJob::class);

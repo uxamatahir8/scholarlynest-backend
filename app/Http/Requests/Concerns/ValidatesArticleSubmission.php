@@ -201,6 +201,8 @@ trait ValidatesArticleSubmission
             'revision_response' => 'nullable|string|max:10000',
             'change_summary' => 'nullable|string|max:10000',
             'status' => 'nullable|in:' . ArticleStatus::DRAFT . ',' . ArticleStatus::SUBMITTED,
+            // The user id and timestamp are deliberately server-owned; a browser may only affirm acceptance.
+            'terms_accepted' => $isDraft ? 'nullable|boolean' : 'required|accepted',
         ];
     }
 

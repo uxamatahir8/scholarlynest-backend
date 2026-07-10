@@ -36,14 +36,13 @@ class SendArticleSubmissionNotifications implements ShouldQueue
 
         // 1. Send to the Primary Author
         if ($primaryAuthor) {
-            $trackingToken = 'SN-' . $article->id . '-' . strtoupper(substr($article->slug, -6));
-            $subject = 'Manuscript Submitted Successfully';
+            $subject = 'Submission Received: ' . $article->title . ' — ' . ($article->magazine?->title ?? 'ScholarlyNest');
             $greeting = 'Dear ' . $primaryAuthor->name . ',';
             $bodyLines = [
-                'We are pleased to confirm that your manuscript titled "' . $article->title . '" has been successfully submitted to ScholarlyNest.',
-                'Submission Reference Token: <strong>' . $trackingToken . '</strong>',
-                'Your manuscript is currently in "submitted" status and will proceed through the editorial and peer-review workflows. You can monitor the progress of your submission directly from your Author Dashboard.',
-                'Thank you for publishing your research with ScholarlyNest.'
+                'Your article has been submitted successfully to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
+                'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Submission Status: submitted. Submitted At: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
+                'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
+                'What Happens Next: Your submission will be reviewed by the editorial team. You can track progress from your article dashboard.'
             ];
             $action = [
                 'text' => 'Go to Dashboard',
@@ -73,11 +72,13 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 $recipientCount++;
             } else {
                 // Text-only informational notification email (for existing account or create_account = false)
-                $subject = 'Notification: Co-Author Designation';
+                $subject = 'You Were Added as a Co-author: ' . $article->title;
                 $greeting = 'Dear ' . $name . ',';
                 $bodyLines = [
-                    'This email is to notify you that you have been listed as an official co-author on the article manuscript titled "' . $article->title . '", which has been successfully submitted for editorial review.',
-                    'If you already possess a ScholarlyNest account, you can access the article details through your Dashboard.'
+                    'You have been listed as a co-author on a submitted article in Scholarly Nest.',
+                    'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Submitted At: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
+                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
+                    'You can review the article status from your Scholarly Nest account. If you do not already have an account, you will receive a separate secure password setup email.'
                 ];
 
                 $this->notificationService->send(
@@ -97,10 +98,14 @@ class SendArticleSubmissionNotifications implements ShouldQueue
         foreach ($staffRecipients as $recipient) {
             $this->notificationService->send(
                 $recipient['email'],
-                'New Manuscript Submitted: ' . $article->title,
+                'New Article Submitted: ' . $article->title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
                 $recipient['name'] ? 'Dear ' . $recipient['name'] . ',' : 'Hello,',
                 [
                     'A new manuscript titled "' . $article->title . '" has been submitted to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
+                    'Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.',
+                    'Submitting author: ' . ($primaryAuthor?->name ?? 'Not recorded') . '.',
+                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
+                    'Submitted: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
                     'Please open the admin article board to begin editorial screening and assignment.',
                 ],
                 [

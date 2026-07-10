@@ -18,12 +18,13 @@ class PasswordSetupService
         $token = $this->createToken($user);
         $this->notificationService->send(
             $user->email,
-            'Reset your ScholarlyNest password',
-            'Reset your ScholarlyNest password',
+            'Reset Your Scholarly Nest Password',
+            'Dear ' . $user->name . ',',
             [
-                'We received a request to reset your ScholarlyNest password.',
-                'Use the secure button below to choose a new password. This link expires according to the configured reset-password policy.',
-                'If you did not request this, you can safely ignore this email.',
+                'We received a request to reset the password for your Scholarly Nest account.',
+                'Account: Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '.',
+                'Use the secure button below to reset your password. If you did not request this password reset, no action is required and your account will remain unchanged.',
+                'Security Note: This link is temporary. Do not forward this email or share the reset link with anyone.',
             ],
             [
                 'text' => 'Reset Password',
@@ -41,12 +42,13 @@ class PasswordSetupService
         $token = $this->createToken($user);
         $this->notificationService->send(
             $user->email,
-            'Set your ScholarlyNest password',
-            'Your ScholarlyNest account has been created',
+            'Set Your Scholarly Nest Password',
+            'Dear ' . $user->name . ',',
             [
-                'Your account has been created by the ScholarlyNest team.',
-                'Use the secure button below to set your password and access your account. This link expires according to the configured reset-password policy.',
-                'If you were not expecting this account, please ignore this email.',
+                'An account has been created for you on Scholarly Nest.',
+                'Account Details: Name: ' . $user->name . '. Email: ' . $user->email . '. Role: ' . ($user->role?->display_name ?? $user->role?->name ?? 'Not specified') . '. Created At: ' . now()->toDateTimeString() . '.',
+                'To access your account, please set your password using the secure link below. This link is temporary and should only be used by you.',
+                'Security Note: Scholarly Nest will never ask you to share your password by email. No password has been generated or sent in this message. If you did not expect this account, please ignore this email or contact support.',
             ],
             [
                 'text' => 'Set Password',

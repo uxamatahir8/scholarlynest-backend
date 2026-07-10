@@ -157,7 +157,7 @@ class SupportTicketManagementTest extends TestCase
         ]);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => $this->author->email,
-            'subject' => "Status updated for {$ticket->fresh()->ticket_number}",
+            'subject' => "Support Ticket Status Changed: {$ticket->fresh()->ticket_number}",
         ]);
     }
 

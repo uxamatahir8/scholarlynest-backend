@@ -138,7 +138,7 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertTrue((bool) $createdReviewer->needs_password_reset);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'external.accept@example.test',
-            'subject' => 'Set your ScholarlyNest password',
+            'subject' => 'Set Your Scholarly Nest Password',
         ]);
         $this->assertDatabaseHas('reviewer_assignments', [
             'id' => $acceptAssignment->id,
@@ -249,6 +249,21 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
             ->assertJsonMissing(['private.reviewer@example.test']);
+    }
+
+    public function test_public_invitation_context_requires_a_valid_token_and_excludes_files(): void
+    {
+        $assignment = $this->pendingInvitation('context.reviewer@example.test', 'context-token');
+
+        $this->getJson("/api/reviewer-invitations/{$assignment->id}?token=wrong-token")
+            ->assertStatus(422);
+
+        $this->getJson("/api/reviewer-invitations/{$assignment->id}?token=context-token")
+            ->assertOk()
+            ->assertJsonPath('invitation.article.title', $this->article->title)
+            ->assertJsonPath('invitation.article.magazine', $this->magazine->title)
+            ->assertJsonPath('invitation.article.abstract', $this->article->abstract)
+            ->assertJsonMissingPath('invitation.article.files');
     }
 
     public function test_publication_metadata_sections_are_sanitized_and_public_payload_is_safe(): void

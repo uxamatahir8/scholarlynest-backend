@@ -76,16 +76,15 @@ class NewsletterController extends Controller
             $unsubscribeUrl = "{$frontendUrl}/unsubscribe/{$subscriber->token}";
 
             $bodyLines = [
-                'Thank you for subscribing to the ScholarlyNest newsletter. We are thrilled to have you join our global community of researchers, educators, and scholars.',
-                'You will now receive regular updates, including monthly highlights from our academic magazines, trending articles, and platform developments.',
-                'If you have any questions or feedback, please feel free to reach out to us at any time.',
-                'Best regards,<br><strong>The ScholarlyNest Team</strong>'
+                'Thank you for subscribing to Scholarly Nest updates.',
+                'Subscription Details: Email: ' . $subscriber->email . '. Subscribed At: ' . now()->toDateTimeString() . '.',
+                'You will receive updates about publications, platform announcements, and relevant Scholarly Nest news. Use the unsubscribe link in this email at any time.',
             ];
 
             $this->notificationService->send(
                 $subscriber->email,
-                'Welcome to ScholarlyNest!',
-                'Subscription Confirmed!',
+                'Newsletter Subscription Confirmed',
+                'Dear ' . $subscriber->email . ',',
                 $bodyLines,
                 null,
                 'default',

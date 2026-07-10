@@ -99,6 +99,31 @@ class ManuscriptDraftSubmissionTest extends TestCase
         Event::assertNotDispatched(ArticleSubmitted::class);
     }
 
+    public function test_submission_requires_terms_but_drafts_do_not_and_server_records_acceptance_metadata(): void
+    {
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $withoutTerms = $this->articlePayload($author);
+        unset($withoutTerms['terms_accepted']);
+        $this->postJson('/api/articles', $withoutTerms)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('terms_accepted');
+
+        $this->postJson('/api/articles', ['status' => ArticleStatus::DRAFT])
+            ->assertCreated();
+
+        $response = $this->postJson('/api/articles', $this->articlePayload($author), ['REMOTE_ADDR' => '203.0.113.44'])
+            ->assertStatus(211);
+
+        $this->assertDatabaseHas('articles', [
+            'id' => $response->json('article.id'),
+            'terms_accepted_by' => $author->id,
+            'terms_acceptance_ip' => '203.0.113.44',
+        ]);
+        $this->assertNotNull(Article::findOrFail($response->json('article.id'))->terms_accepted_at);
+    }
+
     public function test_draft_edit_payload_returns_deterministic_resume_step(): void
     {
         $author = $this->author();
@@ -425,6 +450,7 @@ class ManuscriptDraftSubmissionTest extends TestCase
             'magazine_id' => $this->magazine->id,
             'title' => 'Draft Workflow Manuscript',
             'abstract' => 'Abstract',
+            'terms_accepted' => true,
             'authors' => [[
                 'name' => $owner->name,
                 'email' => $owner->email,

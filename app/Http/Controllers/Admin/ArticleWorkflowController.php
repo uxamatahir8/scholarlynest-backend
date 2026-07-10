@@ -660,6 +660,28 @@ class ArticleWorkflowController extends Controller
         return response()->json(['message' => 'Review invitation accepted. You can now sign in to access the reviewer desk.']);
     }
 
+    /** Public, token-gated context for an invitation. It intentionally excludes files and workflow internals. */
+    public function showReviewerInvitation(Request $request, int $assignmentId): JsonResponse
+    {
+        $validated = $request->validate(['token' => 'required|string']);
+        $assignment = ReviewerAssignment::with(['article.magazine:id,title'])->findOrFail($assignmentId);
+        $this->assertValidInvitationToken($assignment, $validated['token']);
+        $article = $assignment->article;
+
+        return response()->json(['invitation' => [
+            'id' => $assignment->id,
+            'status' => $this->reviewerInvitationState($assignment),
+            'reviewer_name' => $assignment->invitee_name,
+            'article' => [
+                'title' => $article->title,
+                'abstract' => $article->abstract,
+                'article_type' => $article->article_type,
+                'article_category' => $article->article_category,
+                'magazine' => $article->magazine?->title,
+            ],
+        ]]);
+    }
+
     public function declineReviewerInvitation(Request $request, int $assignmentId): JsonResponse
     {
         $validated = $request->validate([
@@ -678,6 +700,7 @@ class ArticleWorkflowController extends Controller
         $this->audit($assignment->article, null, 'review.declined', $assignment->article->status, $assignment->article->status, [
             'reviewer_assignment_id' => $assignment->id,
         ]);
+        event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.declined', null, ['from_status' => $assignment->article->status, 'to_status' => $assignment->article->status, 'reviewer_name' => $assignment->invitee_name, 'reviewer_email' => $assignment->invitee_email]));
 
         return response()->json(['message' => 'Review invitation declined.']);
     }
@@ -751,6 +774,7 @@ class ArticleWorkflowController extends Controller
             'assignment_id' => $assignment->id,
             'from_status' => $oldStatus,
             'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+            'recommendation' => $assignment->recommendation,
         ]));
 
         return response()->json([
@@ -1590,14 +1614,21 @@ class ArticleWorkflowController extends Controller
     private function sendReviewerInvitation(ReviewerAssignment $assignment, string $rawToken): void
     {
         $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
-        $article = $assignment->article()->with('magazine:id,title')->first();
+        $article = $assignment->article()->with(['magazine:id,title', 'articleAuthors'])->first();
+        $author = $article?->articleAuthors?->firstWhere('is_corresponding', true)?->co_author_name
+            ?? $article?->user?->name
+            ?? 'the submitting author';
         app(\App\Services\NotificationService::class)->send(
             $assignment->invitee_email,
-            'Review Invitation: ' . ($article?->title ?? 'Article Review'),
+            'Review Invitation: ' . ($article?->title ?? 'Article Review') . ' — ' . ($article?->magazine?->title ?? 'ScholarlyNest'),
             $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
             [
                 'You have been invited to review the article "' . ($article?->title ?? 'Untitled Article') . '" for ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '.',
-                'Please accept or decline the invitation using the secure review invitation page.',
+                'Article Details: Title: ' . ($article?->title ?? 'Untitled Article') . '. Magazine: ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article?->tracking_code ?? 'Not assigned') . '.',
+                'Article Type: ' . ($article?->article_type ?: 'Not specified') . '. Category: ' . ($article?->article_category ?: 'Not specified') . '. Corresponding Author: ' . $author . '.',
+                'Abstract: ' . strip_tags((string) ($article?->abstract ?? 'Not provided.')),
+                'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
+                'Security Note: This invitation link is intended only for you. Do not forward it. Manuscript files, S3 URLs, questionnaire responses, and internal editorial notes are not included in this email.',
             ],
             [
                 'text' => 'Open Review Invitation',

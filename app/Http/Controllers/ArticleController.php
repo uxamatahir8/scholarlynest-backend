@@ -260,6 +260,12 @@ class ArticleController extends Controller
             'status' => $requestedStatus,
         ]);
 
+        if ($requestedStatus === ArticleStatus::SUBMITTED) {
+            $articleData['terms_accepted_at'] = now();
+            $articleData['terms_accepted_by'] = $user->id;
+            $articleData['terms_acceptance_ip'] = $request->ip();
+        }
+
         if ($user->hasPermission('seo.articles')) {
             $articleData['seo_title'] = $validated['seo_title'] ?? null;
             $articleData['seo_description'] = $validated['seo_description'] ?? null;
@@ -679,6 +685,13 @@ class ArticleController extends Controller
             'published_month' => $publishedMonth,
             'rejection_reason' => $rejectionReason,
         ]);
+
+        if (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED
+            && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+            $updateData['terms_accepted_at'] = now();
+            $updateData['terms_accepted_by'] = $user->id;
+            $updateData['terms_acceptance_ip'] = $request->ip();
+        }
 
         if ($user->hasPermission('seo.articles')) {
             $updateData['seo_title'] = $validated['seo_title'] ?? null;
