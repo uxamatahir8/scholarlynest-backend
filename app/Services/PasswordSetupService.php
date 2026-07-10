@@ -24,7 +24,6 @@ class PasswordSetupService
                 'We received a request to reset the password for your Scholarly Nest account.',
                 'Account: Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '.',
                 'Use the secure button below to reset your password. If you did not request this password reset, no action is required and your account will remain unchanged.',
-                'Security Note: This link is temporary. Do not forward this email or share the reset link with anyone.',
             ],
             [
                 'text' => 'Reset Password',
@@ -48,7 +47,6 @@ class PasswordSetupService
                 'An account has been created for you on Scholarly Nest.',
                 'Account Details: Name: ' . $user->name . '. Email: ' . $user->email . '. Role: ' . ($user->role?->display_name ?? $user->role?->name ?? 'Not specified') . '. Created At: ' . now()->toDateTimeString() . '.',
                 'To access your account, please set your password using the secure link below. This link is temporary and should only be used by you.',
-                'Security Note: Scholarly Nest will never ask you to share your password by email. No password has been generated or sent in this message. If you did not expect this account, please ignore this email or contact support.',
             ],
             [
                 'text' => 'Set Password',

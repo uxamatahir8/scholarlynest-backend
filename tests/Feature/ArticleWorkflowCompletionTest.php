@@ -206,15 +206,16 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertSame($firstVersionId, $assignment->questionnaireInstance->review_questionnaire_version_id);
 
         Sanctum::actingAs($this->admin);
-        $this->postJson('/api/admin/review-questionnaire', [
+        $updatedQuestionnaire = $this->postJson('/api/admin/review-questionnaire', [
             'name' => 'Default Reviewer Form',
             'questions' => [[
                 'prompt' => 'Updated required question',
                 'response_type' => 'textarea',
                 'is_required' => true,
             ]],
-        ])->assertCreated();
+        ])->assertCreated()->json('questionnaire');
         $this->assertSame(2, ReviewQuestionnaireVersion::count());
+        $secondQuestionId = $updatedQuestionnaire['active_version']['questions'][0]['id'];
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
@@ -230,7 +231,7 @@ class ArticleWorkflowCompletionTest extends TestCase
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [[
-                'question_id' => $firstQuestionId,
+                'question_id' => $secondQuestionId,
                 'answer' => 'yes',
             ]],
         ])->assertOk();
@@ -242,8 +243,8 @@ class ArticleWorkflowCompletionTest extends TestCase
         Sanctum::actingAs($this->editor);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
-            ->assertJsonFragment(['prompt' => 'Is the method sound?'])
-            ->assertJsonMissing(['prompt' => 'Updated required question']);
+            ->assertJsonFragment(['prompt' => 'Updated required question'])
+            ->assertJsonMissing(['prompt' => 'Is the method sound?']);
 
         Sanctum::actingAs($reviewer);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")

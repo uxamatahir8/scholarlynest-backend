@@ -1633,7 +1633,6 @@ class ArticleWorkflowController extends Controller
                 'Article Type: ' . ($article?->article_type ?: 'Not specified') . '. Category: ' . ($article?->article_category ?: 'Not specified') . '. Corresponding Author: ' . $author . '.',
                 'Abstract: ' . strip_tags((string) ($article?->abstract ?? 'Not provided.')),
                 'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
-                'Security Note: This invitation link is intended only for you. Do not forward it. Manuscript files, S3 URLs, questionnaire responses, and internal editorial notes are not included in this email.',
             ],
             [
                 'text' => 'Open Review Invitation',
@@ -1709,10 +1708,6 @@ class ArticleWorkflowController extends Controller
 
     private function ensureQuestionnaireInstance(ReviewerAssignment $assignment): ?ReviewQuestionnaireInstance
     {
-        if ($assignment->questionnaire_instance_id) {
-            return $assignment->questionnaireInstance;
-        }
-
         $version = ReviewQuestionnaireVersion::query()
             ->where('is_active', true)
             ->with('questions.options')
@@ -1724,14 +1719,23 @@ class ArticleWorkflowController extends Controller
             return null;
         }
 
-        $instance = ReviewQuestionnaireInstance::firstOrCreate(
-            ['reviewer_assignment_id' => $assignment->id],
-            [
-                'article_id' => $assignment->article_id,
-                'reviewer_id' => $assignment->reviewer_id,
-                'review_questionnaire_version_id' => $version->id,
-            ]
-        );
+        $instance = ReviewQuestionnaireInstance::where('reviewer_assignment_id', $assignment->id)->first();
+        if ($instance) {
+            if ($assignment->status !== 'completed' && $instance->review_questionnaire_version_id !== $version->id) {
+                $instance->update(['review_questionnaire_version_id' => $version->id]);
+            }
+            if (!$assignment->questionnaire_instance_id) {
+                $assignment->update(['questionnaire_instance_id' => $instance->id]);
+            }
+            return $instance;
+        }
+
+        $instance = ReviewQuestionnaireInstance::create([
+            'reviewer_assignment_id' => $assignment->id,
+            'article_id' => $assignment->article_id,
+            'reviewer_id' => $assignment->reviewer_id,
+            'review_questionnaire_version_id' => $version->id,
+        ]);
         $assignment->update(['questionnaire_instance_id' => $instance->id]);
 
         return $instance;

@@ -404,7 +404,7 @@ class AuthController extends Controller
             $user->email,
             'Verify Your Password Change Request',
             'Dear ' . $user->name . ',',
-            'A password change was requested for your Scholarly Nest account. Verification Details: Account Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '. Enter the verification code below in Scholarly Nest to continue changing your password. If you did not request this change, secure your account immediately and contact support. Security Note: Do not share this verification code with anyone.',
+            'A password change was requested for your Scholarly Nest account. Verification Details: Account Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '. Enter the verification code below in Scholarly Nest to continue changing your password. If you did not request this change, secure your account immediately and contact support.',
             $code
         );
 
