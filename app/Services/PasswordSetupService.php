@@ -18,10 +18,10 @@ class PasswordSetupService
         $token = $this->createToken($user);
         $this->notificationService->send(
             $user->email,
-            'Reset your Scholarly Nest password',
-            'Reset your Scholarly Nest password',
+            'Reset your ScholarlyNest password',
+            'Reset your ScholarlyNest password',
             [
-                'We received a request to reset your Scholarly Nest password.',
+                'We received a request to reset your ScholarlyNest password.',
                 'Use the secure button below to choose a new password. This link expires according to the configured reset-password policy.',
                 'If you did not request this, you can safely ignore this email.',
             ],
@@ -41,10 +41,10 @@ class PasswordSetupService
         $token = $this->createToken($user);
         $this->notificationService->send(
             $user->email,
-            'Set your Scholarly Nest password',
-            'Your Scholarly Nest account has been created',
+            'Set your ScholarlyNest password',
+            'Your ScholarlyNest account has been created',
             [
-                'Your account has been created by the Scholarly Nest team.',
+                'Your account has been created by the ScholarlyNest team.',
                 'Use the secure button below to set your password and access your account. This link expires according to the configured reset-password policy.',
                 'If you were not expecting this account, please ignore this email.',
             ],

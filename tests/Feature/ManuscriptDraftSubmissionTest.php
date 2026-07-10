@@ -99,6 +99,100 @@ class ManuscriptDraftSubmissionTest extends TestCase
         Event::assertNotDispatched(ArticleSubmitted::class);
     }
 
+    public function test_draft_edit_payload_returns_deterministic_resume_step(): void
+    {
+        $author = $this->author();
+        Sanctum::actingAs($author);
+
+        $empty = $this->postJson('/api/articles', ['status' => ArticleStatus::DRAFT])
+            ->assertCreated()
+            ->json('article.id');
+        $this->getJson("/api/admin/articles/{$empty}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('resume_step', 1)
+            ->assertJsonPath('next_step', 1)
+            ->assertJsonPath('completion_step', 1);
+
+        $basics = $this->postJson('/api/articles', [
+            'status' => ArticleStatus::DRAFT,
+            'magazine_id' => $this->magazine->id,
+            'title' => 'Basics Only Draft',
+            'abstract' => 'Draft abstract',
+        ])->assertCreated()->json('article.id');
+        $this->getJson("/api/admin/articles/{$basics}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('resume_step', 2);
+
+        $collaborators = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'status' => ArticleStatus::DRAFT,
+            'authors' => [
+                $this->articlePayload($author)['authors'][0],
+                [
+                    'name' => 'Second Author',
+                    'email' => 'second.author@example.test',
+                    'affiliation' => 'University',
+                    'author_order' => 2,
+                    'is_owner' => false,
+                    'is_corresponding' => false,
+                    'can_edit' => false,
+                    'create_account' => false,
+                ],
+            ],
+        ]))->assertCreated()->json('article.id');
+        $this->getJson("/api/admin/articles/{$collaborators}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('resume_step', 3);
+
+        $reviewers = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'status' => ArticleStatus::DRAFT,
+            'authors' => [
+                $this->articlePayload($author)['authors'][0],
+                [
+                    'name' => 'Third Author',
+                    'email' => 'third.author@example.test',
+                    'affiliation' => 'University',
+                    'author_order' => 2,
+                    'is_owner' => false,
+                    'is_corresponding' => false,
+                    'can_edit' => false,
+                    'create_account' => false,
+                ],
+            ],
+            'suggested_reviewers' => [[
+                'name' => 'Suggested Expert',
+                'email' => 'suggested.step@example.test',
+            ]],
+        ]))->assertCreated()->json('article.id');
+        $this->getJson("/api/admin/articles/{$reviewers}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('resume_step', 4);
+
+        $complete = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'status' => ArticleStatus::DRAFT,
+            'authors' => [
+                $this->articlePayload($author)['authors'][0],
+                [
+                    'name' => 'Fourth Author',
+                    'email' => 'fourth.author@example.test',
+                    'affiliation' => 'University',
+                    'author_order' => 2,
+                    'is_owner' => false,
+                    'is_corresponding' => false,
+                    'can_edit' => false,
+                    'create_account' => false,
+                ],
+            ],
+            'suggested_reviewers' => [[
+                'name' => 'Suggested Complete',
+                'email' => 'suggested.complete@example.test',
+            ]],
+            'keywords' => ['workflow'],
+        ]))->assertCreated()->json('article.id');
+        $this->getJson("/api/admin/articles/{$complete}?view_context=edit")
+            ->assertOk()
+            ->assertJsonPath('resume_step', 5);
+    }
+
     public function test_draft_submission_generates_tracking_code_and_persists_reviewer_preferences(): void
     {
         $author = $this->author();

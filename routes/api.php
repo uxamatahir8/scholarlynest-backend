@@ -71,6 +71,7 @@ Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/articles/publication-sections/{section_id}/image', [ArticleWorkflowController::class, 'publicationSectionImage'])->middleware('throttle:media-download');
 Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
 Route::post('/reviewer-invitations/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerInvitation'])->middleware('throttle:20,1');
 Route::post('/reviewer-invitations/{id}/decline', [ArticleWorkflowController::class, 'declineReviewerInvitation'])->middleware('throttle:20,1');
@@ -261,6 +262,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/review-questionnaire', [ArticleWorkflowController::class, 'questionnaire'])->middleware('super-admin');
         Route::post('/review-questionnaire', [ArticleWorkflowController::class, 'storeQuestionnaire'])->middleware('super-admin');
         Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/author-final-review', [ArticleWorkflowController::class, 'authorFinalReview'])->middleware('permission:articles.view-own');
         Route::post('/articles/{id}/production-assignments', [ArticleWorkflowController::class, 'assignProduction'])->middleware('permission:articles.approve');
         Route::post('/production-assignments/{id}/complete', [ArticleWorkflowController::class, 'completeProduction']);
         Route::get('/issues', [ArticleWorkflowController::class, 'issues'])->middleware('permission:articles.view-own');

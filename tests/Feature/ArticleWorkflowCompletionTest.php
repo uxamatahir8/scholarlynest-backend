@@ -8,6 +8,7 @@ use App\Models\ArticleAsset;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
 use App\Models\Magazine;
+use App\Models\MediaUploadSession;
 use App\Models\NotificationLog;
 use App\Models\Permission;
 use App\Models\ReviewerAssignment;
@@ -17,6 +18,7 @@ use App\Models\ReviewQuestionResponse;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -136,7 +138,7 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertTrue((bool) $createdReviewer->needs_password_reset);
         $this->assertDatabaseHas('notification_logs', [
             'recipient_email' => 'external.accept@example.test',
-            'subject' => 'Set your Scholarly Nest password',
+            'subject' => 'Set your ScholarlyNest password',
         ]);
         $this->assertDatabaseHas('reviewer_assignments', [
             'id' => $acceptAssignment->id,
@@ -251,7 +253,23 @@ class ArticleWorkflowCompletionTest extends TestCase
 
     public function test_publication_metadata_sections_are_sanitized_and_public_payload_is_safe(): void
     {
+        Storage::fake('s3');
         $this->article->update(['status' => ArticleStatus::READY_FOR_PUBLICATION]);
+        $sectionImage = MediaUploadSession::create([
+            'user_id' => $this->admin->id,
+            'purpose' => 'publication_section_image',
+            'original_filename' => 'section.webp',
+            'safe_display_filename' => 'section.webp',
+            'expected_size_bytes' => 512,
+            'declared_mime_type' => 'image/webp',
+            'detected_mime_type' => 'image/webp',
+            'disk' => 's3',
+            's3_incoming_key' => 'incoming/section.webp',
+            's3_clean_key' => 'clean/articles/publication-sections/section.webp',
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_CLEAN,
+        ]);
+        Storage::disk('s3')->put($sectionImage->s3_clean_key, 'image-bytes');
 
         Sanctum::actingAs($this->admin);
         $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
@@ -274,7 +292,15 @@ class ArticleWorkflowCompletionTest extends TestCase
             'page_end' => 20,
             'publication_sections' => [[
                 'section_key' => 'introduction',
+                'title' => 'Introduction',
+                'sort_order' => 2,
                 'content_html' => '<h2 onclick="bad()">Intro</h2><p><a href="javascript:alert(1)">unsafe</a></p><script>alert(1)</script>',
+                'media_upload_session_id' => $sectionImage->id,
+            ], [
+                'section_key' => 'custom-results',
+                'title' => 'Custom Results',
+                'sort_order' => 1,
+                'content_html' => '<p>Results body</p>',
             ]],
         ])->assertOk();
 
@@ -297,6 +323,7 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertStringNotContainsString('onclick', $section->content_html);
         $this->assertStringNotContainsString('javascript:', $section->content_html);
         $this->assertStringNotContainsString('<script>', $section->content_html);
+        $this->assertSame($sectionImage->id, ArticlePublicationSection::where('article_id', $this->article->id)->where('section_key', 'introduction')->value('media_upload_session_id'));
 
         ArticleReviewerPreference::create([
             'article_id' => $this->article->id,
@@ -312,7 +339,9 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonPath('article.open_access_label', 'Open Access')
             ->assertJsonPath('article.is_peer_reviewed', true)
             ->assertJsonPath('article.article_images.0.title', 'Figure 1')
-            ->assertJsonPath('article.publication_sections.0.section_key', 'introduction')
+            ->assertJsonPath('article.publication_sections.0.section_key', 'custom_results')
+            ->assertJsonPath('article.publication_sections.1.section_key', 'introduction')
+            ->assertJsonPath('article.publication_sections.1.has_image', true)
             ->assertJsonMissing(['reviewer_preferences'])
             ->assertJsonMissing(['private.reviewer@example.test'])
             ->assertJsonMissing(['invite_token_hash']);

@@ -1140,11 +1140,14 @@ class ArticleController extends Controller
                 ->values(),
             'publication_sections' => $article->publicationSections
                 ->map(fn ($section) => [
+                    'id' => $section->id,
                     'section_key' => $section->section_key,
                     'title' => $section->title,
                     'content_html' => app(HtmlSanitizer::class)->sanitize($section->content_html),
                     'content_text' => $section->content_text,
                     'sort_order' => $section->sort_order,
+                    'has_image' => !empty($section->media_upload_session_id),
+                    'image_url' => $section->media_upload_session_id ? url("/api/articles/publication-sections/{$section->id}/image") : null,
                 ])
                 ->sortBy('sort_order')
                 ->values(),
@@ -1244,6 +1247,9 @@ class ArticleController extends Controller
                         'co_author_name' => $author->co_author_name,
                         'affiliation' => $author->affiliation,
                         'university_name' => $author->university_name,
+                        'department' => $author->department,
+                        'country' => $author->country,
+                        'orcid' => $author->orcid,
                         'author_order' => $author->author_order,
                         'is_owner' => $author->is_owner,
                         'is_corresponding' => $author->is_corresponding,
@@ -1262,8 +1268,12 @@ class ArticleController extends Controller
                     'original_filename' => $asset->original_filename,
                     'file_size' => $asset->file_size,
                     'mime_type' => $asset->mime_type,
+                    'download_url' => url("/api/articles/assets/{$asset->id}/download"),
                 ])
                 ->values(),
+            'resume_step' => $this->draftResumeStep($article),
+            'next_step' => $this->draftResumeStep($article),
+            'completion_step' => $this->draftResumeStep($article),
         ];
 
         if ($canViewEditorial) {
@@ -1284,6 +1294,51 @@ class ArticleController extends Controller
         }
 
         return $payload;
+    }
+
+    private function draftResumeStep(Article $article): int
+    {
+        $article->loadMissing(['articleAuthors', 'reviewerPreferences', 'assets']);
+
+        $hasBasics = (bool) (
+            $article->magazine_id
+            || trim((string) $article->title) !== ''
+            || trim(strip_tags((string) $article->abstract)) !== ''
+        );
+        if (!$hasBasics) {
+            return 1;
+        }
+
+        $hasCollaborators = $article->articleAuthors
+            ->filter(fn ($author) => !$author->is_owner || (int) $author->author_order > 1)
+            ->isNotEmpty();
+        if (!$hasCollaborators) {
+            return 2;
+        }
+
+        if ($article->reviewerPreferences->isEmpty()) {
+            return 3;
+        }
+
+        $hasClassificationOrDeclaration = (bool) (
+            !empty($article->keywords)
+            || trim((string) $article->article_category) !== ''
+            || trim((string) $article->article_type) !== ''
+            || trim((string) $article->subject_area) !== ''
+            || trim((string) $article->language) !== ''
+            || trim((string) $article->ethical_approval_statement) !== ''
+            || trim((string) $article->conflict_of_interest_statement) !== ''
+            || trim((string) $article->funding_statement) !== ''
+            || trim((string) $article->data_availability_statement) !== ''
+            || trim((string) $article->author_contribution_statement) !== ''
+        );
+
+        $hasUploads = !empty($article->pdf_path) || $article->assets->isNotEmpty();
+        if (!$hasClassificationOrDeclaration && !$hasUploads) {
+            return 4;
+        }
+
+        return 5;
     }
 
     private function reviewerPreferencePayload(Article $article, User $viewer): array
