@@ -60,6 +60,7 @@ class ArticleVersionWorkflowTest extends TestCase
             'title' => 'Versioned Submission',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
+            'terms_accepted' => true,
             'pdf_upload_id' => $this->cleanUpload($this->author, 'article_manuscript', 'manuscript.pdf')->id,
         ])->assertStatus(211)->json('article.id');
 

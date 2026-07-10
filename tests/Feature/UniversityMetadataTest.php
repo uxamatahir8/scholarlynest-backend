@@ -189,6 +189,7 @@ class UniversityMetadataTest extends TestCase
             'title' => 'Novel Quantum Computing Methods',
             'abstract' => 'Quantum computing methods are explored...',
             'full_text' => 'This is full text content.',
+            'terms_accepted' => true,
             'co_authors' => json_encode([
                 [
                     'name' => 'Dr. David',

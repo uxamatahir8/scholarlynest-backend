@@ -154,6 +154,7 @@ class ArticleAcademicMetadataTest extends TestCase
             'magazine_id' => $this->magazine->id,
             'title' => 'Metadata Submission',
             'abstract' => 'Abstract text',
+            'terms_accepted' => true,
             'full_text' => 'Full manuscript text',
         ];
     }

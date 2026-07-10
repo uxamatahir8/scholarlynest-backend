@@ -660,6 +660,28 @@ class ArticleWorkflowController extends Controller
         return response()->json(['message' => 'Review invitation accepted. You can now sign in to access the reviewer desk.']);
     }
 
+    /** Public, token-gated context for an invitation. It intentionally excludes files and workflow internals. */
+    public function showReviewerInvitation(Request $request, int $assignmentId): JsonResponse
+    {
+        $validated = $request->validate(['token' => 'required|string']);
+        $assignment = ReviewerAssignment::with(['article.magazine:id,title'])->findOrFail($assignmentId);
+        $this->assertValidInvitationToken($assignment, $validated['token']);
+        $article = $assignment->article;
+
+        return response()->json(['invitation' => [
+            'id' => $assignment->id,
+            'status' => $this->reviewerInvitationState($assignment),
+            'reviewer_name' => $assignment->invitee_name,
+            'article' => [
+                'title' => $article->title,
+                'abstract' => $article->abstract,
+                'article_type' => $article->article_type,
+                'article_category' => $article->article_category,
+                'magazine' => $article->magazine?->title,
+            ],
+        ]]);
+    }
+
     public function declineReviewerInvitation(Request $request, int $assignmentId): JsonResponse
     {
         $validated = $request->validate([
@@ -1590,14 +1612,21 @@ class ArticleWorkflowController extends Controller
     private function sendReviewerInvitation(ReviewerAssignment $assignment, string $rawToken): void
     {
         $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
-        $article = $assignment->article()->with('magazine:id,title')->first();
+        $article = $assignment->article()->with(['magazine:id,title', 'articleAuthors'])->first();
+        $author = $article?->articleAuthors?->firstWhere('is_corresponding', true)?->co_author_name
+            ?? $article?->user?->name
+            ?? 'the submitting author';
         app(\App\Services\NotificationService::class)->send(
             $assignment->invitee_email,
-            'Review Invitation: ' . ($article?->title ?? 'Article Review'),
+            'Review Invitation: ' . ($article?->title ?? 'Article Review') . ' — ' . ($article?->magazine?->title ?? 'ScholarlyNest'),
             $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
             [
                 'You have been invited to review the article "' . ($article?->title ?? 'Untitled Article') . '" for ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '.',
+                'Tracking Code: ' . ($article?->tracking_code ?? 'Not assigned'),
+                'Corresponding Author: ' . $author,
+                'Abstract: ' . strip_tags((string) ($article?->abstract ?? 'Not provided.')),
                 'Please accept or decline the invitation using the secure review invitation page.',
+                'For security, manuscript files are available only after you accept this invitation.',
             ],
             [
                 'text' => 'Open Review Invitation',

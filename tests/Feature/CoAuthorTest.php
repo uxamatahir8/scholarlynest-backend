@@ -86,6 +86,7 @@ class CoAuthorTest extends TestCase
             'title' => 'Quantum Computing Breakthroughs',
             'abstract' => 'This is the abstract text.',
             'full_text' => 'This is the full text of the quantum paper.',
+            'terms_accepted' => true,
             'co_authors' => json_encode([
                 [
                     'name' => 'Charlie New',

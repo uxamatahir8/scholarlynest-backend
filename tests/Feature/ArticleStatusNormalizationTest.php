@@ -55,6 +55,7 @@ class ArticleStatusNormalizationTest extends TestCase
             'title' => 'Normalized Submission',
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
+            'terms_accepted' => true,
         ])->assertStatus(211)
             ->assertJsonPath('article.status', ArticleStatus::SUBMITTED);
     }

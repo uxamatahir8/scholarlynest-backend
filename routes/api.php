@@ -76,6 +76,7 @@ Route::get('/articles/publication-sections/{section_id}/image', [ArticleWorkflow
 Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
 Route::post('/reviewer-invitations/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerInvitation'])->middleware('throttle:20,1');
 Route::post('/reviewer-invitations/{id}/decline', [ArticleWorkflowController::class, 'declineReviewerInvitation'])->middleware('throttle:20,1');
+Route::get('/reviewer-invitations/{id}', [ArticleWorkflowController::class, 'showReviewerInvitation'])->middleware('throttle:20,1');
 Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
