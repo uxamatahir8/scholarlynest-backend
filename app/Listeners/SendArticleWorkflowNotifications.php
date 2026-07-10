@@ -34,7 +34,9 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         }
 
         $message = $this->messageFor($article, $event);
-        $message['body'] = array_merge($message['body'], $this->workflowContextLines($article, $event));
+        if (!str_starts_with($event->event, 'transfer.')) {
+            $message['body'] = array_merge($message['body'], $this->workflowContextLines($article, $event));
+        }
         $action = [
             'text' => 'Open Workflow',
             'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . '/admin/articles',
@@ -246,10 +248,17 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         return [
             'subject' => 'Magazine Transfer Request: ' . $article->title,
             'body' => [
-                'The editor of ' . $fromMagazine . ' feels that your article may be more suitable for ' . $toMagazine . '.',
-                'Article Details: Article Title: ' . $article->title . '. Current Magazine: ' . $fromMagazine . '. Suggested Magazine: ' . $toMagazine . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Requested By: ' . ($event->actor?->name ?? 'Editorial team') . '. Requested At: ' . now()->toDateTimeString() . '.',
-                'Editor Comments: ' . strip_tags((string) ($event->payload['editor_comments'] ?? 'No comments provided.')),
-                'Please log in to your Scholarly Nest account to accept or reject this transfer request.',
+                'The editor of <strong>' . htmlspecialchars($fromMagazine) . '</strong> has initiated a request to transfer your manuscript to <strong>' . htmlspecialchars($toMagazine) . '</strong> because it is more suitable for its focus and scope.',
+                '<br><strong>Transfer Details:</strong>',
+                '• <strong>Manuscript Title:</strong> ' . htmlspecialchars($article->title),
+                '• <strong>Tracking Code:</strong> ' . htmlspecialchars($article->tracking_code ?? 'Not assigned'),
+                '• <strong>Current Magazine:</strong> ' . htmlspecialchars($fromMagazine),
+                '• <strong>Suggested Magazine:</strong> ' . htmlspecialchars($toMagazine),
+                '• <strong>Requested By:</strong> ' . htmlspecialchars($event->actor?->name ?? 'Editorial team'),
+                '• <strong>Requested At:</strong> ' . ($event->payload['requested_at'] ?? now()->toDateTimeString()),
+                '<br><strong>Editor Comments & Rationale:</strong>',
+                '<div style="background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 8px 0; font-style: italic; color: #475569;">' . nl2br(htmlspecialchars(strip_tags((string) ($event->payload['editor_comments'] ?? 'No rationale comments provided.')))) . '</div>',
+                '<br>Please log in to your ScholarlyNest account to review, accept, or reject this transfer request.',
             ],
         ];
     }
@@ -262,9 +271,15 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         return [
             'subject' => 'Magazine Transfer Accepted: ' . $article->title,
             'body' => [
-                'The author accepted the magazine transfer request.',
-                'Article Details: Article Title: ' . $article->title . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Old Magazine: ' . $fromMagazine . '. New Magazine: ' . $toMagazine . '. Accepted By: ' . ($event->actor?->name ?? 'Author') . '. Accepted At: ' . now()->toDateTimeString() . '.',
-                'Next Action: The article has returned to Screening in the new magazine.',
+                'The author has <strong>accepted</strong> the magazine transfer request.',
+                '<br><strong>Transfer Details:</strong>',
+                '• <strong>Manuscript Title:</strong> ' . htmlspecialchars($article->title),
+                '• <strong>Tracking Code:</strong> ' . htmlspecialchars($article->tracking_code ?? 'Not assigned'),
+                '• <strong>Original Magazine:</strong> ' . htmlspecialchars($fromMagazine),
+                '• <strong>New Magazine:</strong> ' . htmlspecialchars($toMagazine),
+                '• <strong>Accepted By:</strong> ' . htmlspecialchars($event->actor?->name ?? 'Author'),
+                '• <strong>Accepted At:</strong> ' . now()->toDateTimeString(),
+                '<br><strong>Next Action:</strong> The article has been moved to the new magazine and is now in <strong>Screening</strong> stage.',
             ],
         ];
     }
@@ -277,10 +292,17 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         return [
             'subject' => 'Magazine Transfer Rejected: ' . $article->title,
             'body' => [
-                'The author rejected the magazine transfer request.',
-                'Article Details: Article Title: ' . $article->title . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Original Magazine: ' . $fromMagazine . '. Suggested Magazine: ' . $toMagazine . '. Rejected By: ' . ($event->actor?->name ?? 'Author') . '. Rejected At: ' . now()->toDateTimeString() . '.',
-                'Rejection Reason: ' . strip_tags((string) ($event->payload['author_rejection_reason'] ?? 'No reason provided.')),
-                'Next Action: The article remains in Screening in the original magazine.',
+                'The author has <strong>rejected</strong> the magazine transfer request.',
+                '<br><strong>Transfer Details:</strong>',
+                '• <strong>Manuscript Title:</strong> ' . htmlspecialchars($article->title),
+                '• <strong>Tracking Code:</strong> ' . htmlspecialchars($article->tracking_code ?? 'Not assigned'),
+                '• <strong>Original Magazine:</strong> ' . htmlspecialchars($fromMagazine),
+                '• <strong>Suggested Magazine:</strong> ' . htmlspecialchars($toMagazine),
+                '• <strong>Rejected By:</strong> ' . htmlspecialchars($event->actor?->name ?? 'Author'),
+                '• <strong>Rejected At:</strong> ' . now()->toDateTimeString(),
+                '<br><strong>Author Rejection Reason:</strong>',
+                '<div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 8px 0; font-style: italic; color: #991b1b;">' . nl2br(htmlspecialchars(strip_tags((string) ($event->payload['author_rejection_reason'] ?? 'No reason provided.')))) . '</div>',
+                '<br><strong>Next Action:</strong> The article remains in the original magazine under the <strong>Screening</strong> stage.',
             ],
         ];
     }
