@@ -48,7 +48,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->foreign('media_upload_session_id')->references('id')->on('media_upload_sessions')->cascadeOnDelete();
-            $table->index(['support_ticket_id', 'support_ticket_message_id']);
+            $table->index(['support_ticket_id', 'support_ticket_message_id'], 'sta_ticket_message_idx');
         });
 
         Schema::create('support_ticket_activities', function (Blueprint $table) {
