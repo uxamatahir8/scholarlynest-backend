@@ -89,6 +89,7 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ])->merge($this->superAdmins()))),
 
             'review.accepted' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
+            'review.declined' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
             'sub_editor.recommendation_submitted',
             'review.submitted',
             'review.reopened' => $this->editorialRecipients($article)->merge($this->superAdmins())->pipe(fn ($items) => $this->dedupe($items)),
@@ -154,10 +155,7 @@ class SendArticleWorkflowNotifications implements ShouldQueue
                     'Current manuscript status: ' . $statusLabel . '.',
                 ],
             ],
-            'review.accepted' => [
-                'subject' => 'Reviewer Invitation Accepted: ' . $title,
-                'body' => ['A reviewer has accepted the invitation for "' . $title . '".'],
-            ],
+            'review.accepted', 'review.declined' => $this->reviewerResponseMessage($article, $event),
             'sub_editor.recommendation_submitted' => [
                 'subject' => 'Sub Editor Recommendation Submitted: ' . $title,
                 'body' => ['A Sub Editor recommendation has been submitted for "' . $title . '".'],
@@ -215,6 +213,9 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ],
         };
     }
+
+    private function reviewerResponseMessage($article, ArticleWorkflowEventOccurred $event): array
+    { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['Reviewer: ' . ($reviewer?->name ?? 'Reviewer') . ' (' . ($reviewer?->email ?? 'email unavailable') . ').', 'Response: ' . ($accepted ? 'Accepted' : 'Declined') . '.', 'Article: ' . $article->title . '.', 'Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.', 'Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Timestamp: ' . now()->toDateTimeString() . '.']]; }
 
     private function authorRecipients($article): Collection
     {

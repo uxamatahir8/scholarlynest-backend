@@ -12,6 +12,8 @@ class ArticleVersion extends Model
         'article_id',
         'created_by',
         'version_number',
+        'revision_number',
+        'revision_tracking_code',
         'label',
         'status_snapshot',
         'metadata_snapshot',

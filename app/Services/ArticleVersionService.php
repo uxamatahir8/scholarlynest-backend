@@ -32,6 +32,10 @@ class ArticleVersionService
                 'change_summary' => $changeSummary,
                 'author_response' => $authorResponse,
             ]);
+            if ($label === 'Revised Manuscript') {
+                $revision = max(1, $version->version_number - 1);
+                $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code . '-R' . $revision]);
+            }
 
             $this->linkFiles($article, $version, $linkFileIds);
 
@@ -130,6 +134,8 @@ class ArticleVersionService
             'id' => $version->id,
             'article_id' => $version->article_id,
             'version_number' => $version->version_number,
+            'revision_number' => $version->revision_number,
+            'revision_tracking_code' => $version->revision_tracking_code,
             'label' => $version->label,
             'status_snapshot' => $version->status_snapshot,
             'metadata_snapshot' => $this->safeMetadataSnapshot($version->metadata_snapshot ?? [], $viewer),
