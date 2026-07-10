@@ -35,13 +35,18 @@ class FinalWorkflowHardeningTest extends TestCase
     {
         parent::setUp();
 
-        foreach (array_merge(SystemRoles::names(), ['admin']) as $roleName) {
+        foreach (array_unique(array_merge(SystemRoles::names(), ['admin'])) as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
                 'is_system' => true,
             ]);
         }
+        $this->roles['proofreader'] = Role::create([
+            'name' => 'proofreader',
+            'display_name' => 'Proofreader',
+            'is_system' => false,
+        ]);
 
         foreach ([
             'articles.view-own',
@@ -76,14 +81,14 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->roles['proofreader']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.manage-assets'])->pluck('id'));
 
         $this->magazine = Magazine::create([
-            'title' => 'Hardening Journal',
-            'slug' => 'hardening-journal',
-            'description' => 'QA journal',
+            'title' => 'Hardening Magazine',
+            'slug' => 'hardening-magazine',
+            'description' => 'QA magazine',
         ]);
         $this->otherMagazine = Magazine::create([
-            'title' => 'Unrelated Journal',
-            'slug' => 'unrelated-journal',
-            'description' => 'Other journal',
+            'title' => 'Unrelated Magazine',
+            'slug' => 'unrelated-magazine',
+            'description' => 'Other magazine',
         ]);
     }
 
@@ -570,7 +575,7 @@ class FinalWorkflowHardeningTest extends TestCase
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $ownProductionAssignment->id);
         $this->getJson('/api/admin/my-production-assignments?role=proofreader')
-            ->assertForbidden();
+            ->assertStatus(422);
     }
 
     private function user(string $roleName): User

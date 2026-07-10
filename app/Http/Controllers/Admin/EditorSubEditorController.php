@@ -5,13 +5,17 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 
 class EditorSubEditorController extends Controller
 {
+    public function __construct(private readonly PasswordSetupService $passwordSetupService)
+    {
+    }
+
     /**
      * Display a listing of Sub Editors assigned to the authenticated Editor.
      */
@@ -61,20 +65,22 @@ class EditorSubEditorController extends Controller
         }
 
         try {
-            $result = DB::transaction(function () use ($validated, $role, $user) {
+            $createdUser = false;
+            $result = DB::transaction(function () use ($validated, $role, $user, &$createdUser) {
                 $subEditor = User::where('email', $validated['email'])->first();
 
                 if (!$subEditor) {
                     $subEditor = User::create([
                         'name' => $validated['name'],
-                        'email' => $validated['email'],
-                        'password' => Hash::make('Password123!'),
+                        'email' => strtolower($validated['email']),
+                        'password' => null,
                         'role_id' => $role->id,
                         'email_verified_at' => now(),
                         'needs_password_reset' => true,
                         'university_name' => $user->university_name,
                         'current_email_verified' => true,
                     ]);
+                    $createdUser = true;
                 } else {
                     $subEditor->role_id = $role->id;
                     $subEditor->save();
@@ -102,8 +108,12 @@ class EditorSubEditorController extends Controller
                 ];
             });
 
+            if ($createdUser) {
+                $this->passwordSetupService->sendSetupLink($result['sub_editor']);
+            }
+
             return response()->json([
-                'message' => $result['message'],
+                'message' => $createdUser ? 'Sub Editor linked successfully. Password setup email sent.' : $result['message'],
                 'sub_editor' => [
                     'id' => $result['sub_editor']->id,
                     'name' => $result['sub_editor']->name,

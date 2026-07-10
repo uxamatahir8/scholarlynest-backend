@@ -21,6 +21,7 @@ class Article extends Model
 
     protected $fillable = [
         'magazine_id',
+        'tracking_code',
         'magazine_issue_id',
         'user_id',
         'title',
@@ -41,6 +42,15 @@ class Article extends Model
         'pdf_path',
         'featured_image',
         'doi',
+        'open_access_label',
+        'is_peer_reviewed',
+        'academic_editor',
+        'received_at',
+        'accepted_at',
+        'license_statement',
+        'competing_interests_statement',
+        'abbreviations',
+        'citation_text',
         'status',
         'rejection_reason',
         'plagiarism_status',
@@ -51,6 +61,8 @@ class Article extends Model
         'clicks',
         'impressions',
         'published_at',
+        'author_final_approved_at',
+        'author_final_approved_by',
         'published_year',
         'published_month',
         'page_start',
@@ -65,7 +77,23 @@ class Article extends Model
         'plagiarism_score' => 'decimal:2',
         'screened_at' => 'datetime',
         'published_at' => 'datetime',
+        'author_final_approved_at' => 'datetime',
+        'received_at' => 'date',
+        'accepted_at' => 'date',
+        'is_peer_reviewed' => 'boolean',
     ];
+
+    protected static function booted(): void
+    {
+        static::created(function (Article $article) {
+            if (!$article->tracking_code) {
+                $year = optional($article->created_at)->format('Y') ?: now()->format('Y');
+                $article->forceFill([
+                    'tracking_code' => sprintf('SN-%s-%06d', $year, $article->id),
+                ])->saveQuietly();
+            }
+        });
+    }
 
     /**
      * Get the magazine that this article belongs to.
@@ -91,6 +119,11 @@ class Article extends Model
     public function screener(): BelongsTo
     {
         return $this->belongsTo(User::class, 'screened_by');
+    }
+
+    public function finalApprover(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'author_final_approved_by');
     }
 
     /**
@@ -125,6 +158,18 @@ class Article extends Model
         return $this->hasMany(ArticleAsset::class);
     }
 
+    public function images(): HasMany
+    {
+        return $this->hasMany(ArticleAsset::class)->where('asset_type', 'image')->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function supplementaryAssets(): HasMany
+    {
+        return $this->hasMany(ArticleAsset::class)->where(function ($query) {
+            $query->whereNull('asset_type')->orWhere('asset_type', 'supplementary');
+        });
+    }
+
     public function files(): HasMany
     {
         return $this->hasMany(ArticleFile::class);
@@ -138,6 +183,16 @@ class Article extends Model
     public function reviewerAssignments(): HasMany
     {
         return $this->hasMany(ReviewerAssignment::class);
+    }
+
+    public function reviewerPreferences(): HasMany
+    {
+        return $this->hasMany(ArticleReviewerPreference::class);
+    }
+
+    public function publicationSections(): HasMany
+    {
+        return $this->hasMany(ArticlePublicationSection::class);
     }
 
     public function editorialDecisions(): HasMany

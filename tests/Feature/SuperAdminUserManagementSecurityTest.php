@@ -12,6 +12,7 @@ use Tests\TestCase;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use App\Models\NotificationLog;
 
 class SuperAdminUserManagementSecurityTest extends TestCase
 {
@@ -37,12 +38,12 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         return User::factory()->create(['role_id' => $this->roles[$roleName]->id]);
     }
 
-    private function magazine(string $title = 'Assignment Journal'): Magazine
+    private function magazine(string $title = 'Assignment Magazine'): Magazine
     {
         return Magazine::create([
             'title' => $title . ' ' . uniqid(),
             'slug' => Str::slug($title) . '-' . uniqid(),
-            'description' => 'Test journal',
+            'description' => 'Test magazine',
         ]);
     }
 
@@ -276,10 +277,15 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
 
         $response->assertStatus(201);
-        $response->assertJsonPath('message', 'User created successfully.');
+        $response->assertJsonPath('message', 'User created and password setup email sent.');
         $this->assertDatabaseHas('users', [
             'email' => 'new.editor@example.com',
             'role_id' => $this->roles['editor']->id,
+            'needs_password_reset' => true,
+        ]);
+        $this->assertDatabaseHas('notification_logs', [
+            'recipient_email' => 'new.editor@example.com',
+            'subject' => 'Set your ScholarlyNest password',
         ]);
     }
 
@@ -327,23 +333,32 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     }
 
     /**
-     * Password confirmation validation works.
+     * Password fields are ignored for internally created users.
      */
-    public function test_create_user_password_confirmation_validation(): void
+    public function test_create_user_ignores_password_fields_and_sends_setup_link(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
         $magazine = $this->magazine();
 
         $response = $this->postJson('/api/admin/users', [
-            'name' => 'Mismatched User',
-            'email' => 'mismatch@example.com',
-            'password' => 'SecurePass123!',
+            'name' => 'Password Ignored User',
+            'email' => 'password.ignored@example.com',
+            'password' => 'AdminShouldNotSet123!',
             'password_confirmation' => 'DifferentPass123!',
             'role_id' => $this->roles['editor']->id,
+            'magazine_ids' => [$magazine->id],
         ]);
 
-        $response->assertStatus(422);
-        $response->assertJsonValidationErrors('password');
+        $response->assertStatus(201);
+        $user = User::where('email', 'password.ignored@example.com')->firstOrFail();
+        $this->assertNull($user->password);
+        $this->assertTrue((bool) $user->needs_password_reset);
+        $log = NotificationLog::where('recipient_email', 'password.ignored@example.com')->first();
+        $this->assertNotNull($log);
+        $this->assertSame('Set Password', $log->payload['action']['text']);
+        $this->assertStringContainsString('/reset-password?', $log->payload['action']['url']);
+        $this->assertStringContainsString('token=', $log->payload['action']['url']);
+        $this->assertStringNotContainsString('AdminShouldNotSet123!', json_encode($log->payload));
     }
 
     /**
@@ -397,8 +412,8 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         Sanctum::actingAs($this->user('super_admin'));
 
-        foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
-            $magazine = $this->magazine(Str::headline($roleName) . ' Journal');
+        foreach (['editor', 'magazine_editor', 'publisher'] as $roleName) {
+            $magazine = $this->magazine(Str::headline($roleName) . ' Magazine');
 
             $response = $this->postJson('/api/admin/users', [
                 'name' => Str::headline($roleName) . ' User',
@@ -454,7 +469,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     public function test_user_edit_payload_returns_assigned_magazines_safely(): void
     {
         Sanctum::actingAs($this->user('super_admin'));
-        $magazine = $this->magazine('Safe Payload Journal');
+        $magazine = $this->magazine('Safe Payload Magazine');
         $targetUser = User::factory()->create(['role_id' => $this->roles['publisher']->id]);
         $targetUser->magazines()->attach($magazine->id, ['role' => 'publisher', 'assigned_by' => null]);
 
@@ -473,7 +488,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
 
     public function test_magazine_assignment_options_are_super_admin_only_and_safe(): void
     {
-        $magazine = $this->magazine('Assignment Context Journal');
+        $magazine = $this->magazine('Assignment Context Magazine');
         $editor = User::factory()->create([
             'name' => 'Visible Editor',
             'email' => 'hidden.editor@example.com',
@@ -1051,7 +1066,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         $response->assertOk();
         $user = User::find($subEditor->id);
         $this->assertEquals($this->roles['author']->id, $user->role_id);
-        
+
         $pivotCount = DB::table('editor_sub_editor')
             ->where('sub_editor_id', $subEditor->id)
             ->count();
@@ -1081,7 +1096,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
         ]);
 
         $response->assertStatus(500);
-        
+
         // Assert name and role are rolled back
         $user = User::find($subEditor->id);
         $this->assertEquals('Original Sub Editor Name', $user->name);

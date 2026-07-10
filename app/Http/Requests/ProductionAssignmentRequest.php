@@ -15,7 +15,7 @@ class ProductionAssignmentRequest extends FormRequest
     {
         return [
             'user_id' => 'required|exists:users,id',
-            'role' => 'required|in:copy_editor,proofreader',
+            'role' => 'required|in:copy_editor',
             'due_date' => 'nullable|date',
         ];
     }

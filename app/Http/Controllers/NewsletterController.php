@@ -77,7 +77,7 @@ class NewsletterController extends Controller
 
             $bodyLines = [
                 'Thank you for subscribing to the ScholarlyNest newsletter. We are thrilled to have you join our global community of researchers, educators, and scholars.',
-                'You will now receive regular updates, including monthly highlights from our academic journals, trending articles, and platform developments.',
+                'You will now receive regular updates, including monthly highlights from our academic magazines, trending articles, and platform developments.',
                 'If you have any questions or feedback, please feel free to reach out to us at any time.',
                 'Best regards,<br><strong>The ScholarlyNest Team</strong>'
             ];

@@ -44,8 +44,8 @@ class AppServiceProvider extends ServiceProvider
         );
 
         foreach ([
-            'media-upload-initiate' => 10,
-            'media-upload-sign-parts' => 120,
+            'media-upload-initiate' => config('media_uploads.rate_limit_per_minute', 150),
+            'media-upload-sign-parts' => config('media_uploads.rate_limit_per_minute', 150),
             'media-upload-complete' => 20,
             'media-upload-read' => 60,
             'media-download' => 60,

@@ -60,9 +60,9 @@ class CoAuthorTest extends TestCase
         ]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Test Science Journal',
-            'slug' => 'test-journal',
-            'description' => 'A test journal',
+            'title' => 'Test Science Magazine',
+            'slug' => 'test-magazine',
+            'description' => 'A test magazine',
         ]);
     }
 

@@ -218,19 +218,6 @@ class ArticleFileController extends Controller
             ], true);
         }
 
-        if (
-            $this->hasProductionAssignment($user, $article, null, 'proofreader')
-            && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader'])
-        ) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-            ], true);
-        }
-
         return false;
     }
 
@@ -258,8 +245,7 @@ class ArticleFileController extends Controller
             ArticleFile::ANNOTATED_MANUSCRIPT => $this->hasSubEditorAssignment($user, $article, $assignmentId),
             ArticleFile::REVIEWED_MANUSCRIPT => $this->hasReviewerAssignment($user, $article, $assignmentId),
             ArticleFile::COPY_EDITED_FILE => $this->hasProductionAssignment($user, $article, $assignmentId, 'copy_editor'),
-            ArticleFile::PROOF_FILE => $this->hasProductionAssignment($user, $article, $assignmentId, 'proofreader')
-                && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader']),
+            ArticleFile::PROOF_FILE => false,
             ArticleFile::PUBLICATION_PDF => $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']),
             default => false,
         };

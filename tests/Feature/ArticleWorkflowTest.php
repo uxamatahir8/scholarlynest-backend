@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleAuthor;
 use App\Models\Magazine;
 use App\Models\Permission;
 use App\Models\Role;
@@ -53,9 +54,9 @@ class ArticleWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Workflow Journal',
-            'slug' => 'workflow-journal',
-            'description' => 'Workflow test journal',
+            'title' => 'Workflow Magazine',
+            'slug' => 'workflow-magazine',
+            'description' => 'Workflow test magazine',
         ]);
 
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
@@ -119,6 +120,62 @@ class ArticleWorkflowTest extends TestCase
             ->assertJsonPath('article.status', ArticleStatus::ACCEPTED);
     }
 
+    public function test_author_final_review_moves_accepted_article_to_copy_editing_once(): void
+    {
+        $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+
+        Sanctum::actingAs($this->author);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::COPY_EDITING)
+            ->assertJsonPath('article.can_author_final_review', false);
+
+        $this->assertDatabaseHas('articles', [
+            'id' => $this->article->id,
+            'status' => ArticleStatus::COPY_EDITING,
+            'author_final_approved_by' => $this->author->id,
+        ]);
+        $this->assertNotNull($this->article->fresh()->author_final_approved_at);
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Only accepted manuscripts can be approved for final production review.');
+    }
+
+    public function test_author_final_review_blocks_wrong_state_wrong_user_and_duplicates(): void
+    {
+        $otherAuthor = User::factory()->create(['role_id' => $this->author->role_id]);
+        ArticleAuthor::create([
+            'article_id' => $this->article->id,
+            'user_id' => $otherAuthor->id,
+            'co_author_name' => $otherAuthor->name,
+            'co_author_email' => $otherAuthor->email,
+            'author_order' => 2,
+            'is_owner' => false,
+            'is_corresponding' => false,
+            'can_edit' => false,
+        ]);
+
+        Sanctum::actingAs($this->author);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Only accepted manuscripts can be approved for final production review.');
+
+        $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+
+        Sanctum::actingAs($otherAuthor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertForbidden();
+
+        Sanctum::actingAs($this->author);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertOk();
+        Article::whereKey($this->article->id)->update(['status' => ArticleStatus::ACCEPTED]);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This manuscript has already been approved for final review.');
+    }
+
     public function test_sub_editor_recommendation_and_reviewer_acceptance(): void
     {
         Sanctum::actingAs($this->editor);
@@ -142,6 +199,35 @@ class ArticleWorkflowTest extends TestCase
         $this->postJson("/api/admin/reviewer-assignments/{$reviewerAssignmentId}/accept")
             ->assertStatus(200)
             ->assertJsonPath('assignment.status', 'accepted');
+    }
+
+    public function test_reviewer_invitation_state_is_exposed_and_deduplicated(): void
+    {
+        Sanctum::actingAs($this->editor);
+        $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->assertCreated()
+            ->assertJsonPath('assignment.invitation_state', 'invited')
+            ->json('assignment.id');
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'This reviewer has already been invited or assigned for this article.');
+
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.reviewer_assignments.0.invitation_state', 'invited');
+
+        Sanctum::actingAs($this->reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/accept")
+            ->assertOk()
+            ->assertJsonPath('assignment.invitation_state', 'accepted');
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.reviewer_assignments.0.invitation_state', 'accepted');
     }
 
     public function test_workflow_context_hides_confidential_notes_and_audit_logs_from_author(): void

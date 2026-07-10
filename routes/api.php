@@ -17,6 +17,7 @@ use App\Http\Controllers\ContactController;
 use App\Http\Controllers\NewsletterController;
 use App\Http\Controllers\FaqController;
 use App\Http\Controllers\GlobalSearchController;
+use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\Admin\ArticleTypeController;
 use App\Http\Controllers\Admin\ArticleCategoryController;
 use App\Http\Controllers\Admin\SubjectAreaController;
@@ -71,7 +72,10 @@ Route::post('/articles/{id}/click', [ArticleController::class, 'trackClick']);
 Route::post('/articles/{id}/share-click', [ArticleController::class, 'trackShareClick']);
 Route::get('/articles/{id}/download-pdf', [ArticleController::class, 'downloadPdf'])->middleware('throttle:60,1');
 Route::get('/articles/assets/{asset_id}/download', [\App\Http\Controllers\ArticleAssetController::class, 'download'])->middleware('throttle:media-download');
+Route::get('/articles/publication-sections/{section_id}/image', [ArticleWorkflowController::class, 'publicationSectionImage'])->middleware('throttle:media-download');
 Route::get('/articles/files/{file_id}/download', [ArticleFileController::class, 'download'])->middleware('throttle:media-download');
+Route::post('/reviewer-invitations/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerInvitation'])->middleware('throttle:20,1');
+Route::post('/reviewer-invitations/{id}/decline', [ArticleWorkflowController::class, 'declineReviewerInvitation'])->middleware('throttle:20,1');
 Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
@@ -158,6 +162,16 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         ->middleware(['super-admin-delete', 'permission:articles.manage-assets']);
     Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
+
+    // Support tickets
+    Route::get('/support/tickets', [SupportTicketController::class, 'index']);
+    Route::post('/support/tickets', [SupportTicketController::class, 'store']);
+    Route::get('/support/tickets/attachments/{attachment}/download', [SupportTicketController::class, 'downloadAttachment'])
+        ->middleware('throttle:media-download');
+    Route::get('/support/tickets/{ticket}', [SupportTicketController::class, 'show']);
+    Route::get('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'messages']);
+    Route::post('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'reply']);
+    Route::get('/support/tickets/{ticket}/activities', [SupportTicketController::class, 'activities']);
  
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
@@ -183,6 +197,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/contact-subjects', [ContactController::class, 'storeSubject']);
         Route::put('/contact-subjects/{id}', [ContactController::class, 'updateSubject']);
         Route::delete('/contact-subjects/{id}', [ContactController::class, 'deleteSubject'])->middleware('super-admin-delete');
+
+        Route::get('/support/tickets', [SupportTicketController::class, 'index'])->middleware('permission:support_ticket_management');
+        Route::get('/support/tickets/{ticket}', [SupportTicketController::class, 'show'])->middleware('permission:support_ticket_management');
+        Route::post('/support/tickets/{ticket}/messages', [SupportTicketController::class, 'reply'])->middleware('permission:support_ticket_management');
+        Route::patch('/support/tickets/{ticket}/status', [SupportTicketController::class, 'updateStatus'])->middleware('permission:support_ticket_management');
+        Route::get('/support/tickets/{ticket}/activities', [SupportTicketController::class, 'activities'])->middleware('permission:support_ticket_management');
  
         // Newsletter Campaign Management (Admin only)
         Route::get('/newsletter/subscribers', [NewsletterController::class, 'listSubscribers'])->middleware('permission:newsletters.view-any');
@@ -256,7 +276,10 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/reviewer-assignments/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerAssignment']);
         Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);
         Route::post('/reviewer-assignments/{id}/reopen', [ArticleWorkflowController::class, 'reopenReviewer'])->middleware('permission:articles.approve');
+        Route::get('/review-questionnaire', [ArticleWorkflowController::class, 'questionnaire'])->middleware('super-admin');
+        Route::post('/review-questionnaire', [ArticleWorkflowController::class, 'storeQuestionnaire'])->middleware('super-admin');
         Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/author-final-review', [ArticleWorkflowController::class, 'authorFinalReview'])->middleware('permission:articles.view-own');
         Route::post('/articles/{id}/production-assignments', [ArticleWorkflowController::class, 'assignProduction'])->middleware('permission:articles.approve');
         Route::post('/production-assignments/{id}/complete', [ArticleWorkflowController::class, 'completeProduction']);
         Route::get('/issues', [ArticleWorkflowController::class, 'issues'])->middleware('permission:articles.view-own');

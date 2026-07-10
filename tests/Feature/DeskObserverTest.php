@@ -173,9 +173,7 @@ class DeskObserverTest extends TestCase
             ->assertJsonMissing(['title' => $copyArticleB->title]);
 
         $this->getJson("/api/admin/my-production-assignments?role=proofreader&observer_user_id={$this->proofreader->id}")
-            ->assertOk()
-            ->assertJsonFragment(['title' => $proofAllowed->title])
-            ->assertJsonMissing(['title' => $proofBlocked->title]);
+            ->assertStatus(422);
     }
 
     public function test_publisher_and_editor_observer_results_are_magazine_scoped(): void
@@ -237,7 +235,7 @@ class DeskObserverTest extends TestCase
         return Magazine::create([
             'title' => $title,
             'slug' => Str::slug($title) . '-' . uniqid(),
-            'description' => 'Observer test journal',
+            'description' => 'Observer test magazine',
         ]);
     }
 

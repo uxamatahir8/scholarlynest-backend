@@ -56,7 +56,7 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
         $this->proofreader = $this->userWithRole('proofreader', ['articles.view-own']);
         $this->superAdmin = $this->userWithRole('super_admin', Permission::pluck('name')->all());
 
-        $this->magazine = Magazine::create(['title' => 'Scoped Journal', 'slug' => 'scoped-journal']);
+        $this->magazine = Magazine::create(['title' => 'Scoped Magazine', 'slug' => 'scoped-magazine']);
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
         $this->publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
 

@@ -40,9 +40,9 @@ class ArticleStatusNormalizationTest extends TestCase
         $this->admin = User::factory()->create(['role_id' => $adminRole->id]);
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
         $this->magazine = Magazine::create([
-            'title' => 'Status Journal',
-            'slug' => 'status-journal',
-            'description' => 'Status test journal',
+            'title' => 'Status Magazine',
+            'slug' => 'status-magazine',
+            'description' => 'Status test magazine',
         ]);
     }
 

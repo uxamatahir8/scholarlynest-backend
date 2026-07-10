@@ -44,14 +44,14 @@ class PublisherIssueWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Publisher Journal',
-            'slug' => 'publisher-journal',
-            'description' => 'Publisher test journal',
+            'title' => 'Publisher Magazine',
+            'slug' => 'publisher-magazine',
+            'description' => 'Publisher test magazine',
         ]);
         $this->otherMagazine = Magazine::create([
-            'title' => 'Other Journal',
-            'slug' => 'other-journal',
-            'description' => 'Other test journal',
+            'title' => 'Other Magazine',
+            'slug' => 'other-magazine',
+            'description' => 'Other test magazine',
         ]);
 
         $this->publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
@@ -156,7 +156,7 @@ class PublisherIssueWorkflowTest extends TestCase
             ->assertJsonPath('data.0.id', $ready->id);
     }
 
-    public function test_assigned_editor_can_manage_issue_records_but_not_publish_issue(): void
+    public function test_assigned_editor_is_denied_issue_manager_access(): void
     {
         $issue = MagazineIssue::create([
             'magazine_id' => $this->magazine->id,
@@ -173,46 +173,18 @@ class PublisherIssueWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->editor);
 
-        $this->getJson('/api/admin/issues/magazines')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.id', $this->magazine->id);
-
-        $this->getJson('/api/admin/issues')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.id', $issue->id);
-
-        $this->getJson("/api/admin/issues/{$issue->id}")
-            ->assertOk()
-            ->assertJsonPath('issue.id', $issue->id);
-
+        $this->getJson('/api/admin/issues/magazines')->assertForbidden();
+        $this->getJson('/api/admin/issues')->assertForbidden();
+        $this->getJson("/api/admin/issues/{$issue->id}")->assertForbidden();
         $this->getJson("/api/admin/issues/{$otherIssue->id}")->assertForbidden();
 
-        $createdIssueId = $this->postJson('/api/admin/issues', [
+        $this->postJson('/api/admin/issues', [
             'magazine_id' => $this->magazine->id,
             'volume_number' => 4,
             'issue_number' => 1,
             'issue_month' => 'July',
             'issue_year' => 2026,
             'special_title' => 'Editor Planned Issue',
-        ])->assertCreated()
-            ->assertJsonPath('issue.special_title', 'Editor Planned Issue')
-            ->json('issue.id');
-
-        $this->postJson("/api/admin/issues/{$createdIssueId}", [
-            'magazine_id' => $this->magazine->id,
-            'volume_number' => 4,
-            'issue_number' => 2,
-            'status' => 'draft',
-        ])->assertOk()
-            ->assertJsonPath('issue.issue_number', 2);
-
-        $this->postJson('/api/admin/issues', [
-            'magazine_id' => $this->magazine->id,
-            'volume_number' => 5,
-            'issue_number' => 1,
-            'status' => 'published',
         ])->assertForbidden();
 
         $this->postJson("/api/admin/issues/{$issue->id}/publish")->assertForbidden();

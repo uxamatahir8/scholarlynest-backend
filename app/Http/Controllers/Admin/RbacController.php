@@ -10,6 +10,8 @@ use App\Models\User;
 use App\Models\Setting;
 use App\Models\Magazine;
 use App\Services\NotificationService;
+use App\Services\Media\MediaStorageService;
+use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +22,7 @@ use Illuminate\Support\Str;
 class RbacController extends Controller
 {
     protected NotificationService $notificationService;
+    protected PasswordSetupService $passwordSetupService;
 
     private const PROTECTED_ASSIGNMENT_PERMISSIONS = [
         'roles.view-any',
@@ -38,12 +41,12 @@ class RbacController extends Controller
         'editor',
         'magazine_editor',
         'publisher',
-        'proofreader',
     ];
 
-    public function __construct(NotificationService $notificationService)
+    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService)
     {
         $this->notificationService = $notificationService;
+        $this->passwordSetupService = $passwordSetupService;
     }
 
     /**
@@ -335,7 +338,8 @@ class RbacController extends Controller
                     'id' => $user->id,
                     'name' => $user->name,
                     'email' => $user->email,
-                    'profile_image' => $user->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                     'roles' => $user->role ? [[
                         'id' => $user->role->id,
                         'name' => $user->role->name,
@@ -353,7 +357,7 @@ class RbacController extends Controller
     }
 
     /**
-     * Create a user with a password (restricted to super_admin).
+     * Create a system user and send a password setup email (restricted to super_admin).
      */
     public function store(Request $request): JsonResponse
     {
@@ -362,19 +366,10 @@ class RbacController extends Controller
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
-        $passwordRule = [
-            'required',
-            'string',
-            'min:8',
-            'confirmed',
-            \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols()
-        ];
-
         try {
             $request->validate([
                 'name' => 'required|string|max:255',
                 'email' => 'required|string|email|max:255|unique:users,email',
-                'password' => $passwordRule,
                 'role_id' => 'required|exists:roles,id',
                 'university_name' => 'nullable|string|max:255',
                 'status' => 'nullable|string|in:active,pending',
@@ -387,6 +382,9 @@ class RbacController extends Controller
         }
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to new users.'], 422);
+        }
         $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
@@ -427,11 +425,13 @@ class RbacController extends Controller
             $user = DB::transaction(function() use ($request, $isSubEditor, $assignedRole, $magazineIds) {
                 $user = User::create([
                     'name' => $request->name,
-                    'email' => $request->email,
-                    'password' => Hash::make($request->password),
+                    'email' => strtolower($request->email),
+                    'password' => null,
                     'email_verified_at' => $request->input('status') === 'pending' ? null : now(),
                     'role_id' => $request->role_id,
                     'university_name' => $request->university_name,
+                    'needs_password_reset' => true,
+                    'current_email_verified' => $request->input('status') === 'pending' ? false : true,
                 ]);
 
                 if ($isSubEditor && $request->has('editor_ids')) {
@@ -449,14 +449,16 @@ class RbacController extends Controller
 
                 return $user;
             });
+            $this->passwordSetupService->sendSetupLink($user);
 
             return response()->json([
-                'message' => 'User created successfully.',
+                'message' => 'User created and password setup email sent.',
                 'data' => [
                     'id' => $user->id,
                     'name' => $user->name,
                     'email' => $user->email,
-                    'profile_image' => $user->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                     'roles' => $user->role ? [[
                         'id' => $user->role->id,
                         'name' => $user->role->name,
@@ -489,7 +491,8 @@ class RbacController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-                'profile_image' => $user->profile_image,
+                'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+                'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
                 'university' => $user->university_name,
                 'organization' => null,
                 'status' => $user->email_verified_at ? 'active' : 'pending',
@@ -559,6 +562,9 @@ class RbacController extends Controller
 
         $previousRole = $user->role;
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $magazineIds = $this->validateMagazineAssignmentRequest($request, $assignedRole);
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
@@ -635,7 +641,8 @@ class RbacController extends Controller
                     'id' => $updatedUser->id,
                     'name' => $updatedUser->name,
                     'email' => $updatedUser->email,
-                    'profile_image' => $updatedUser->profile_image,
+                    'profile_image' => app(MediaStorageService::class)->applicationUrl($updatedUser->profile_image),
+                    'profile_image_url' => app(MediaStorageService::class)->applicationUrl($updatedUser->profile_image),
                     'roles' => $updatedUser->role ? [[
                         'id' => $updatedUser->role->id,
                         'name' => $updatedUser->role->name,
@@ -712,7 +719,7 @@ class RbacController extends Controller
                     ->whereHas('role', function ($roleQuery) {
                         $roleQuery->whereIn('name', self::MAGAZINE_ASSIGNMENT_ROLE_NAMES);
                     })
-                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher', 'proofreader'])
+                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher'])
                     ->orderBy('users.name');
             }])
             ->orderBy('title')
@@ -721,7 +728,6 @@ class RbacController extends Controller
                 $summary = [
                     'editors' => [],
                     'publishers' => [],
-                    'proofreaders' => [],
                 ];
 
                 foreach ($magazine->editors as $user) {
@@ -732,8 +738,6 @@ class RbacController extends Controller
                         $summary['editors'][] = ['id' => $user->id, 'name' => $user->name];
                     } elseif ($pivotRole === 'publisher' || $roleName === 'publisher') {
                         $summary['publishers'][] = ['id' => $user->id, 'name' => $user->name];
-                    } elseif ($pivotRole === 'proofreader' || $roleName === 'proofreader') {
-                        $summary['proofreaders'][] = ['id' => $user->id, 'name' => $user->name];
                     }
                 }
 
@@ -770,6 +774,9 @@ class RbacController extends Controller
         }
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -807,7 +814,7 @@ class RbacController extends Controller
     }
 
     /**
-     * Create a user with a specified role and without a password. Dispatches a welcome reset email.
+     * Create a system user and send a password setup email.
      */
     public function storeUser(Request $request): JsonResponse
     {
@@ -826,6 +833,9 @@ class RbacController extends Controller
         ]);
 
         $assignedRole = Role::find($request->role_id);
+        if ($this->isInactiveRole($assignedRole)) {
+            return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
+        }
         $isSubEditor = $assignedRole && ($assignedRole->name === 'sub_editor' || $assignedRole->name === 'sub-editor');
 
         if ($isSubEditor) {
@@ -848,16 +858,16 @@ class RbacController extends Controller
             }
         }
 
-        $randomPassword = Str::random(32);
-
-        $user = DB::transaction(function() use ($request, $randomPassword, $isSubEditor) {
+        $user = DB::transaction(function() use ($request, $isSubEditor) {
             $user = User::create([
                 'name' => $request->name,
-                'email' => $request->email,
-                'password' => Hash::make($randomPassword),
+                'email' => strtolower($request->email),
+                'password' => null,
                 'email_verified_at' => now(),
                 'role_id' => $request->role_id,
                 'university_name' => $request->university_name,
+                'needs_password_reset' => true,
+                'current_email_verified' => true,
             ]);
 
             $assignedRole = Role::find($request->role_id);
@@ -876,22 +886,12 @@ class RbacController extends Controller
             return $user;
         });
 
-        // Generate reset code/token for password creation
-        $code = strval(random_int(100000, 999999));
-        DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $user->email],
-            [
-                'token' => Hash::make($code),
-                'created_at' => now(),
-            ]
-        );
+        $this->passwordSetupService->sendSetupLink($user);
 
-        $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
-        $createPasswordLink = "{$frontendUrl}/reset-password?email=" . urlencode($user->email) . "&code=" . urlencode($code);
-
-        $this->sendWelcomeHtmlEmail($user->email, $user->name, $createPasswordLink);
-
-        return response()->json($this->userPayload($user->load(['role', 'magazines'])), 201);
+        return response()->json([
+            'message' => 'User created and password setup email sent.',
+            'data' => $this->userPayload($user->load(['role', 'magazines'])),
+        ], 201);
     }
 
     /**
@@ -1117,8 +1117,12 @@ class RbacController extends Controller
             'editor',
             'publisher',
             'magazine_editor',
-            'proofreader',
         ], true);
+    }
+
+    private function isInactiveRole(?Role $role): bool
+    {
+        return $role && str_replace('-', '_', $role->name) === 'proofreader';
     }
 
     private function validateMagazineAssignmentRequest(Request $request, ?Role $role): array
@@ -1138,10 +1142,10 @@ class RbacController extends Controller
                 'magazine_ids' => $magazineRules,
                 'magazine_ids.*' => 'integer|distinct|exists:magazines,id',
             ], [
-                'magazine_ids.required' => 'At least one journal must be assigned for this role.',
-                'magazine_ids.min' => 'At least one journal must be assigned for this role.',
-                'magazine_ids.*.distinct' => 'Each selected journal may only be assigned once.',
-                'magazine_ids.*.exists' => 'One or more selected journals are no longer available.',
+                'magazine_ids.required' => 'At least one magazine must be assigned for this role.',
+                'magazine_ids.min' => 'At least one magazine must be assigned for this role.',
+                'magazine_ids.*.distinct' => 'Each selected magazine may only be assigned once.',
+                'magazine_ids.*.exists' => 'One or more selected magazines are no longer available.',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             throw $e;
@@ -1216,7 +1220,6 @@ class RbacController extends Controller
         return match ($normalizedRole) {
             'editor', 'magazine_editor' => 'editor',
             'publisher' => 'publisher',
-            'proofreader' => 'proofreader',
             default => null,
         };
     }
@@ -1341,7 +1344,8 @@ class RbacController extends Controller
             'email' => $user->email,
             'role_id' => $user->role_id,
             'university_name' => $user->university_name,
-            'profile_image' => $user->profile_image,
+            'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+            'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
             'email_verified_at' => $user->email_verified_at,
             'needs_password_reset' => (bool) $user->needs_password_reset,
             'role' => $user->role ? [

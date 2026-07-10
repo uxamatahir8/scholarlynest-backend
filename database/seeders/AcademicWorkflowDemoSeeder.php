@@ -37,6 +37,10 @@ class AcademicWorkflowDemoSeeder extends Seeder
                 'editor_sub_editor',
                 'article_tag',
                 'article_share_clicks',
+                'review_question_responses',
+                'review_questionnaire_instances',
+                'article_publication_sections',
+                'article_reviewer_preferences',
                 'article_author',
                 'article_assets',
                 'article_files',
@@ -48,6 +52,10 @@ class AcademicWorkflowDemoSeeder extends Seeder
                 'production_assignments',
                 'post_publication_actions',
                 'workflow_deadline_reminder_logs',
+                'review_question_options',
+                'review_questions',
+                'review_questionnaire_versions',
+                'review_questionnaires',
                 'magazine_issues',
                 'magazine_pages',
                 'magazine_user',
@@ -78,6 +86,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                 'copyeditor1@example.com', 'copyeditor2@example.com', 'copyeditor3@example.com',
                 'proofreader1@example.com', 'proofreader2@example.com', 'proofreader3@example.com',
                 'demo.superadmin@example.com',
+                'accepted.external.reviewer@example.com',
             ];
 
             DB::table('users')->whereIn('email', $demoEmails)->delete();
@@ -158,6 +167,17 @@ class AcademicWorkflowDemoSeeder extends Seeder
             }
 
             $superAdmin = $usersByRole['super_admin'][0];
+            $acceptedExternalReviewer = User::create([
+                'name' => 'Accepted External Reviewer',
+                'email' => 'accepted.external.reviewer@example.com',
+                'password' => $password,
+                'role_id' => $roles['reviewer'] ?? null,
+                'email_verified_at' => now(),
+                'needs_password_reset' => true,
+                'university_name' => 'External Peer Review Institute',
+            ]);
+
+            $questionnaireSeed = $this->seedReviewerQuestionnaire($superAdmin->id);
 
             // Seed Editor-Sub Editor relationships
             $editors = $usersByRole['editor'] ?? [];
@@ -224,8 +244,8 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'about_text' => 'We curate space research telemetry logs, star cluster mapping datasets, and state-of-the-art astrophysical theorems for researchers worldwide.'
                 ],
                 [
-                    'title' => 'Journal of Quantum Information Science',
-                    'slug' => 'journal-quantum-information',
+                    'title' => 'Magazine of Quantum Information Science',
+                    'slug' => 'magazine-quantum-information',
                     'description' => 'Covering quantum key distribution, entanglement teleportation, and quantum computer gate alignment.',
                     'about_text' => 'This publication provides peer-reviewed research on modern quantum state manipulation, algorithms, and logical gates.'
                 ],
@@ -248,13 +268,13 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'about_text' => 'Covers modern hardware grids, renewable source dynamics, and smart grid battery control algorithms.'
                 ],
                 [
-                    'title' => 'Journal of Robotics and Cybernetic Systems',
-                    'slug' => 'journal-robotics-cybernetics',
+                    'title' => 'Magazine of Robotics and Cybernetic Systems',
+                    'slug' => 'magazine-robotics-cybernetics',
                     'description' => 'Highlighting path planning, robotic surgery control loops, and feedback actuator dynamics.',
-                    'about_text' => 'Our monthly journal contains peer-reviewed papers on automation, kinematics, and control loop safety.'
+                    'about_text' => 'Our monthly magazine contains peer-reviewed papers on automation, kinematics, and control loop safety.'
                 ],
                 [
-                    'title' => 'International Journal of Cognitive Systems',
+                    'title' => 'International Magazine of Cognitive Systems',
                     'slug' => 'cognitive-systems',
                     'description' => 'Detailing neural network models of human perception, language decoding, and cognitive memory.',
                     'about_text' => 'Publishes interdisciplinary research combining cognitive sciences, computer science, and linguistics.'
@@ -298,7 +318,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'cover_image' => '/images/nature_computing.png',
                     'seo_title' => $m['title'] . ' | ScholarlyNest',
                     'seo_description' => Str::limit($m['description'], 150),
-                    'seo_keywords' => 'research, journal, ' . str_replace(' ', '', strtolower($m['title'])),
+                    'seo_keywords' => 'research, magazine, ' . str_replace(' ', '', strtolower($m['title'])),
                 ]);
 
                 $magToEditor[$mag->id] = $assignedEditor;
@@ -430,6 +450,9 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $authorsToInsert = [];
             $versionsToInsert = [];
             $filesToInsert = [];
+            $assetsToInsert = [];
+            $reviewerPreferencesToInsert = [];
+            $publicationSectionsToInsert = [];
             $subEditorAssignmentsToInsert = [];
             $reviewerAssignmentsToInsert = [];
             $editorialDecisionsToInsert = [];
@@ -446,6 +469,9 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $endTimestamp = strtotime('2026-06-19 17:00:00');
             $secondsDiff = $endTimestamp - $startTimestamp;
             $totalArticlesPerMagazine = 550;
+            $seededPendingExternalInvitation = false;
+            $seededAcceptedExternalInvitation = false;
+            $seededDeclinedExternalInvitation = false;
 
             foreach ($magazinesList as $mag) {
                 $editorUser = $magToEditor[$mag->id];
@@ -477,6 +503,15 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     $doi = null;
                     $pageStart = null;
                     $pageEnd = null;
+                    $openAccessLabel = null;
+                    $isPeerReviewed = true;
+                    $academicEditor = null;
+                    $receivedAt = null;
+                    $acceptedAt = null;
+                    $licenseStatement = null;
+                    $competingInterestsStatement = null;
+                    $abbreviations = null;
+                    $citationText = null;
 
                     if ($status === 'published') {
                         $magazineIssueId = $magIssues[$mag->id][$artIndex % 2];
@@ -489,10 +524,23 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         $doi = "10.1234/sn." . $mag->slug . "." . ($artIndex + 1);
                         $pageStart = 1 + ($artIndex * 12);
                         $pageEnd = 12 + ($artIndex * 12);
+                        $openAccessLabel = ($artIndex % 4 === 0) ? 'Open Access' : null;
+                        $academicEditor = 'Dr. Helena Park';
+                        $receivedAt = $createdAt->copy()->subDays(14)->toDateString();
+                        $acceptedAt = $createdAt->copy()->addDays(13)->toDateString();
+                        $licenseStatement = 'Copyright 2026 The Authors. Published by ScholarlyNest under CC BY 4.0.';
+                        $competingInterestsStatement = 'The authors declare no competing interests.';
+                        $abbreviations = 'AI: Artificial Intelligence; SNR: Signal-to-noise ratio';
+                        $citationText = "Demo Author ({$publishedYear}). {$title}. {$mag->title}. https://doi.org/{$doi}";
+                    } elseif (in_array($status, ['ready_for_publication', 'copy_editing', 'proofreading'], true)) {
+                        $openAccessLabel = 'Publication Draft';
+                        $academicEditor = 'Dr. Helena Park';
+                        $licenseStatement = 'Draft license statement for publisher review.';
+                        $competingInterestsStatement = 'Draft competing interests statement.';
                     }
 
                     $abstract = "This manuscript details a rigorous academic investigation into the key theoretical parameters of the field. We present telemetry data, methodology, and a comprehensive analysis of the results.";
-                    $fullText = "<h3>Introduction</h3><p>Academic workflows require consistent peer review.</p><h3>Methodology</h3><p>We simulated 550 articles across 12 journals to validate system performance.</p><h3>Conclusion</h3><p>Our findings indicate that proper user assignment reduces editorial bottlenecks.</p>";
+                    $fullText = "<h3>Introduction</h3><p>Academic workflows require consistent peer review.</p><h3>Methodology</h3><p>We simulated 550 articles across 12 magazines to validate system performance.</p><h3>Conclusion</h3><p>Our findings indicate that proper user assignment reduces editorial bottlenecks.</p>";
 
                     $plagiarismStatus = null;
                     $plagiarismScore = null;
@@ -533,8 +581,17 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         'pdf_path' => ($status === 'published') ? "storage/publications/publication_" . $artIndex . ".pdf" : null,
                         'featured_image' => ($artIndex % 5 === 0) ? '/images/nature_computing.png' : null,
                         'doi' => $doi,
+                        'open_access_label' => $openAccessLabel,
+                        'is_peer_reviewed' => $isPeerReviewed,
+                        'academic_editor' => $academicEditor,
+                        'received_at' => $receivedAt,
+                        'accepted_at' => $acceptedAt,
+                        'license_statement' => $licenseStatement,
+                        'competing_interests_statement' => $competingInterestsStatement,
+                        'abbreviations' => $abbreviations,
+                        'citation_text' => $citationText,
                         'status' => $status,
-                        'rejection_reason' => ($status === 'rejected') ? 'The submission does not meet the novelty standards of this journal.' : null,
+                        'rejection_reason' => ($status === 'rejected') ? 'The submission does not meet the novelty standards of this magazine.' : null,
                         'plagiarism_status' => $plagiarismStatus,
                         'plagiarism_score' => $plagiarismScore,
                         'plagiarism_report_path' => $plagiarismReportPath,
@@ -554,8 +611,76 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         'updated_at' => $createdAt,
                     ]);
 
+                    DB::table('articles')->where('id', $articleId)->update([
+                        'tracking_code' => sprintf('SN-%s-%06d', $createdAt->format('Y'), $articleId),
+                    ]);
+
                     if ($status === 'published') {
                         $this->ensureFileExists("storage/publications/publication_" . $artIndex . ".pdf");
+                    }
+
+                    $preferenceScenario = $artIndex % 4;
+                    if (in_array($preferenceScenario, [0, 2], true)) {
+                        foreach ($this->suggestedReviewerPreferences($articleId, $authorUser->id, $artIndex) as $preference) {
+                            $reviewerPreferencesToInsert[] = array_merge($preference, [
+                                'created_at' => $createdAt,
+                                'updated_at' => $createdAt,
+                            ]);
+                        }
+                    }
+                    if (in_array($preferenceScenario, [1, 2], true)) {
+                        foreach ($this->opposingReviewerPreferences($articleId, $authorUser->id, $artIndex) as $preference) {
+                            $reviewerPreferencesToInsert[] = array_merge($preference, [
+                                'created_at' => $createdAt,
+                                'updated_at' => $createdAt,
+                            ]);
+                        }
+                    }
+
+                    if ($artIndex % 6 === 0) {
+                        $supplementPath = "storage/supplementary/supplement_" . $articleId . ".pdf";
+                        $this->ensureFileExists($supplementPath);
+                        $assetsToInsert[] = $this->articleAssetRow(
+                            $articleId,
+                            'supplementary',
+                            $supplementPath,
+                            'supplementary-methods.pdf',
+                            'application/pdf',
+                            20480,
+                            null,
+                            null,
+                            null,
+                            0,
+                            $createdAt
+                        );
+                    }
+
+                    if ($artIndex % 5 === 0 || $status === 'published') {
+                        $imagePath = "storage/article-images/figure_" . $articleId . ".webp";
+                        $this->ensureFileExists($imagePath);
+                        $assetsToInsert[] = $this->articleAssetRow(
+                            $articleId,
+                            'image',
+                            $imagePath,
+                            'figure-1.webp',
+                            'image/webp',
+                            8192,
+                            'Figure 1',
+                            'Workflow summary and assay response map.',
+                            'Seeded article image for publication display testing.',
+                            1,
+                            $createdAt
+                        );
+                    }
+
+                    if ($status === 'published') {
+                        foreach ($this->publicationSectionRows($articleId, $artIndex % 5 === 0, $createdAt) as $section) {
+                            $publicationSectionsToInsert[] = $section;
+                        }
+                    } elseif (in_array($status, ['ready_for_publication', 'copy_editing'], true) && $artIndex % 30 === 0) {
+                        foreach ($this->publicationSectionRows($articleId, false, $createdAt) as $section) {
+                            $publicationSectionsToInsert[] = $section;
+                        }
                     }
 
                     // Primary Author
@@ -764,6 +889,15 @@ class AcademicWorkflowDemoSeeder extends Seeder
                             'article_id' => $articleId,
                             'sub_editor_assignment_id' => $subEditorAssignmentId,
                             'reviewer_id' => $reviewerUser->id,
+                            'invitee_name' => $reviewerUser->name,
+                            'invitee_email' => $reviewerUser->email,
+                            'invite_token_hash' => null,
+                            'invited_at' => $createdAt->copy()->addDays(4),
+                            'invite_expires_at' => null,
+                            'declined_at' => null,
+                            'decline_reason' => null,
+                            'account_created_at' => null,
+                            'questionnaire_instance_id' => null,
                             'assigned_by' => $subEditorUser->id,
                             'status' => $revStatus,
                             'due_date' => $createdAt->copy()->addDays(21),
@@ -776,6 +910,69 @@ class AcademicWorkflowDemoSeeder extends Seeder
                             'created_at' => $createdAt->copy()->addDays(4),
                             'updated_at' => $createdAt->copy()->addDays(4),
                         ];
+
+                        if (!$seededPendingExternalInvitation && $status === 'reviewer_assigned') {
+                            $reviewerAssignmentsToInsert[] = $this->reviewerAssignmentRow(
+                                $articleId,
+                                $subEditorAssignmentId,
+                                null,
+                                'Dr. Priya External',
+                                'pending.external.reviewer@example.com',
+                                hash('sha256', 'demo-pending-review-token'),
+                                $subEditorUser->id,
+                                'pending',
+                                $createdAt->copy()->addDays(24),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                $createdAt->copy()->addDays(6)
+                            );
+                            $seededPendingExternalInvitation = true;
+                        }
+
+                        if (!$seededAcceptedExternalInvitation && $status === 'review_in_progress') {
+                            $reviewerAssignmentsToInsert[] = $this->reviewerAssignmentRow(
+                                $articleId,
+                                $subEditorAssignmentId,
+                                $acceptedExternalReviewer->id,
+                                $acceptedExternalReviewer->name,
+                                $acceptedExternalReviewer->email,
+                                null,
+                                $subEditorUser->id,
+                                'accepted',
+                                $createdAt->copy()->addDays(24),
+                                $createdAt->copy()->addDays(7),
+                                null,
+                                null,
+                                null,
+                                $createdAt->copy()->addDays(7),
+                                $createdAt->copy()->addDays(6)
+                            );
+                            $seededAcceptedExternalInvitation = true;
+                        }
+
+                        if (!$seededDeclinedExternalInvitation && $status === 'reviewer_assigned') {
+                            $reviewerAssignmentsToInsert[] = $this->reviewerAssignmentRow(
+                                $articleId,
+                                $subEditorAssignmentId,
+                                null,
+                                'Dr. Declined External',
+                                'declined.external.reviewer@example.com',
+                                null,
+                                $subEditorUser->id,
+                                'declined',
+                                $createdAt->copy()->addDays(24),
+                                null,
+                                null,
+                                $createdAt->copy()->addDays(8),
+                                'Unavailable due to a competing review commitment.',
+                                null,
+                                $createdAt->copy()->addDays(6)
+                            );
+                            $seededDeclinedExternalInvitation = true;
+                        }
 
                         $auditLogsToInsert[] = [
                             'article_id' => $articleId,
@@ -1030,6 +1227,9 @@ class AcademicWorkflowDemoSeeder extends Seeder
             };
 
             $bulkInsert('article_author', $authorsToInsert);
+            $bulkInsert('article_reviewer_preferences', $reviewerPreferencesToInsert);
+            $bulkInsert('article_assets', $assetsToInsert);
+            $bulkInsert('article_publication_sections', $publicationSectionsToInsert);
             $bulkInsert('article_versions', $versionsToInsert);
             $bulkInsert('article_files', $filesToInsert);
             $bulkInsert('sub_editor_assignments', $subEditorAssignmentsToInsert);
@@ -1037,6 +1237,8 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $bulkInsert('editorial_decisions', $editorialDecisionsToInsert);
             $bulkInsert('production_assignments', $productionAssignmentsToInsert);
             $bulkInsert('article_audit_logs', $auditLogsToInsert);
+
+            $this->seedQuestionnaireInstancesAndResponses($questionnaireSeed);
 
             DB::commit();
         } catch (\Exception $e) {
@@ -1050,6 +1252,308 @@ class AcademicWorkflowDemoSeeder extends Seeder
     /**
      * Helper to write placeholder files on local storage to prevent download 404s.
      */
+    protected function seedReviewerQuestionnaire(int $superAdminId): array
+    {
+        $now = now();
+        $questionnaireId = DB::table('review_questionnaires')->insertGetId([
+            'name' => 'Academic Demo Reviewer Questionnaire',
+            'is_active' => true,
+            'created_by' => $superAdminId,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $versionId = DB::table('review_questionnaire_versions')->insertGetId([
+            'review_questionnaire_id' => $questionnaireId,
+            'version_number' => 1,
+            'is_active' => true,
+            'published_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $questionDefinitions = [
+            'suitability' => [
+                'prompt' => 'Is the manuscript suitable for further review?',
+                'response_type' => 'radio',
+                'is_required' => true,
+                'sort_order' => 1,
+                'options' => ['Yes', 'No'],
+            ],
+            'improvements' => [
+                'prompt' => 'Which areas require improvement?',
+                'response_type' => 'checkbox',
+                'is_required' => false,
+                'sort_order' => 2,
+                'options' => ['Methodology', 'References', 'Statistical analysis', 'Language clarity', 'Figures/tables'],
+            ],
+            'decision' => [
+                'prompt' => 'Recommended editorial decision',
+                'response_type' => 'dropdown',
+                'is_required' => true,
+                'sort_order' => 3,
+                'options' => ['Accept', 'Minor revision', 'Major revision', 'Reject'],
+            ],
+            'contribution' => [
+                'prompt' => 'State the main contribution of the manuscript in one sentence.',
+                'response_type' => 'single_line',
+                'is_required' => true,
+                'sort_order' => 4,
+                'options' => [],
+            ],
+            'editor_comments' => [
+                'prompt' => 'Provide detailed comments for the editor.',
+                'response_type' => 'textarea',
+                'is_required' => true,
+                'sort_order' => 5,
+                'options' => [],
+            ],
+        ];
+
+        $questions = [];
+        $options = [];
+        foreach ($questionDefinitions as $key => $definition) {
+            $questionId = DB::table('review_questions')->insertGetId([
+                'review_questionnaire_version_id' => $versionId,
+                'prompt' => $definition['prompt'],
+                'response_type' => $definition['response_type'],
+                'is_required' => $definition['is_required'],
+                'sort_order' => $definition['sort_order'],
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $questions[$key] = $questionId;
+
+            foreach ($definition['options'] as $index => $label) {
+                $value = Str::slug($label);
+                DB::table('review_question_options')->insert([
+                    'review_question_id' => $questionId,
+                    'label' => $label,
+                    'value' => $value,
+                    'sort_order' => $index + 1,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+                $options[$key][$label] = $value;
+            }
+        }
+
+        return [
+            'version_id' => $versionId,
+            'questions' => $questions,
+            'options' => $options,
+        ];
+    }
+
+    protected function seedQuestionnaireInstancesAndResponses(array $questionnaireSeed): void
+    {
+        $pendingAssignment = DB::table('reviewer_assignments')
+            ->where('invitee_email', 'pending.external.reviewer@example.com')
+            ->first();
+        if ($pendingAssignment) {
+            $instanceId = DB::table('review_questionnaire_instances')->insertGetId([
+                'article_id' => $pendingAssignment->article_id,
+                'reviewer_assignment_id' => $pendingAssignment->id,
+                'reviewer_id' => null,
+                'review_questionnaire_version_id' => $questionnaireSeed['version_id'],
+                'submitted_at' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('reviewer_assignments')->where('id', $pendingAssignment->id)->update([
+                'questionnaire_instance_id' => $instanceId,
+            ]);
+        }
+
+        $completedAssignment = DB::table('reviewer_assignments')
+            ->where('status', 'completed')
+            ->whereNotNull('reviewer_id')
+            ->orderBy('id')
+            ->first();
+        if (!$completedAssignment) {
+            return;
+        }
+
+        $instanceId = DB::table('review_questionnaire_instances')->insertGetId([
+            'article_id' => $completedAssignment->article_id,
+            'reviewer_assignment_id' => $completedAssignment->id,
+            'reviewer_id' => $completedAssignment->reviewer_id,
+            'review_questionnaire_version_id' => $questionnaireSeed['version_id'],
+            'submitted_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('reviewer_assignments')->where('id', $completedAssignment->id)->update([
+            'questionnaire_instance_id' => $instanceId,
+        ]);
+
+        $responses = [
+            $questionnaireSeed['questions']['suitability'] => $questionnaireSeed['options']['suitability']['Yes'],
+            $questionnaireSeed['questions']['improvements'] => [
+                $questionnaireSeed['options']['improvements']['Methodology'],
+                $questionnaireSeed['options']['improvements']['Figures/tables'],
+            ],
+            $questionnaireSeed['questions']['decision'] => $questionnaireSeed['options']['decision']['Minor revision'],
+            $questionnaireSeed['questions']['contribution'] => 'The manuscript contributes a reproducible workflow for interdisciplinary peer review.',
+            $questionnaireSeed['questions']['editor_comments'] => 'The article is technically sound and would benefit from a clearer statistical analysis paragraph before acceptance.',
+        ];
+
+        foreach ($responses as $questionId => $answer) {
+            DB::table('review_question_responses')->insert([
+                'review_questionnaire_instance_id' => $instanceId,
+                'review_question_id' => $questionId,
+                'answer' => json_encode($answer),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+    }
+
+    protected function suggestedReviewerPreferences(int $articleId, int $authorId, int $index): array
+    {
+        return [
+            [
+                'article_id' => $articleId,
+                'created_by_author_id' => $authorId,
+                'type' => 'suggested',
+                'name' => 'Dr. Ayesha Khan',
+                'email' => 'ayesha.khan.demo' . $index . '@example.com',
+                'affiliation' => 'Lahore Institute of Food Chemistry',
+                'designation' => 'Professor of Bioactive Compounds',
+                'reason' => 'Expert in food chemistry and bioactive compounds.',
+            ],
+            [
+                'article_id' => $articleId,
+                'created_by_author_id' => $authorId,
+                'type' => 'suggested',
+                'name' => 'Dr. Michael Turner',
+                'email' => 'michael.turner.demo' . $index . '@example.com',
+                'affiliation' => 'Northbridge Antioxidant Assay Center',
+                'designation' => 'Senior Reviewer',
+                'reason' => 'Experienced in article peer review and antioxidant assays.',
+            ],
+        ];
+    }
+
+    protected function opposingReviewerPreferences(int $articleId, int $authorId, int $index): array
+    {
+        return [[
+            'article_id' => $articleId,
+            'created_by_author_id' => $authorId,
+            'type' => 'opposed',
+            'name' => 'Dr. Conflict Reviewer',
+            'email' => 'conflict.reviewer.demo' . $index . '@example.com',
+            'affiliation' => 'Competing Lab for Applied Assays',
+            'designation' => 'Principal Investigator',
+            'reason' => 'Competing lab and declared conflict of interest.',
+        ]];
+    }
+
+    protected function reviewerAssignmentRow(
+        int $articleId,
+        ?int $subEditorAssignmentId,
+        ?int $reviewerId,
+        string $inviteeName,
+        string $inviteeEmail,
+        ?string $tokenHash,
+        int $assignedBy,
+        string $status,
+        $dueDate,
+        $acceptedAt,
+        $completedAt,
+        $declinedAt,
+        ?string $declineReason,
+        $accountCreatedAt,
+        $createdAt
+    ): array {
+        return [
+            'article_id' => $articleId,
+            'sub_editor_assignment_id' => $subEditorAssignmentId,
+            'reviewer_id' => $reviewerId,
+            'invitee_name' => $inviteeName,
+            'invitee_email' => $inviteeEmail,
+            'invite_token_hash' => $tokenHash,
+            'invited_at' => $createdAt,
+            'invite_expires_at' => $tokenHash ? now()->addDays(21) : null,
+            'declined_at' => $declinedAt,
+            'decline_reason' => $declineReason,
+            'account_created_at' => $accountCreatedAt,
+            'questionnaire_instance_id' => null,
+            'assigned_by' => $assignedBy,
+            'status' => $status,
+            'due_date' => $dueDate,
+            'accepted_at' => $acceptedAt,
+            'completed_at' => $completedAt,
+            'scorecard' => null,
+            'recommendation' => null,
+            'comments_for_author' => null,
+            'confidential_comments' => null,
+            'created_at' => $createdAt,
+            'updated_at' => $createdAt,
+        ];
+    }
+
+    protected function articleAssetRow(
+        int $articleId,
+        string $assetType,
+        string $path,
+        string $filename,
+        string $mimeType,
+        int $fileSize,
+        ?string $title,
+        ?string $caption,
+        ?string $description,
+        int $sortOrder,
+        $createdAt
+    ): array {
+        return [
+            'article_id' => $articleId,
+            'asset_type' => $assetType,
+            'disk' => 'public',
+            'file_path' => $path,
+            'storage_key' => str_replace('storage/', '', $path),
+            'original_filename' => $filename,
+            'safe_original_filename' => $filename,
+            'title' => $title,
+            'caption' => $caption,
+            'description' => $description,
+            'sort_order' => $sortOrder,
+            'file_size' => $fileSize,
+            'mime_type' => $mimeType,
+            'checksum_sha256' => hash('sha256', $path),
+            'scan_status' => 'clean',
+            'scan_engine' => 'demo-seeder',
+            'scanned_at' => $createdAt,
+            'created_at' => $createdAt,
+            'updated_at' => $createdAt,
+        ];
+    }
+
+    protected function publicationSectionRows(int $articleId, bool $partial, $createdAt): array
+    {
+        $sections = [
+            'introduction' => '<h2>Introduction</h2><p>This article introduces a reproducible academic workflow for evaluating interdisciplinary submissions.</p>',
+            'materials_and_methods' => '<h2>Materials and methods</h2><p>The study uses simulated manuscript metadata, reviewer scorecards, and publication records.</p>',
+            'discussion' => '<h2>Discussion</h2><p>The seeded results demonstrate how editorial state, review activity, and publication metadata connect.</p>',
+            'supporting_information' => '<h2>Supporting information</h2><p>Supplementary PDF and image assets are provided as clean demo records.</p>',
+            'acknowledgements' => '<h2>Acknowledgements</h2><p>The authors thank the demo editorial team for workflow validation.</p>',
+            'references' => '<h2>References</h2><ol><li>ScholarlyNest Demo Consortium. Academic workflow validation. 2026.</li></ol>',
+        ];
+
+        if ($partial) {
+            $sections = array_intersect_key($sections, array_flip(['introduction', 'discussion']));
+        }
+
+        return collect($sections)->map(fn ($html, $key) => [
+            'article_id' => $articleId,
+            'section_key' => $key,
+            'content_html' => $html,
+            'content_text' => trim(html_entity_decode(strip_tags($html))),
+            'created_at' => $createdAt,
+            'updated_at' => $createdAt,
+        ])->values()->all();
+    }
+
     protected function ensureFileExists(string $path): void
     {
         $diskPath = str_replace('storage/', '', $path);

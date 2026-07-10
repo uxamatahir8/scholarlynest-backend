@@ -53,9 +53,9 @@ class ArticleFileWorkflowTest extends TestCase
         $this->author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'File Journal',
-            'slug' => 'file-journal',
-            'description' => 'File workflow journal',
+            'title' => 'File Magazine',
+            'slug' => 'file-magazine',
+            'description' => 'File workflow magazine',
         ]);
 
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
@@ -74,7 +74,7 @@ class ArticleFileWorkflowTest extends TestCase
         Storage::fake('public');
     }
 
-    public function test_editor_can_upload_plagiarism_report_during_screening(): void
+    public function test_editor_screening_does_not_accept_legacy_plagiarism_report_fields(): void
     {
         Sanctum::actingAs($this->editor);
 
@@ -82,23 +82,20 @@ class ArticleFileWorkflowTest extends TestCase
 
         $this->postJson("/api/admin/articles/{$this->article->id}/screen", [
             'decision' => 'send_to_review',
-            'plagiarism_status' => 'clear',
-            'plagiarism_score' => 8.5,
             'comments' => 'Looks clean.',
             'plagiarism_report_upload_id' => $upload->id,
         ])->assertStatus(200)
-            ->assertJsonPath('file.file_type', ArticleFile::PLAGIARISM_REPORT);
+            ->assertJsonMissingPath('file');
 
-        $this->assertDatabaseHas('article_files', [
+        $this->assertDatabaseMissing('article_files', [
             'article_id' => $this->article->id,
             'file_type' => ArticleFile::PLAGIARISM_REPORT,
-            'original_name' => 'similarity-report.pdf',
         ]);
 
         $this->article->refresh();
-        $this->assertEquals('clear', $this->article->plagiarism_status);
-        $this->assertEquals('8.50', (string) $this->article->plagiarism_score);
-        $this->assertNotNull($this->article->plagiarism_report_path);
+        $this->assertNull($this->article->plagiarism_status);
+        $this->assertNull($this->article->plagiarism_score);
+        $this->assertNull($this->article->plagiarism_report_path);
     }
 
     public function test_reviewer_uploads_reviewed_manuscript_and_author_cannot_download_it(): void
@@ -133,14 +130,12 @@ class ArticleFileWorkflowTest extends TestCase
 
         $this->postJson("/api/admin/articles/{$this->article->id}/screen", [
             'decision' => 'send_to_review',
-            'plagiarism_status' => 'clear',
-            'plagiarism_score' => 3,
             'plagiarism_report_upload_id' => $this->cleanUpload($this->editor, 'article_plagiarism_report', 'report.pdf')->id,
         ])->assertStatus(200);
 
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertStatus(200)
-            ->assertJsonPath('files.0.file_type', ArticleFile::PLAGIARISM_REPORT);
+            ->assertJsonCount(0, 'files');
 
         Sanctum::actingAs($this->author);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")

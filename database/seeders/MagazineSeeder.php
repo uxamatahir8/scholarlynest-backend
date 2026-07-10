@@ -75,8 +75,8 @@ class MagazineSeeder extends Seeder
                 'about_text' => 'We curate space research telemetry logs, star cluster mapping datasets, and state-of-the-art astrophysical theorems for researchers worldwide.'
             ],
             [
-                'title' => 'Journal of Quantum Information Science',
-                'slug' => 'journal-quantum-information',
+                'title' => 'Magazine of Quantum Information Science',
+                'slug' => 'magazine-quantum-information',
                 'description' => 'Covering quantum key distribution, entanglement teleportation, and quantum computer gate alignment.',
                 'about_text' => 'This publication provides peer-reviewed research on modern quantum state manipulation, algorithms, and logical gates.'
             ],
@@ -99,13 +99,13 @@ class MagazineSeeder extends Seeder
                 'about_text' => 'Covers modern hardware grids, renewable source dynamics, and smart grid battery control algorithms.'
             ],
             [
-                'title' => 'Journal of Robotics and Cybernetic Systems',
-                'slug' => 'journal-robotics-cybernetics',
+                'title' => 'Magazine of Robotics and Cybernetic Systems',
+                'slug' => 'magazine-robotics-cybernetics',
                 'description' => 'Highlighting path planning, robotic surgery control loops, and feedback actuator dynamics.',
-                'about_text' => 'Our monthly journal contains peer-reviewed papers on automation, kinematics, and control loop safety.'
+                'about_text' => 'Our monthly magazine contains peer-reviewed papers on automation, kinematics, and control loop safety.'
             ],
             [
-                'title' => 'International Journal of Cognitive Systems',
+                'title' => 'International Magazine of Cognitive Systems',
                 'slug' => 'cognitive-systems',
                 'description' => 'Detailing neural network models of human perception, language decoding, and cognitive memory.',
                 'about_text' => 'Publishes interdisciplinary research combining cognitive sciences, computer science, and linguistics.'
@@ -129,7 +129,7 @@ class MagazineSeeder extends Seeder
                 'about_text' => 'We catalog thermal ocean streams, acoustic migration logs, and oceanic pressure models.'
             ],
             [
-                'title' => 'Journal of Advanced Particle Physics',
+                'title' => 'Magazine of Advanced Particle Physics',
                 'slug' => 'advanced-particle-physics',
                 'description' => 'Detailing hadron collider collisions, dark matter search vectors, and sub-atomic telemetry.',
                 'about_text' => 'Covers advanced quantum physics, collision data analytics, and global particle physics telemetry.'
@@ -147,13 +147,13 @@ class MagazineSeeder extends Seeder
                 'about_text' => 'Indexed research papers on zero-knowledge proofs, homomorphic encryption, and ledger security.'
             ],
             [
-                'title' => 'Urban Informatics & Smart Cities Journal',
+                'title' => 'Urban Informatics & Smart Cities Magazine',
                 'slug' => 'urban-informatics-smart-cities',
                 'description' => 'Reviewing autonomous traffic routing, municipal sensor networks, and waste logistics.',
                 'about_text' => 'Focused on urban automation, intelligent transit grids, and smart municipal resource monitoring.'
             ],
             [
-                'title' => 'Journal of Volcanology & Seismic Studies',
+                'title' => 'Magazine of Volcanology & Seismic Studies',
                 'slug' => 'volcanology-seismic-studies',
                 'description' => 'Seismic tremor warning arrays, volcanic gas telemetry, and tectonic drift models.',
                 'about_text' => 'Indexes geological telemetry datasets, volcanic warning protocols, and fault line drift models.'
@@ -171,7 +171,7 @@ class MagazineSeeder extends Seeder
                 'about_text' => 'Focused on real-time biological data collection, enzyme telemetry, and biosensor materials.'
             ],
             [
-                'title' => 'Journal of Climatology & Global Dynamics',
+                'title' => 'Magazine of Climatology & Global Dynamics',
                 'slug' => 'climatology-global-dynamics',
                 'description' => 'Modeling climate thermal anomalies, polar ice melt rates, and tropospheric winds.',
                 'about_text' => 'We index global climate models, satellite troposphere telemetry, and weather anomalies.'
@@ -238,7 +238,7 @@ class MagazineSeeder extends Seeder
             $magData['seo_keywords'] = implode(', ', [
                 str_replace(' ', '', strtolower($magData['title'])),
                 'research',
-                'journal',
+                'magazine',
                 'science',
                 'technology',
                 'scholarlynest'

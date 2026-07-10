@@ -17,7 +17,7 @@ class CmsPageSeeder extends Seeder
             ['slug' => 'terms'],
             [
                 'title' => 'Terms of Service',
-                'content_text' => "01 Acceptance of Publishing Terms\nBy accessing the ScholarlyNest portal, uploading blog drafts, or participating in the editorial review pipeline, you agree to be bound by these Terms of Service. If you disagree with any part of the terms, you may not access our editorial services.\n\n02 Intellectual Property & Open Access Licensing\nScholarlyNest adheres to strict open-access principles. All finalized blog articles published on the platform are released under the Creative Commons Attribution 4.0 International License (CC BY 4.0).\n\n03 Editorial Standards & Community Guidelines\nWe prioritize academic integrity. Authors are strictly prohibited from submitting plagiarized materials, manipulated datasets, or articles previously published in indexed journals without explicit acknowledgment. Our editorial board reserves the right to reject or retract any content that violates these guidelines.",
+                'content_text' => "01 Acceptance of Publishing Terms\nBy accessing the ScholarlyNest portal, uploading blog drafts, or participating in the editorial review pipeline, you agree to be bound by these Terms of Service. If you disagree with any part of the terms, you may not access our editorial services.\n\n02 Intellectual Property & Open Access Licensing\nScholarlyNest adheres to strict open-access principles. All finalized blog articles published on the platform are released under the Creative Commons Attribution 4.0 International License (CC BY 4.0).\n\n03 Editorial Standards & Community Guidelines\nWe prioritize academic integrity. Authors are strictly prohibited from submitting plagiarized materials, manipulated datasets, or articles previously published in indexed magazines without explicit acknowledgment. Our editorial board reserves the right to reject or retract any content that violates these guidelines.",
                 'content_html' => '<section class="space-y-4">
   <h2 class="font-serif text-xl font-bold text-zinc-900 dark:text-white flex items-center">
     <span class="w-6 h-6 rounded-full bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center text-[10px] mr-3 text-zinc-500 font-mono">01</span>
@@ -52,7 +52,7 @@ class CmsPageSeeder extends Seeder
   </h2>
   <div class="pl-9 space-y-4 text-sm leading-relaxed">
     <p>
-      We prioritize academic integrity. Authors are strictly prohibited from submitting plagiarized materials, manipulated datasets, or articles previously published in indexed journals without explicit acknowledgment. Our editorial board reserves the right to reject or retract any content that violates these guidelines.
+      We prioritize academic integrity. Authors are strictly prohibited from submitting plagiarized materials, manipulated datasets, or articles previously published in indexed magazines without explicit acknowledgment. Our editorial board reserves the right to reject or retract any content that violates these guidelines.
     </p>
     <p>
       All users allocated through our permissions system must participate without abusive behaviors or spam. Commenters and writers agree to maintain clean, constructive dialogues. Exploiting platform resources for unsolicited advertisements is strictly prohibited.

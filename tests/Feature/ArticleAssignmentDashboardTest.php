@@ -56,9 +56,9 @@ class ArticleAssignmentDashboardTest extends TestCase
         $author = User::factory()->create(['role_id' => $authorRole->id]);
 
         $this->magazine = Magazine::create([
-            'title' => 'Dashboard Journal',
-            'slug' => 'dashboard-journal',
-            'description' => 'Dashboard test journal',
+            'title' => 'Dashboard Magazine',
+            'slug' => 'dashboard-magazine',
+            'description' => 'Dashboard test magazine',
         ]);
 
         foreach ([$this->editor, $this->subEditor, $this->otherSubEditor, $this->reviewer, $this->otherReviewer] as $user) {
