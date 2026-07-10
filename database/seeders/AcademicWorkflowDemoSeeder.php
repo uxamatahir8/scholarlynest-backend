@@ -94,6 +94,13 @@ class AcademicWorkflowDemoSeeder extends Seeder
 
             DB::beginTransaction();
 
+            $this->call([
+                SystemRoleSeeder::class,
+                SystemPermissionSeeder::class,
+                RequiredSystemSettingsSeeder::class,
+                DefaultSuperAdminSeeder::class,
+            ]);
+
             // 4. Ensure roles exist and fetch their IDs
             $roles = Role::pluck('id', 'name')->toArray();
             foreach (SystemRoles::DEFINITIONS as $name => $definition) {
