@@ -5,12 +5,15 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Role;
 use App\Models\Setting;
+use App\Services\Media\CleanUploadResolver;
+use App\Services\Media\MediaStorageService;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Rules\Password;
 
@@ -56,6 +59,10 @@ class AuthController extends Controller
      */
     public function register(Request $request): JsonResponse
     {
+        if ($this->hasAuthenticatedBearer($request)) {
+            return response()->json(['message' => 'Authenticated users cannot access registration.'], 403);
+        }
+
         if (!$this->publicRegistrationEnabled()) {
             return response()->json(['message' => 'Registration is currently closed.'], 403);
         }
@@ -197,6 +204,10 @@ class AuthController extends Controller
      */
     public function login(Request $request): JsonResponse
     {
+        if ($this->hasAuthenticatedBearer($request)) {
+            return response()->json(['message' => 'Authenticated users cannot access login.'], 403);
+        }
+
         $request->validate([
             'email' => 'required|string|email',
             'password' => 'required|string',
@@ -385,6 +396,8 @@ class AuthController extends Controller
         $user->update([
             'password_change_code' => $code,
             'password_change_code_expires_at' => now()->addMinutes(15),
+            'password_change_verified_at' => null,
+            'password_change_failed_attempts' => 0,
         ]);
 
         $this->sendHtmlEmail(
@@ -406,7 +419,7 @@ class AuthController extends Controller
     public function changePassword(Request $request): JsonResponse
     {
         $request->validate([
-            'code' => 'required|string|size:6',
+            'code' => 'nullable|string|size:6',
             'password' => [
                 'required',
                 'string',
@@ -418,18 +431,25 @@ class AuthController extends Controller
 
         $user = $request->user();
 
-        if ($user->password_change_code !== $request->code) {
-            return response()->json(['message' => 'Invalid password change code.'], 400);
+        if (!$user->password_change_code || !$user->password_change_verified_at) {
+            return response()->json(['message' => 'Verify your password change code before updating your password.'], 403);
         }
 
-        if (now()->gt($user->password_change_code_expires_at)) {
+        if (now()->gt($user->password_change_code_expires_at) || $user->password_change_verified_at->lt(now()->subMinutes(15))) {
             return response()->json(['message' => 'Password change code has expired.'], 400);
+        }
+
+        if ($request->filled('code') && !hash_equals((string) $user->password_change_code, (string) $request->code)) {
+            $this->recordPasswordChangeFailure($user);
+            return response()->json(['message' => 'Invalid password change code.'], 400);
         }
 
         $user->update([
             'password' => Hash::make($request->password),
             'password_change_code' => null,
             'password_change_code_expires_at' => null,
+            'password_change_verified_at' => null,
+            'password_change_failed_attempts' => 0,
         ]);
 
         return response()->json([
@@ -448,13 +468,24 @@ class AuthController extends Controller
 
         $user = $request->user();
 
-        if ($user->password_change_code !== $request->code) {
+        if ($this->passwordChangeLocked($user)) {
+            return response()->json(['message' => 'Too many failed verification attempts. Please request a new code.'], 429);
+        }
+
+        if (!$user->password_change_code || !hash_equals((string) $user->password_change_code, (string) $request->code)) {
+            $this->recordPasswordChangeFailure($user);
             return response()->json(['message' => 'Invalid password change code.'], 400);
         }
 
         if (now()->gt($user->password_change_code_expires_at)) {
             return response()->json(['message' => 'Password change code has expired.'], 400);
         }
+
+        $user->update([
+            'password_change_verified_at' => now(),
+            'password_change_failed_attempts' => 0,
+        ]);
+        RateLimiter::clear($this->passwordChangeRateKey($user));
 
         return response()->json([
             'message' => 'Code verified successfully.',
@@ -466,6 +497,10 @@ class AuthController extends Controller
      */
     public function verifyPasswordResetCode(Request $request): JsonResponse
     {
+        if ($this->hasAuthenticatedBearer($request)) {
+            return response()->json(['message' => 'Authenticated users cannot verify password reset links from this endpoint.'], 403);
+        }
+
         $request->validate([
             'email' => 'required|string|email',
             'token' => 'required|string|min:32',
@@ -679,6 +714,10 @@ class AuthController extends Controller
      */
     public function forgotPassword(Request $request): JsonResponse
     {
+        if ($this->hasAuthenticatedBearer($request)) {
+            return response()->json(['message' => 'Authenticated users cannot request password reset from this endpoint.'], 403);
+        }
+
         $request->validate([
             'email' => 'required|string|email',
         ]);
@@ -699,6 +738,10 @@ class AuthController extends Controller
      */
     public function resetPassword(Request $request): JsonResponse
     {
+        if ($this->hasAuthenticatedBearer($request)) {
+            return response()->json(['message' => 'Authenticated users cannot reset password from this endpoint.'], 403);
+        }
+
         $request->validate([
             'email' => 'required|string|email',
             'token' => 'required|string|min:32',
@@ -802,12 +845,32 @@ class AuthController extends Controller
         $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'profile_image' => 'nullable|string|max:2048',
+            'profile_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'university_name' => 'nullable|string|max:255',
+            'role_id' => 'prohibited',
+            'role' => 'prohibited',
+            'roles' => 'prohibited',
+            'permissions' => 'prohibited',
+            'magazine_ids' => 'prohibited',
+            'assigned_magazines' => 'prohibited',
         ]);
+
+        $profileImage = $user->profile_image;
+        if ($request->filled('profile_image_upload_id')) {
+            $profileImage = app(CleanUploadResolver::class)->cleanKey($user, $request->profile_image_upload_id, 'profile_image');
+        } elseif ($request->has('profile_image')) {
+            $requestedImage = $request->input('profile_image');
+            $currentUrl = app(MediaStorageService::class)->applicationUrl($user->profile_image);
+            if ($requestedImage === null || $requestedImage === '') {
+                $profileImage = null;
+            } elseif ($requestedImage !== $user->profile_image && $requestedImage !== $currentUrl) {
+                return response()->json(['message' => 'Profile image must be selected from a clean profile image upload.'], 422);
+            }
+        }
 
         $user->update([
             'name' => $request->has('name') ? $request->name : $user->name,
-            'profile_image' => $request->has('profile_image') ? $request->profile_image : $user->profile_image,
+            'profile_image' => $profileImage,
             'university_name' => $request->has('university_name') ? $request->university_name : $user->university_name,
         ]);
 
@@ -1010,7 +1073,8 @@ class AuthController extends Controller
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
-            'profile_image' => $user->profile_image,
+            'profile_image' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
+            'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
             'university_name' => $user->university_name,
             'email_verified_at' => $user->email_verified_at,
             'needs_password_reset' => (bool) $user->needs_password_reset,
@@ -1086,5 +1150,30 @@ class AuthController extends Controller
         $capabilities['can_manage_rbac'] = $isSuperAdmin || ($capabilities['roles.view-any'] ?? false);
 
         return $capabilities;
+    }
+
+    private function passwordChangeRateKey(User $user): string
+    {
+        return 'password-change-verify:' . $user->id;
+    }
+
+    private function hasAuthenticatedBearer(Request $request): bool
+    {
+        return $request->bearerToken() && auth('sanctum')->user() !== null;
+    }
+
+    private function passwordChangeLocked(User $user): bool
+    {
+        return RateLimiter::tooManyAttempts($this->passwordChangeRateKey($user), 5)
+            || (int) $user->password_change_failed_attempts >= 5;
+    }
+
+    private function recordPasswordChangeFailure(User $user): void
+    {
+        RateLimiter::hit($this->passwordChangeRateKey($user), 15 * 60);
+        $user->forceFill([
+            'password_change_verified_at' => null,
+            'password_change_failed_attempts' => min(255, ((int) $user->password_change_failed_attempts) + 1),
+        ])->save();
     }
 }

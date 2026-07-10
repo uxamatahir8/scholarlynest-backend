@@ -13,6 +13,7 @@ return [
     'scan_driver' => env('MEDIA_SCAN_DRIVER', 'clamav'),
     'clamav_binary' => env('CLAMAV_SCAN_BINARY', '/usr/bin/clamdscan'),
     'max_active_sessions_per_user' => (int) env('MEDIA_UPLOAD_MAX_ACTIVE_SESSIONS_PER_USER', 10),
+    'rate_limit_per_minute' => max(150, (int) env('MEDIA_UPLOAD_RATE_LIMIT_PER_MINUTE', 150)),
     'presign_ttl_minutes' => min(5, (int) env('MEDIA_UPLOAD_PRESIGN_TTL_MINUTES', 5)),
     'queues' => [
         'scan' => env('MEDIA_SCAN_QUEUE', 'media-scan'),
@@ -181,6 +182,14 @@ return [
             'target' => 'user',
             'clean_prefix' => 'clean/profiles/',
             'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
+            'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
+            'scan_required' => true,
+        ],
+        'publication_section_image' => [
+            'target' => 'reference',
+            'clean_prefix' => 'clean/articles/publication-sections/',
+            'max_size_bytes' => 8 * 1024 * 1024,
             'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
             'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
             'scan_required' => true,
