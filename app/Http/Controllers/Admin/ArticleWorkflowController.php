@@ -1623,11 +1623,11 @@ class ArticleWorkflowController extends Controller
             $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
             [
                 'You have been invited to review the article "' . ($article?->title ?? 'Untitled Article') . '" for ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '.',
-                'Tracking Code: ' . ($article?->tracking_code ?? 'Not assigned'),
-                'Corresponding Author: ' . $author,
+                'Article Details: Title: ' . ($article?->title ?? 'Untitled Article') . '. Magazine: ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article?->tracking_code ?? 'Not assigned') . '.',
+                'Article Type: ' . ($article?->article_type ?: 'Not specified') . '. Category: ' . ($article?->article_category ?: 'Not specified') . '. Corresponding Author: ' . $author . '.',
                 'Abstract: ' . strip_tags((string) ($article?->abstract ?? 'Not provided.')),
-                'Please accept or decline the invitation using the secure review invitation page.',
-                'For security, manuscript files are available only after you accept this invitation.',
+                'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
+                'Security Note: This invitation link is intended only for you. Do not forward it. Manuscript files, S3 URLs, questionnaire responses, and internal editorial notes are not included in this email.',
             ],
             [
                 'text' => 'Open Review Invitation',
