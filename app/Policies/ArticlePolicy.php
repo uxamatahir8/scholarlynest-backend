@@ -76,17 +76,6 @@ class ArticlePolicy
             }
         }
 
-        if ($user->hasRole('proofreader')) {
-            $isAssignedProduction = DB::table('production_assignments')
-                ->where('article_id', $article->id)
-                ->where('user_id', $user->id)
-                ->where('role', 'proofreader')
-                ->exists();
-            if ($isAssignedProduction && $this->isAssignedMagazineRole($user, $article, ['proofreader'])) {
-                return true;
-            }
-        }
-
         // Co-authors linked by user_id or email can view
         return DB::table('article_author')
             ->where('article_id', $article->id)

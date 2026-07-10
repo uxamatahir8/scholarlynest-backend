@@ -28,7 +28,7 @@ class SubmitReviewRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'scorecard' => 'required|array',
+            'scorecard' => 'nullable|array',
             'recommendation' => 'required|in:accept,minor_revision,major_revision,reject',
             'comments_for_author' => 'nullable|string',
             'confidential_comments' => 'nullable|string',

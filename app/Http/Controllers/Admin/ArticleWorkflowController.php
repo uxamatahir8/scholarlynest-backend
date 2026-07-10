@@ -38,6 +38,7 @@ use App\Services\CitationService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\PasswordSetupService;
+use App\Services\Security\HtmlSanitizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -59,7 +60,7 @@ class ArticleWorkflowController extends Controller
 
     public function context(Request $request, int $articleId): JsonResponse
     {
-        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
 
         $article->load([
             'issue',
@@ -90,7 +91,7 @@ class ArticleWorkflowController extends Controller
 
     public function versions(Request $request, int $articleId): JsonResponse
     {
-        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'proofreader', 'sub_editor', 'reviewer'], false);
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
         $article->load(['versions.creator:id,name', 'versions.files.uploader:id,name']);
 
         return response()->json([
@@ -101,7 +102,7 @@ class ArticleWorkflowController extends Controller
     public function assignees(Request $request): JsonResponse
     {
         $request->validate([
-            'role' => 'required|in:editor,sub_editor,reviewer,publisher,copy_editor,proofreader',
+            'role' => 'required|in:editor,sub_editor,reviewer,publisher,copy_editor',
             'magazine_id' => 'nullable|exists:magazines,id',
         ]);
 
@@ -241,7 +242,7 @@ class ArticleWorkflowController extends Controller
         $user = $request->user();
         $role = $request->query('role');
 
-        if ($role && !in_array($role, ['copy_editor', 'proofreader'], true)) {
+        if ($role && !in_array($role, ['copy_editor'], true)) {
             return response()->json(['message' => 'Invalid production role.'], 422);
         }
 
@@ -250,17 +251,17 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Invalid assignment status.'], 422);
         }
 
-        $observerRole = $role ?: ['copy_editor', 'proofreader'];
+        $observerRole = $role ?: ['copy_editor'];
         $observedUser = DeskObserverController::resolveObservedUser($request, $observerRole);
         $deskUser = $observedUser ?: $user;
         $allowedRole = $role ?: null;
         if ($observedUser) {
-            $allowedRole = $role ?: ($deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader');
+            $allowedRole = $role ?: 'copy_editor';
         } elseif (!$this->isGlobal($user)) {
-            if (!$deskUser->hasRole('copy_editor') && !$deskUser->hasRole('proofreader')) {
+            if (!$deskUser->hasRole('copy_editor')) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
-            $allowedRole = $deskUser->hasRole('copy_editor') ? 'copy_editor' : 'proofreader';
+            $allowedRole = 'copy_editor';
             if ($role && $role !== $allowedRole) {
                 return response()->json(['message' => 'Forbidden. Production role required.'], 403);
             }
@@ -280,12 +281,6 @@ class ArticleWorkflowController extends Controller
             ->orderBy('due_date')
             ->orderByDesc('updated_at')
             ->orderByDesc('created_at');
-
-        if (($observedUser || !$this->isGlobal($user)) && $allowedRole === 'proofreader') {
-            $query->whereHas('article', function ($articleQuery) use ($deskUser) {
-                $articleQuery->whereIn('magazine_id', $this->assignedMagazineIds($deskUser, ['proofreader']));
-            });
-        }
 
         $perPage = max(5, min(50, $request->integer('per_page', 15)));
         $assignments = $query->paginate($perPage);
@@ -365,29 +360,13 @@ class ArticleWorkflowController extends Controller
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
 
-        $storedFile = null;
-
-        DB::transaction(function () use ($request, $article, $oldStatus, &$storedFile) {
+        DB::transaction(function () use ($request, $article, $oldStatus) {
             $nextStatus = $request->decision === 'reject'
                 ? ArticleStatus::REJECTED
                 : ArticleStatus::UNDER_REVIEW;
 
-            if ($request->hasFile('plagiarism_report')) {
-                throw new HttpResponseException(response()->json([
-                    'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
-                ], 410));
-            }
-
-            if ($request->filled('plagiarism_report_upload_id')) {
-                $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->plagiarism_report_upload_id, 'article_plagiarism_report');
-                $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_plagiarism_report'));
-            }
-
             $article->update([
                 'status' => $nextStatus,
-                'plagiarism_status' => $request->plagiarism_status,
-                'plagiarism_score' => $request->plagiarism_score,
-                'plagiarism_report_path' => $storedFile?->file_path ?? $request->plagiarism_report_path,
                 'screened_at' => now(),
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
@@ -399,7 +378,6 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'message' => 'Article screening recorded.',
             'article' => $this->workflowArticlePayload($article->fresh(['magazine:id,title,slug', 'issue', 'files.uploader:id,name']), $request->user()),
-            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
         ]);
     }
 
@@ -876,7 +854,7 @@ class ArticleWorkflowController extends Controller
         $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher']);
         $oldStatus = $article->status;
-        $nextStatus = $request->role === 'copy_editor' ? ArticleStatus::COPY_EDITING : ArticleStatus::PROOFREADING;
+        $nextStatus = ArticleStatus::COPY_EDITING;
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $nextStatus) {
             $assignment = ProductionAssignment::updateOrCreate(
@@ -930,15 +908,12 @@ class ArticleWorkflowController extends Controller
         }
 
         if (!$this->isGlobal($user)
-            && (($user->hasRole('copy_editor') && $assignment->role !== 'copy_editor')
-                || ($user->hasRole('proofreader') && $assignment->role !== 'proofreader'))) {
+            && (!$user->hasRole('copy_editor') || $assignment->role !== 'copy_editor')) {
             return response()->json(['message' => 'Forbidden. Production assignment role mismatch.'], 403);
         }
 
-        if (!$this->isGlobal($user)
-            && $assignment->role === 'proofreader'
-            && !$this->isAssignedToMagazine($user, $assignment->article->magazine_id, ['proofreader'])) {
-            return response()->json(['message' => 'Forbidden. Proofreader magazine assignment required.'], 403);
+        if ($assignment->role !== 'copy_editor') {
+            return response()->json(['message' => 'Proofreader assignments are inactive.'], 403);
         }
 
         $storedFile = null;
@@ -951,7 +926,7 @@ class ArticleWorkflowController extends Controller
         }
 
         if ($request->filled('production_file_upload_id')) {
-            $purpose = $assignment->role === 'proofreader' ? 'article_proof_file' : 'article_production_file';
+            $purpose = 'article_production_file';
             $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
             $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
                 $assignment->article,
@@ -996,9 +971,17 @@ class ArticleWorkflowController extends Controller
 
     public function issues(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $query = MagazineIssue::with('magazine:id,title,slug')
             ->withCount('articles')
-            ->orderByDesc('created_at');
+            ->orderByDesc('published_at')
+            ->orderByDesc('issue_year')
+            ->orderByRaw($this->issueMonthOrderSql() . ' DESC')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
 
         if (!$this->isGlobal($request->user())) {
             $query->whereIn('magazine_id', $this->issueManagerMagazineIds($request->user()));
@@ -1013,6 +996,10 @@ class ArticleWorkflowController extends Controller
 
     public function issueMagazines(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $query = Magazine::query()->select(['id', 'title', 'slug'])->orderBy('title');
 
         if (!$this->isGlobal($request->user())) {
@@ -1030,7 +1017,7 @@ class ArticleWorkflowController extends Controller
         ])->withCount('articles')->findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         return response()->json(['issue' => $this->issuePayload($issue)]);
@@ -1038,8 +1025,8 @@ class ArticleWorkflowController extends Controller
 
     public function storeIssue(MagazineIssueRequest $request): JsonResponse
     {
-        if (!$this->isGlobal($request->user()) && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+        if (!$this->canUseIssueManager($request->user()) || (!$request->user()->hasRole('super_admin') && !$this->canManageIssueMagazine($request->user(), (int) $request->magazine_id))) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         if ($this->requestChangesIssuePublicationState($request)
@@ -1060,11 +1047,11 @@ class ArticleWorkflowController extends Controller
         $issue = MagazineIssue::findOrFail($issueId);
 
         if (!$this->canManageIssue($request->user(), $issue)) {
-            return response()->json(['message' => 'Forbidden. Issue manager assignment required.'], 403);
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
         }
 
         if ((int) $issue->magazine_id !== (int) $request->integer('magazine_id')
-            && !$this->isGlobal($request->user())
+            && !$request->user()->hasRole('super_admin')
             && !$this->canManageIssueMagazine($request->user(), $request->integer('magazine_id'))) {
             return response()->json(['message' => 'Forbidden. Issue manager assignment required for target magazine.'], 403);
         }
@@ -1124,6 +1111,10 @@ class ArticleWorkflowController extends Controller
 
     public function eligibleIssueArticles(Request $request): JsonResponse
     {
+        if (!$this->canUseIssueManager($request->user())) {
+            return response()->json(['message' => 'Forbidden. Issue Manager is restricted to Super Admin and Publisher.'], 403);
+        }
+
         $request->validate([
             'magazine_id' => 'nullable|exists:magazines,id',
             'issue_id' => 'nullable|exists:magazine_issues,id',
@@ -1781,27 +1772,42 @@ class ArticleWorkflowController extends Controller
 
     private function canManageIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->canManageIssueMagazine($user, $issue->magazine_id);
+        return $this->canUseIssueManager($user)
+            && ($user->hasRole('super_admin') || $this->canManageIssueMagazine($user, $issue->magazine_id));
     }
 
     private function canPublishIssue($user, MagazineIssue $issue): bool
     {
-        return $this->isGlobal($user) || $this->canPublishIssueMagazine($user, $issue->magazine_id);
+        return $this->canManageIssue($user, $issue);
     }
 
     private function canPublishIssueMagazine($user, int $magazineId): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
+        return $this->canUseIssueManager($user)
+            && ($user->hasRole('super_admin') || $this->isAssignedToMagazine($user, $magazineId, ['publisher']));
     }
 
     private function canManageIssueMagazine($user, int $magazineId): bool
     {
-        return $this->isAssignedToMagazine($user, $magazineId, ['publisher', 'editor', 'magazine_editor']);
+        return $this->isAssignedToMagazine($user, $magazineId, ['publisher']);
     }
 
     private function issueManagerMagazineIds($user): array
     {
-        return $this->assignedMagazineIds($user, ['publisher', 'editor', 'magazine_editor']);
+        return $this->assignedMagazineIds($user, ['publisher']);
+    }
+
+    private function canUseIssueManager($user): bool
+    {
+        return $user && ($user->hasRole('super_admin') || $user->hasRole('publisher'));
+    }
+
+    private function issueMonthOrderSql(): string
+    {
+        return match (DB::getDriverName()) {
+            'sqlite' => "CASE lower(issue_month) WHEN 'january' THEN 1 WHEN 'february' THEN 2 WHEN 'march' THEN 3 WHEN 'april' THEN 4 WHEN 'may' THEN 5 WHEN 'june' THEN 6 WHEN 'july' THEN 7 WHEN 'august' THEN 8 WHEN 'september' THEN 9 WHEN 'october' THEN 10 WHEN 'november' THEN 11 WHEN 'december' THEN 12 ELSE CAST(issue_month AS INTEGER) END",
+            default => "CASE lower(issue_month) WHEN 'january' THEN 1 WHEN 'february' THEN 2 WHEN 'march' THEN 3 WHEN 'april' THEN 4 WHEN 'may' THEN 5 WHEN 'june' THEN 6 WHEN 'july' THEN 7 WHEN 'august' THEN 8 WHEN 'september' THEN 9 WHEN 'october' THEN 10 WHEN 'november' THEN 11 WHEN 'december' THEN 12 ELSE CAST(issue_month AS UNSIGNED) END",
+        };
     }
 
     private function requestChangesIssuePublicationState(Request $request): bool
@@ -1866,18 +1872,11 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if (in_array('proofreader', $roles, true)
-            && $this->hasProductionAssignment($user, $article, 'proofreader')
-            && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader'])) {
-            return $article;
-        }
-
         if (in_array('publisher', $roles, true)
             && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])
             && in_array(ArticleStatus::normalize($article->status), [
                 ArticleStatus::ACCEPTED,
                 ArticleStatus::COPY_EDITING,
-                ArticleStatus::PROOFREADING,
                 ArticleStatus::READY_FOR_PUBLICATION,
                 ArticleStatus::PUBLISHED,
             ], true)) {
@@ -1923,8 +1922,7 @@ class ArticleWorkflowController extends Controller
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         $canViewProduction = $canViewPublication
-            || $this->hasProductionAssignment($user, $article, 'copy_editor')
-            || ($this->hasProductionAssignment($user, $article, 'proofreader') && $this->isAssignedToMagazine($user, $article->magazine_id, ['proofreader']));
+            || $this->hasProductionAssignment($user, $article, 'copy_editor');
 
         $data = [
             'id' => $article->id,
