@@ -157,68 +157,15 @@ class ArticleFileController extends Controller
             return false;
         }
 
-        if ($this->isGlobal($user)) {
+        // Article file viewing is available to every authenticated account,
+        // regardless of role or workflow assignment. Upload authorization and
+        // clean-scan availability remain enforced separately.
+        if ($user) {
             return true;
         }
 
-        if (!$user) {
-            return in_array($file->file_type, [ArticleFile::SUPPLEMENTARY, ArticleFile::PUBLICATION_PDF], true)
-                && ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED;
-        }
-
-        if ($article->user_id === $user->id || $this->isAuthorRecord($user, $article)) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-            ], true);
-        }
-
-        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['editor'])) {
-            return true;
-        }
-
-        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])) {
-            return in_array($file->file_type, [
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::MANUSCRIPT,
-            ], true);
-        }
-
-        if ($this->hasSubEditorAssignment($user, $article)) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::PLAGIARISM_REPORT,
-                ArticleFile::ANNOTATED_MANUSCRIPT,
-                ArticleFile::REVIEWED_MANUSCRIPT,
-            ], true);
-        }
-
-        if ($this->hasReviewerAssignment($user, $article)) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::REVIEWED_MANUSCRIPT,
-            ], true);
-        }
-
-        if ($this->hasProductionAssignment($user, $article, null, 'copy_editor')) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-            ], true);
-        }
-
-        return false;
+        return in_array($file->file_type, [ArticleFile::SUPPLEMENTARY, ArticleFile::PUBLICATION_PDF], true)
+            && ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED;
     }
 
     public function canUploadForDirectSession($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
@@ -243,12 +190,12 @@ class ArticleFileController extends Controller
             if ($fileType === ArticleFile::MANUSCRIPT) {
                 return $user && (
                     $user->hasPermission('articles.create')
-                    || $user->hasRole(['author', 'editor', 'magazine-editor'])
+                    || $user->hasRole(['author', 'editor'])
                     || $this->isGlobal($user)
                 );
             }
             if ($fileType === ArticleFile::PUBLICATION_PDF) {
-                return $user && ($user->hasRole(['publisher', 'editor', 'magazine-editor']) || $this->isGlobal($user));
+                return $user && ($user->hasRole(['publisher', 'editor']) || $this->isGlobal($user));
             }
             return false;
         }

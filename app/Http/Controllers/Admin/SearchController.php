@@ -39,10 +39,10 @@ class SearchController extends Controller
                 $q->where('user_id', $user->id);
 
                 // Editor Scope
-                if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+                if ($user->hasRole('editor')) {
                     $editorMagazineIds = DB::table('magazine_user')
                         ->where('user_id', $user->id)
-                        ->whereIn('role', ['editor', 'magazine_editor'])
+                        ->whereIn('role', ['editor'])
                         ->pluck('magazine_id')
                         ->toArray();
                     $q->orWhereIn('magazine_id', $editorMagazineIds);

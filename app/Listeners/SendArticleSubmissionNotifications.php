@@ -151,7 +151,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
             ->whereHas('magazines', function ($query) use ($article) {
                 $query->where('magazines.id', $article->magazine_id)
                     ->where(function ($pivotQuery) {
-                        $pivotQuery->whereIn('magazine_user.role', ['editor', 'magazine_editor'])
+                        $pivotQuery->whereIn('magazine_user.role', ['editor'])
                             ->orWhereNull('magazine_user.role');
                     });
             })

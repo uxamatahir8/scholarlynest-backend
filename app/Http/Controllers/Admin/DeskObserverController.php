@@ -17,7 +17,6 @@ class DeskObserverController extends Controller
         'proofreader',
         'publisher',
         'editor',
-        'magazine_editor',
     ];
 
     public function users(Request $request): JsonResponse

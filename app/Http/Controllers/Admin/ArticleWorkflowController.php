@@ -131,7 +131,7 @@ class ArticleWorkflowController extends Controller
                 });
 
                 // Editors see only Sub Editors linked to them
-                if (!$this->isGlobal($user) && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
+                if (!$this->isGlobal($user) && $user->hasRole('editor')) {
                     $query->whereIn('users.id', function ($subQuery) use ($user) {
                         $subQuery->select('sub_editor_id')
                             ->from('editor_sub_editor')
@@ -2106,7 +2106,7 @@ class ArticleWorkflowController extends Controller
     {
         return $user
             && in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)
-            && ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']))
+            && ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']))
             && !$article->pendingTransferRequest;
     }
 
@@ -2519,12 +2519,12 @@ class ArticleWorkflowController extends Controller
 
     private function canViewAuditLogs($user, Article $article): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']);
     }
 
     private function canViewEditorialInternals($user, Article $article): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']);
     }
 
     private function assignmentPayload(SubEditorAssignment|ReviewerAssignment|ProductionAssignment $assignment, $user): array
@@ -2689,7 +2689,6 @@ class ArticleWorkflowController extends Controller
     {
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();

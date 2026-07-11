@@ -21,10 +21,6 @@ final class SystemRoles
             'display_name' => 'Editor',
             'description' => 'Screens manuscripts and manages peer review for assigned magazines.',
         ],
-        'magazine_editor' => [
-            'display_name' => 'Magazine Editor',
-            'description' => 'Magazine-scoped editor for assigned publication areas.',
-        ],
         'sub_editor' => [
             'display_name' => 'Sub Editor',
             'description' => 'Coordinates reviewer work and recommendations for assigned manuscripts.',

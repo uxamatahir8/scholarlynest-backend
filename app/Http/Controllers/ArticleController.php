@@ -322,7 +322,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser)
             ->with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
@@ -348,7 +348,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser);
         $this->applyAdminArticleFilters($query, $request, false);
@@ -387,7 +387,7 @@ class ArticleController extends Controller
         }
 
         if (!$this->hasGlobalArticleAccess($user) && !$user->hasPermission('articles.auto-approve')) {
-            if (!$this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor'])) {
+            if (!$this->isAssignedToArticleMagazine($user, $article, ['editor'])) {
                 return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
             }
             if (ArticleStatus::normalize($request->input('status')) === ArticleStatus::PUBLISHED) {
@@ -537,7 +537,7 @@ class ArticleController extends Controller
         // first-read trigger: transition 'submitted' to 'under_review' on admin/editor view
         if (ArticleStatus::normalize($article->status) === ArticleStatus::SUBMITTED) {
             $isAdminOrEditor = $this->hasGlobalArticleAccess($user)
-                || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
+                || $this->isAssignedToArticleMagazine($user, $article, ['editor']);
             if ($isAdminOrEditor) {
                 $oldStatus = $article->status;
                 $article->status = ArticleStatus::UNDER_REVIEW;
@@ -593,7 +593,7 @@ class ArticleController extends Controller
 
         // Check if user has editorial privileges
         $isEditorial = $this->hasGlobalArticleAccess($user)
-            || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
+            || $this->isAssignedToArticleMagazine($user, $article, ['editor']);
 
         // Authorize via ArticlePolicy
         if ($user->cannot('update', $article)) {
@@ -617,7 +617,7 @@ class ArticleController extends Controller
         $status = $article->status;
 
         $isEditorial = $this->hasGlobalArticleAccess($user)
-            || $this->isAssignedToArticleMagazine($user, $article, ['editor', 'magazine_editor']);
+            || $this->isAssignedToArticleMagazine($user, $article, ['editor']);
 
         if (!$isEditorial) {
             // Authors saving requested revisions resubmit the manuscript for editorial review.
@@ -951,7 +951,7 @@ class ArticleController extends Controller
     public function adminStats(Request $request): JsonResponse
     {
         $user = $request->user();
-        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor', 'magazine_editor']);
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
 
         if (!$scopeUser || (!$this->hasGlobalArticleAccess($scopeUser) && !$this->usesMagazineArticleScope($scopeUser))) {
@@ -964,7 +964,7 @@ class ArticleController extends Controller
             $publisherScoped = $this->usesPublisherArticleScope($scopeUser);
             $magazineIds = $publisherScoped
                 ? $this->assignedMagazineIds($scopeUser, ['publisher'])
-                : $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']);
+                : $this->assignedMagazineIds($scopeUser, ['editor']);
         }
 
         $query = Article::query();
@@ -1224,7 +1224,7 @@ class ArticleController extends Controller
         $article->loadMissing(['articleAuthors', 'assets', 'issue']);
         $payload = $this->adminArticleSummaryPayload($article, $viewer);
         $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
-            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor', 'magazine_editor']);
+            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor']);
         $isAuthor = (int) $article->user_id === (int) $viewer->id
             || $article->articleAuthors->contains(fn ($author) => (int) $author->user_id === (int) $viewer->id || strtolower((string) $author->co_author_email) === strtolower((string) $viewer->email));
 
@@ -1357,7 +1357,7 @@ class ArticleController extends Controller
     private function reviewerPreferencePayload(Article $article, User $viewer): array
     {
         $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
-            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor', 'magazine_editor']);
+            || $this->isAssignedToArticleMagazine($viewer, $article, ['editor']);
         $isAuthor = (int) $article->user_id === (int) $viewer->id
             || $article->articleAuthors->contains(fn ($author) => (int) $author->user_id === (int) $viewer->id || strtolower((string) $author->co_author_email) === strtolower((string) $viewer->email));
 
@@ -1519,7 +1519,7 @@ class ArticleController extends Controller
         }
 
         if ($this->usesMagazineArticleScope($scopeUser)) {
-            return $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor', 'magazine_editor']));
+            return $query->whereIn('magazine_id', $this->assignedMagazineIds($scopeUser, ['editor']));
         }
 
         if ($scopeUser->hasRole('sub_editor')) {
@@ -1611,11 +1611,7 @@ class ArticleController extends Controller
 
     private function usesEditorialArticleScope($user): bool
     {
-        return $user && (
-            $user->hasRole('editor')
-            || $user->hasRole('magazine_editor')
-            || $user->hasRole('magazine-editor')
-        );
+        return $user && $user->hasRole('editor');
     }
 
     private function usesPublisherArticleScope($user): bool
@@ -1638,7 +1634,6 @@ class ArticleController extends Controller
     {
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();
@@ -1657,7 +1652,6 @@ class ArticleController extends Controller
     {
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();

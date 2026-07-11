@@ -98,7 +98,7 @@ class ArticleFileWorkflowTest extends TestCase
         $this->assertNull($this->article->plagiarism_report_path);
     }
 
-    public function test_reviewer_uploads_reviewed_manuscript_and_author_cannot_download_it(): void
+    public function test_clean_article_file_is_downloadable_by_any_authenticated_role(): void
     {
         Sanctum::actingAs($this->editor);
         $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
@@ -117,11 +117,21 @@ class ArticleFileWorkflowTest extends TestCase
         $file = ArticleFile::where('file_type', ArticleFile::REVIEWED_MANUSCRIPT)->firstOrFail();
 
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertStatus(403);
+            ->assertRedirect();
 
         Sanctum::actingAs($this->author);
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertStatus(403);
+            ->assertRedirect();
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/articles/files/{$file->id}/download")
+            ->assertRedirect();
+
+        $unrelatedRole = Role::create(['name' => 'support_agent', 'display_name' => 'Support Agent']);
+        $unrelatedUser = User::factory()->create(['role_id' => $unrelatedRole->id]);
+        Sanctum::actingAs($unrelatedUser);
+        $this->getJson("/api/articles/files/{$file->id}/download")
+            ->assertRedirect();
     }
 
     public function test_workflow_context_filters_files_by_role(): void

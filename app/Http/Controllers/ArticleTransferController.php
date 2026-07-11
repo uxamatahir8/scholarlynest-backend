@@ -150,12 +150,12 @@ class ArticleTransferController extends Controller
 
     private function canScreenCurrentMagazine(User $user, Article $article): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']);
     }
 
     private function canViewEditorialInternals(User $user, Article $article): bool
     {
-        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'magazine_editor']);
+        return $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']);
     }
 
     private function canAuthorRespond(User $user, Article $article): bool

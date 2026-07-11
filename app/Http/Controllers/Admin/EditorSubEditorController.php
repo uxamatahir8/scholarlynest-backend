@@ -23,7 +23,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -50,7 +50,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -86,7 +86,7 @@ class EditorSubEditorController extends Controller
                     $subEditor->save();
                 }
 
-                if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+                if ($user->hasRole('editor')) {
                     if ($user->assignedSubEditors()->where('sub_editor_id', $subEditor->id)->exists()) {
                         return [
                             'status' => 200,
@@ -135,7 +135,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
