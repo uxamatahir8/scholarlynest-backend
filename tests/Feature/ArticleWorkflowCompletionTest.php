@@ -19,6 +19,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Database\Seeders\ReviewerEvaluationQuestionnaireSeeder;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -250,6 +251,104 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
             ->assertJsonMissing(['private.reviewer@example.test']);
+    }
+
+    public function test_seeded_questionnaire_submission_saves_comments_maps_decision_and_respects_blind_review(): void
+    {
+        $this->seed(ReviewerEvaluationQuestionnaireSeeder::class);
+        $reviewer = User::factory()->create([
+            'name' => 'Confidential Reviewer',
+            'email' => 'confidential.reviewer@example.test',
+            'role_id' => Role::where('name', 'reviewer')->value('id'),
+            'email_verified_at' => now(),
+        ]);
+        $assignment = ReviewerAssignment::create([
+            'article_id' => $this->article->id,
+            'reviewer_id' => $reviewer->id,
+            'invitee_name' => $reviewer->name,
+            'invitee_email' => $reviewer->email,
+            'assigned_by' => $this->editor->id,
+            'status' => 'accepted',
+            'accepted_at' => now(),
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'questionnaire_responses' => [],
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
+
+        $assignment->refresh()->load('questionnaireInstance.version.questions.options');
+        $questions = $assignment->questionnaireInstance->version->questions;
+        $responses = $questions->reject(fn ($question) => $question->prompt === 'Final Decision')->map(function ($question) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                default => 'yes',
+            };
+
+            return ['question_id' => $question->id, 'answer' => $answer];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'questionnaire_responses' => $responses,
+        ])->assertUnprocessable();
+
+        $finalQuestion = $questions->firstWhere('prompt', 'Final Decision');
+        $evaluationQuestion = $questions->firstWhere('prompt', 'Are scientific methods adequately used?');
+        $responses = $questions->map(function ($question) use ($finalQuestion, $evaluationQuestion) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                'Final Decision' => 'moderate_revision',
+                default => $question->id === $evaluationQuestion->id ? 'no' : 'yes',
+            };
+
+            return [
+                'question_id' => $question->id,
+                'answer' => $answer,
+                'comment' => $question->id === $evaluationQuestion->id
+                    ? 'Describe the sampling and statistical analysis in more detail.'
+                    : null,
+            ];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'comments_for_author' => 'Please address the methodological detail.',
+            'confidential_comments' => 'Confidential editorial note.',
+            'questionnaire_responses' => $responses,
+        ])->assertOk();
+
+        $assignment->refresh();
+        $this->assertSame('completed', $assignment->status);
+        $this->assertSame('major_revision', $assignment->recommendation);
+        $this->assertDatabaseHas('review_question_responses', [
+            'review_questionnaire_instance_id' => $assignment->questionnaire_instance_id,
+            'review_question_id' => $evaluationQuestion->id,
+            'comment' => 'Describe the sampling and statistical analysis in more detail.',
+        ]);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['name' => 'Confidential Reviewer'])
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.']);
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(0, 'article.reviewer_assignments')
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
     }
 
     public function test_public_invitation_context_requires_a_valid_token_and_excludes_files(): void
