@@ -131,7 +131,7 @@ class ArticleFileWorkflowTest extends TestCase
         $unrelatedUser = User::factory()->create(['role_id' => $unrelatedRole->id]);
         Sanctum::actingAs($unrelatedUser);
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertRedirect();
+            ->assertForbidden();
     }
 
     public function test_workflow_context_filters_files_by_role(): void

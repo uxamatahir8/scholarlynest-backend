@@ -111,6 +111,20 @@ class MediaStorageService
             ]);
         }
 
+        if (request()->has('stream')) {
+            return response()->streamDownload(function () use ($resolved) {
+                $stream = Storage::disk($resolved['disk'])->readStream($resolved['path']);
+                if ($stream) {
+                    fpassthru($stream);
+                    fclose($stream);
+                }
+            }, $filename, [
+                'Content-Type' => $contentType,
+                'Content-Disposition' => $disposition . '; filename="' . addslashes($filename) . '"',
+                'X-Content-Type-Options' => 'nosniff',
+            ]);
+        }
+
         return redirect()->away(
             Storage::disk($resolved['disk'])->temporaryUrl($resolved['path'], now()->addMinutes(config('media_uploads.download_url_ttl_minutes', 5)), [
                 'ResponseContentDisposition' => $disposition . '; filename="' . addslashes($filename) . '"',

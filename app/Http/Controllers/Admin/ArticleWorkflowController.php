@@ -2361,17 +2361,18 @@ class ArticleWorkflowController extends Controller
             ? collect($article->postPublicationActions ?? [])->map(fn ($action) => $this->postPublicationActionPayload($action))->values()
             : [];
 
-        $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
-            ? collect($article->auditLogs ?? [])->map(fn ($log) => [
-                'id' => $log->id,
-                'article_id' => $log->article_id,
-                'event' => $log->event,
-                'from_status' => $log->from_status,
-                'to_status' => $log->to_status,
-                'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
-                'created_at' => $log->created_at,
-            ])->values()
-            : [];
+         $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
+             ? collect($article->auditLogs ?? [])->map(fn ($log) => [
+                 'id' => $log->id,
+                 'article_id' => $log->article_id,
+                 'event' => $log->event,
+                 'from_status' => $log->from_status,
+                 'to_status' => $log->to_status,
+                 'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
+                 'payload' => $log->payload,
+                 'created_at' => $log->created_at,
+             ])->values()
+             : [];
 
         return $data;
     }

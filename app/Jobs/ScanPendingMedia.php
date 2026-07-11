@@ -154,7 +154,7 @@ class ScanPendingMedia implements ShouldQueue
                 }
 
                 if (!empty($metadata['media_id'])) {
-                    Media::whereKey($metadata['media_id'])->update(array_merge($updates, [
+                    Media::whereKey($metadata['media_id'])->update(array_merge(\Illuminate\Support\Arr::except($updates, ['file_path']), [
                         'url' => app(\App\Services\Media\MediaStorageService::class)->publicOrTemporaryUrl($cleanKey) ?? '',
                     ]));
                 }
