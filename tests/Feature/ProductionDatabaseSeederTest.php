@@ -54,7 +54,11 @@ class ProductionDatabaseSeederTest extends TestCase
         ]);
         $this->assertSame(0, Article::count());
         $this->assertSame(0, Magazine::count());
-        $this->assertSame(0, \DB::table('review_questionnaires')->count());
+        $this->assertSame(1, \DB::table('review_questionnaires')->count());
+        $this->assertDatabaseHas('review_questionnaires', [
+            'name' => \Database\Seeders\ReviewerEvaluationQuestionnaireSeeder::TEMPLATE_NAME,
+            'is_active' => true,
+        ]);
         $this->assertGreaterThan(0, Permission::count());
         $this->assertDatabaseHas('settings', ['key' => 'default_registration_role', 'value' => 'author']);
     }
@@ -72,6 +76,10 @@ class ProductionDatabaseSeederTest extends TestCase
             'settings' => Setting::count(),
             'articles' => Article::count(),
             'magazines' => Magazine::count(),
+            'questionnaires' => \DB::table('review_questionnaires')->count(),
+            'questionnaire_versions' => \DB::table('review_questionnaire_versions')->count(),
+            'review_questions' => \DB::table('review_questions')->count(),
+            'review_question_options' => \DB::table('review_question_options')->count(),
         ];
 
         $this->seed(ProductionDatabaseSeeder::class);
@@ -84,6 +92,10 @@ class ProductionDatabaseSeederTest extends TestCase
             'settings' => Setting::count(),
             'articles' => Article::count(),
             'magazines' => Magazine::count(),
+            'questionnaires' => \DB::table('review_questionnaires')->count(),
+            'questionnaire_versions' => \DB::table('review_questionnaire_versions')->count(),
+            'review_questions' => \DB::table('review_questions')->count(),
+            'review_question_options' => \DB::table('review_question_options')->count(),
         ]);
         $this->assertTrue(Hash::check('ExistingPassword123!', $admin->password));
         $this->assertFalse(Hash::check('LocalSeedPassword123!', $admin->password));
