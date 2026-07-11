@@ -40,9 +40,15 @@ class SendArticleSubmissionNotifications implements ShouldQueue
             $greeting = 'Dear ' . $primaryAuthor->name . ',';
             $bodyLines = [
                 'Your article has been submitted successfully to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
-                'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Submission Status: submitted. Submitted At: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
-                'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
-                'What Happens Next: Your submission will be reviewed by the editorial team. You can track progress from your article dashboard.'
+                '<br><strong>Submission Details:</strong>',
+                '• <strong>Article Title:</strong> ' . e($article->title),
+                '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
+                '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
+                '• <strong>Submission Status:</strong> Submitted',
+                '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('F j, Y g:i A T'),
+                '<br><strong>Abstract:</strong>',
+                '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
+                'Next Action: No immediate action is required. The editorial team will screen your submission, and you can track progress from your article dashboard.'
             ];
             $action = [
                 'text' => 'Go to Dashboard',
@@ -76,9 +82,14 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 $greeting = 'Dear ' . $name . ',';
                 $bodyLines = [
                     'You have been listed as a co-author on a submitted article in Scholarly Nest.',
-                    'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Submitted At: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
-                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
-                    'You can review the article status from your Scholarly Nest account. If you do not already have an account, you will receive a separate secure password setup email.'
+                    '<br><strong>Submission Details:</strong>',
+                    '• <strong>Article Title:</strong> ' . e($article->title),
+                    '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
+                    '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
+                    '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('F j, Y g:i A T'),
+                    '<br><strong>Abstract:</strong>',
+                    '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
+                    'Next Action: Review the article status from your ScholarlyNest account. If you need a new account, a separate secure password setup email will be sent.'
                 ];
 
                 $this->notificationService->send(
@@ -102,11 +113,13 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 $recipient['name'] ? 'Dear ' . $recipient['name'] . ',' : 'Hello,',
                 [
                     'A new manuscript titled "' . $article->title . '" has been submitted to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
-                    'Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.',
-                    'Submitting author: ' . ($primaryAuthor?->name ?? 'Not recorded') . '.',
-                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
-                    'Submitted: ' . optional($article->created_at)->format('F j, Y g:i A T') . '.',
-                    'Please open the admin article board to begin editorial screening and assignment.',
+                    '<br><strong>Submission Details:</strong>',
+                    '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
+                    '• <strong>Submitting Author:</strong> ' . e($primaryAuthor?->name ?? 'Not recorded'),
+                    '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('F j, Y g:i A T'),
+                    '<br><strong>Abstract:</strong>',
+                    '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
+                    'Next Action: Open the article board to begin editorial screening and assignment.',
                 ],
                 [
                     'text' => 'Open Article Board',

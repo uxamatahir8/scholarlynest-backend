@@ -1420,13 +1420,19 @@ class ArticleController extends Controller
                 $unsubscribeUrl = "{$frontendUrl}/unsubscribe/{$sub->token}";
                 
                 $bodyLines = [
-                    '<span style="font-size: 11px; font-weight: bold; color: #71717a; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 8px;">New Publication</span>',
-                    'Published in <em>' . $magazineTitle . '</em> • By ' . $authorName,
+                    'A new peer-reviewed article is now available on ScholarlyNest.',
+                    '<br><strong>Publication Details:</strong>',
+                    '• <strong>Article:</strong> ' . e($article->title),
+                    '• <strong>Magazine:</strong> ' . $magazineTitle,
+                    '• <strong>Author:</strong> ' . $authorName,
                 ];
 
                 if ($article->abstract) {
-                    $bodyLines[] = '<h4 style="font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #18181b; margin-bottom: 8px;">Abstract</h4>' . e($article->abstract);
+                    $bodyLines[] = '<br><strong>Abstract:</strong>';
+                    $bodyLines[] = '<div>' . nl2br(e(strip_tags((string) $article->abstract))) . '</div>';
                 }
+
+                $bodyLines[] = 'Next Action: Use the link below to read the complete article.';
 
                 $action = [
                     'text' => 'Read Full Article',

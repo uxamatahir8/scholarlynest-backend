@@ -10,6 +10,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
+use App\Services\EmailContentFormatter;
 
 class ArticleRejectedMail extends Mailable implements ShouldQueue
 {
@@ -55,19 +56,24 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
             : ArticleStatus::AUTHOR_VISIBLE[$normalizedType] ?? 'Revisions required';
 
         $bodyLines = [
-            "We have completed the editorial review of your manuscript: <strong>" . e($this->article->title) . "</strong>.",
-            "<strong>Decision Verdict:</strong> " . e($typeLabel),
+            'The editorial review of your manuscript is complete.',
+            '<br><strong>Manuscript Details:</strong>',
+            '• <strong>Title:</strong> ' . e($this->article->title),
+            '• <strong>Tracking Code:</strong> ' . e($this->article->tracking_code ?? 'Not assigned'),
+            '<br><strong>Decision:</strong>',
+            '• <strong>Outcome:</strong> ' . e($typeLabel),
+            '• <strong>Decision Date:</strong> ' . now()->toDateTimeString(),
         ];
 
         if ($this->feedbackNotes) {
-            $bodyLines[] = "<strong>Editorial Feedback Notes:</strong>";
+            $bodyLines[] = '<br><strong>Editorial Feedback:</strong>';
             $bodyLines[] = "<div style='background-color: #fafafa; border-left: 4px solid #e4e4e7; padding: 16px; font-style: italic; color: #52525b; margin: 16px 0;'>" . nl2br(e($this->feedbackNotes)) . "</div>";
         }
 
         if (ArticleStatus::isRevisionRequired($this->rejectionType)) {
-            $bodyLines[] = "Your manuscript remains open for edits. You may modify the details and click save to automatically resubmit your manuscript for re-evaluation.";
+            $bodyLines[] = 'Next Action: Revise the manuscript and submit the updated version from your article workflow page.';
         } else {
-            $bodyLines[] = "This manuscript decision is final. Modifying this manuscript is now locked.";
+            $bodyLines[] = 'Next Action: This decision is final and editing for this manuscript is now locked.';
         }
 
         return new Content(
@@ -76,6 +82,7 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
                 'subject' => $this->envelope()->subject,
                 'greeting' => 'Dear ' . $this->article->user->name . ',',
                 'bodyLines' => $bodyLines,
+                'bodyBlocks' => app(EmailContentFormatter::class)->format($bodyLines),
                 'action' => null,
                 'unsubscribeUrl' => null,
             ],

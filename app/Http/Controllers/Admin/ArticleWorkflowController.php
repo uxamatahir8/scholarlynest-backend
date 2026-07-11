@@ -1633,10 +1633,16 @@ class ArticleWorkflowController extends Controller
             'Review Invitation: ' . ($article?->title ?? 'Article Review') . ' — ' . ($article?->magazine?->title ?? 'ScholarlyNest'),
             $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
             [
-                'You have been invited to review the article "' . ($article?->title ?? 'Untitled Article') . '" for ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '.',
-                'Article Details: Title: ' . ($article?->title ?? 'Untitled Article') . '. Magazine: ' . ($article?->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article?->tracking_code ?? 'Not assigned') . '.',
-                'Article Type: ' . ($article?->article_type ?: 'Not specified') . '. Category: ' . ($article?->article_category ?: 'Not specified') . '. Corresponding Author: ' . $author . '.',
-                'Abstract: ' . strip_tags((string) ($article?->abstract ?? 'Not provided.')),
+                'You have been invited to provide an independent review of a manuscript submitted to <strong>' . e($article?->magazine?->title ?? 'ScholarlyNest') . '</strong>.',
+                '<br><strong>Manuscript Details:</strong>',
+                '• <strong>Title:</strong> ' . e($article?->title ?? 'Untitled Article'),
+                '• <strong>Magazine:</strong> ' . e($article?->magazine?->title ?? 'ScholarlyNest'),
+                '• <strong>Tracking Code:</strong> ' . e($article?->tracking_code ?? 'Not assigned'),
+                '• <strong>Article Type:</strong> ' . e($article?->article_type ?: 'Not specified'),
+                '• <strong>Category:</strong> ' . e($article?->article_category ?: 'Not specified'),
+                '• <strong>Corresponding Author:</strong> ' . e($author),
+                '<br><strong>Abstract:</strong>',
+                '<div>' . nl2br(e(strip_tags((string) ($article?->abstract ?? 'Not provided.')))) . '</div>',
                 'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
             ],
             [
@@ -1660,8 +1666,10 @@ class ArticleWorkflowController extends Controller
             'Reviewer Access Ready',
             'Dear ' . $user->name . ',',
             [
-                'Your reviewer access is ready for the article "' . ($assignment->article?->title ?? 'Untitled Article') . '".',
+                '<strong>Your reviewer workspace is ready.</strong>',
+                'Manuscript Details: Title: ' . ($assignment->article?->title ?? 'Untitled Article') . '. Tracking Code: ' . ($assignment->article?->tracking_code ?? 'Not assigned') . '.',
                 'You may sign in with your existing account.',
+                'Next Action: Open the reviewer desk to read the permitted manuscript files and complete the evaluation form.',
             ],
             [
                 'text' => 'Open Reviewer Desk',

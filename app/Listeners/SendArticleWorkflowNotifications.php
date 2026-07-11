@@ -35,7 +35,15 @@ class SendArticleWorkflowNotifications implements ShouldQueue
 
         $message = $this->messageFor($article, $event);
         if (!str_starts_with($event->event, 'transfer.')) {
-            $message['body'] = array_merge($message['body'], $this->workflowContextLines($article, $event));
+            $closingLines = collect($message['body'])
+                ->filter(fn ($line) => str_starts_with(strip_tags((string) $line), 'Next Action:') || str_starts_with(strip_tags((string) $line), 'Privacy Note:'))
+                ->values()
+                ->all();
+            $mainLines = collect($message['body'])
+                ->reject(fn ($line) => str_starts_with(strip_tags((string) $line), 'Next Action:') || str_starts_with(strip_tags((string) $line), 'Privacy Note:'))
+                ->values()
+                ->all();
+            $message['body'] = array_merge($mainLines, $this->workflowContextLines($article, $event), $closingLines);
         }
         $action = [
             'text' => 'Open Workflow',
@@ -150,76 +158,96 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             'sub_editor.assigned' => [
                 'subject' => 'Sub Editor Assigned: ' . $title,
                 'body' => [
-                    'You have been assigned as Sub Editor for an article.',
-                    'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Assigned By: ' . ($event->actor?->name ?? 'System workflow') . '. Assigned At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.',
-                    'Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
+                    'You have been assigned as the Sub Editor responsible for this manuscript.',
+                    'Assignment Details: Assigned By: ' . ($event->actor?->name ?? 'System workflow') . '. Assigned At: ' . now()->toDateTimeString() . '.',
+                    'Manuscript Abstract: ' . strip_tags((string) ($article->abstract ?? 'Not provided.')),
                     'Next Action: Please review the article details and continue with the assigned editorial responsibilities.',
                 ],
             ],
             'reviewer.assigned' => [
                 'subject' => 'Reviewer Assignment: ' . $title,
                 'body' => [
-                    'A reviewer invitation has been created for "' . $title . '".',
-                    'Current manuscript status: ' . $statusLabel . '.',
+                    'A reviewer invitation has been created and sent for this manuscript.',
+                    'Next Action: Monitor the invitation response and assign another reviewer if the invitation is declined or expires.',
                 ],
             ],
             'article.under_review' => [
                 'subject' => 'Article Under Review: ' . $title,
                 'body' => [
-                    'Your manuscript "' . $title . '" has moved into editorial review.',
-                    'Current manuscript status: ' . $statusLabel . '.',
+                    'Your manuscript has moved into editorial review.',
+                    'Next Action: No action is required right now. You can follow its progress from your article dashboard.',
                 ],
             ],
             'review.accepted', 'review.declined' => $this->reviewerResponseMessage($article, $event),
             'sub_editor.recommendation_submitted' => [
                 'subject' => 'Sub Editor Recommendation Submitted: ' . $title,
-                'body' => ['A Sub Editor recommendation has been submitted for "' . $title . '".'],
+                'body' => [
+                    'A Sub Editor has submitted an editorial recommendation for this manuscript.',
+                    'Next Action: Review the recommendation and continue the editorial decision process.',
+                ],
             ],
             'review.submitted' => $this->reviewSubmittedMessage($article, $event),
             'review.reopened' => [
                 'subject' => 'Review Reopened: ' . $title,
-                'body' => ['A reviewer assignment has been reopened for "' . $title . '".'],
+                'body' => [
+                    'A completed reviewer assignment has been reopened.',
+                    'Next Action: The reviewer may update and resubmit the review. Monitor the reviewer desk for progress.',
+                ],
             ],
             'revision.requested' => [
                 'subject' => 'Revision Required: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
                 'body' => [
                     'The editorial team has requested revisions for your article.',
-                    'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Current Status: Revision Required. Decision Date: ' . now()->toDateTimeString() . '.',
                     'Revision Notes: ' . strip_tags((string) ($article->rejection_reason ?? 'Please review the author-visible comments in your workflow.')),
                     'Next Action: Please revise your article and submit the updated manuscript from your article workflow page. After resubmission, the system creates a revision tracking code ending in -R1.',
                 ],
             ],
             'article.accepted' => [
                 'subject' => 'Article Accepted: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
-                'body' => ['Congratulations. Your article has been accepted.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Accepted At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.', 'Next Action: The article will now proceed to the next production or author final review step according to the editorial workflow.'],
+                'body' => [
+                    '<strong>Congratulations—your manuscript has been accepted.</strong>',
+                    'Decision Details: Decision: Accepted. Decision Date: ' . now()->toDateTimeString() . '.',
+                    'Next Action: The manuscript will proceed to author final review or production according to the editorial workflow.',
+                ],
             ],
             'article.rejected' => [
                 'subject' => 'Article Decision: ' . $title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
-                'body' => ['After editorial review, a decision has been made on your article.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Decision: Rejected. Decision Date: ' . now()->toDateTimeString() . '.', 'Decision Notes: ' . strip_tags((string) ($article->rejection_reason ?? 'No author-visible decision notes were recorded.')), 'Thank you for submitting your work to Scholarly Nest.'],
+                'body' => [
+                    'The editorial review of your manuscript is complete.',
+                    'Decision Details: Decision: Rejected. Decision Date: ' . now()->toDateTimeString() . '.',
+                    'Decision Notes: ' . strip_tags((string) ($article->rejection_reason ?? 'No author-visible decision notes were recorded.')),
+                    'Next Action: This editorial decision is final unless the editorial team contacts you with further instructions.',
+                    'Thank you for considering ScholarlyNest for your work.',
+                ],
             ],
             'production.assigned' => [
                 'subject' => 'Production Assignment: ' . $title,
-                'body' => ['A production assignment has been created for "' . $title . '".'],
+                'body' => ['A production assignment has been created.', 'Next Action: Open the workflow to review the assigned production task and its files.'],
             ],
             'production.completed' => [
                 'subject' => 'Production Task Completed: ' . $title,
-                'body' => ['A production task has been completed for "' . $title . '".'],
+                'body' => ['A production task has been completed.', 'Next Action: Review the completed production output and continue the publication workflow.'],
             ],
             'article.ready_for_publication' => [
                 'subject' => 'Article Ready for Publication: ' . $title,
-                'body' => ['The manuscript "' . $title . '" is ready for publication.'],
+                'body' => ['The manuscript has completed its required preparation and is ready for publication.', 'Next Action: Verify the publication metadata and publish when authorized.'],
             ],
             'article.published' => [
                 'subject' => 'Article Published: ' . $title,
-                'body' => ['The article "' . $title . '" has been published.'],
+                'body' => ['<strong>Your article has been published successfully.</strong>', 'Next Action: Open the article page to review the published record.'],
             ],
             'post_publication.recorded' => [
                 'subject' => 'Post-Publication Action Recorded: ' . $title,
-                'body' => ['A post-publication action has been recorded for "' . $title . '".'],
+                'body' => ['A post-publication action has been recorded.', 'Next Action: Open the workflow to review the action, reason, and public notice.'],
             ],
             'article.resubmitted' => [
                 'subject' => 'Article Resubmitted: ' . $title . ' — ' . $this->nextRevisionTrackingCode($article),
-                'body' => [($article->user?->name ?? $article->user?->email ?? 'The submitting author') . ' submitted a revised version of the article.', 'Article Details: Article Title: ' . $title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Base Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Revision Tracking Code: ' . $this->nextRevisionTrackingCode($article) . '. Revision Number: ' . max(1, (int) $article->versions()->max('version_number')) . '. Submitted By: ' . ($article->user?->name ?? $article->user?->email ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '. Current Status: ' . $statusLabel . '.', 'Change Summary: ' . strip_tags((string) ($article->change_summary ?? 'No change summary supplied.')), 'Next Action: Please review the revised manuscript and continue the editorial workflow.'],
+                'body' => [
+                    ($article->user?->name ?? $article->user?->email ?? 'The submitting author') . ' submitted a revised version of the manuscript.',
+                    'Revision Details: Base Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '. Revision Tracking Code: ' . $this->nextRevisionTrackingCode($article) . '. Revision Number: ' . max(1, (int) $article->versions()->max('version_number')) . '. Submitted By: ' . ($article->user?->name ?? $article->user?->email ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '.',
+                    'Change Summary: ' . strip_tags((string) ($article->change_summary ?? 'No change summary supplied.')),
+                    'Next Action: Review the revised manuscript and continue the editorial workflow.',
+                ],
             ],
             'transfer.requested' => $this->transferRequestedMessage($article, $event),
             'transfer.accepted' => $this->transferAcceptedMessage($article, $event),
@@ -236,9 +264,38 @@ class SendArticleWorkflowNotifications implements ShouldQueue
     private function subEditorRecipients($article): Collection { return collect($article->subEditorAssignments()->with('subEditor')->get()->map(fn ($a) => $this->userRecipient($a->subEditor, 'sub_editor'))->all()); }
 
     private function reviewerResponseMessage($article, ArticleWorkflowEventOccurred $event): array
-    { $reviewer = $event->actor; $accepted = $event->event === 'review.accepted'; $name = $reviewer?->name ?? ($event->payload['reviewer_name'] ?? 'Reviewer'); $email = $reviewer?->email ?? ($event->payload['reviewer_email'] ?? 'email unavailable'); return ['subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . $name . ' — ' . $article->title, 'body' => ['A reviewer has ' . ($accepted ? 'accepted' : 'declined') . ' the review invitation.', 'Reviewer Details: Reviewer Name: ' . $name . '. Reviewer Email: ' . $email . '. Response: ' . ($accepted ? 'Accepted' : 'Declined') . '. Responded At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: ' . ($accepted ? 'The reviewer can now access permitted manuscript files and submit their recommendation from the reviewer dashboard.' : 'Please assign another reviewer or continue the editorial workflow according to your review policy.')]]; }
+    {
+        $reviewer = $event->actor;
+        $accepted = $event->event === 'review.accepted';
+        $name = $reviewer?->name ?? ($event->payload['reviewer_name'] ?? 'Reviewer');
+        $email = $reviewer?->email ?? ($event->payload['reviewer_email'] ?? 'Email unavailable');
 
-    private function reviewSubmittedMessage($article, ArticleWorkflowEventOccurred $event): array { $reviewer = $event->actor; return ['subject' => 'Review Submitted: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title, 'body' => ['A reviewer has submitted their review.', 'Reviewer Details: Reviewer Name: ' . ($reviewer?->name ?? 'Reviewer') . '. Reviewer Email: ' . ($reviewer?->email ?? 'email unavailable') . '. Recommendation: ' . ($event->payload['recommendation'] ?? 'Not recorded') . '. Submitted At: ' . now()->toDateTimeString() . '.', 'Article Details: Article Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.', 'Next Action: Please review the recommendation and continue the editorial decision process.', 'Privacy Note: Reviewer comments and confidential recommendations are visible only to authorized editorial users.']]; }
+        return [
+            'subject' => 'Reviewer ' . ($accepted ? 'Accepted' : 'Declined') . ' Invitation: ' . $name . ' — ' . $article->title,
+            'body' => [
+                'The reviewer has <strong>' . ($accepted ? 'accepted' : 'declined') . '</strong> the invitation.',
+                'Reviewer Response: Reviewer Name: ' . $name . '. Reviewer Email: ' . $email . '. Response: ' . ($accepted ? 'Accepted' : 'Declined') . '. Responded At: ' . now()->toDateTimeString() . '.',
+                'Next Action: ' . ($accepted
+                    ? 'The reviewer can now access the permitted manuscript files and submit a recommendation from the reviewer dashboard.'
+                    : 'Assign another reviewer or continue according to the editorial review policy.'),
+            ],
+        ];
+    }
+
+    private function reviewSubmittedMessage($article, ArticleWorkflowEventOccurred $event): array
+    {
+        $reviewer = $event->actor;
+
+        return [
+            'subject' => 'Review Submitted: ' . ($reviewer?->name ?? 'Reviewer') . ' — ' . $article->title,
+            'body' => [
+                'A reviewer has completed and submitted a manuscript evaluation.',
+                'Review Details: Reviewer Name: ' . ($reviewer?->name ?? 'Reviewer') . '. Reviewer Email: ' . ($reviewer?->email ?? 'Email unavailable') . '. Recommendation: ' . str_replace('_', ' ', (string) ($event->payload['recommendation'] ?? 'Not recorded')) . '. Submitted At: ' . now()->toDateTimeString() . '.',
+                'Next Action: Review the recommendation, questionnaire responses, and comments before continuing the editorial decision process.',
+                'Privacy Note: Reviewer comments, identity, and confidential recommendations are available only to authorized editorial users.',
+            ],
+        ];
+    }
 
     private function transferRequestedMessage($article, ArticleWorkflowEventOccurred $event): array
     {
@@ -312,9 +369,13 @@ class SendArticleWorkflowNotifications implements ShouldQueue
         $status = ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? str_replace('_', ' ', $article->status);
         $actor = $event->actor?->name ?? 'System workflow';
         return [
-            'Article Details: Title: ' . $article->title . '. Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest') . '. Tracking Code: ' . ($article->tracking_code ?? 'Not assigned') . '.',
-            'Current Status: ' . $status . '. Actor: ' . $actor . '. Timestamp: ' . now()->toDateTimeString() . '.',
-            'Next Action: Open the workflow to review the current stage and complete your authorized action.',
+            '<br><strong>Manuscript Details:</strong>',
+            '• <strong>Title:</strong> ' . htmlspecialchars($article->title),
+            '• <strong>Magazine:</strong> ' . htmlspecialchars($article->magazine?->title ?? 'ScholarlyNest'),
+            '• <strong>Tracking Code:</strong> ' . htmlspecialchars($article->tracking_code ?? 'Not assigned'),
+            '• <strong>Current Status:</strong> ' . htmlspecialchars(ucwords(str_replace('_', ' ', $status))),
+            '• <strong>Updated By:</strong> ' . htmlspecialchars($actor),
+            '• <strong>Updated At:</strong> ' . now()->toDateTimeString(),
         ];
     }
 
