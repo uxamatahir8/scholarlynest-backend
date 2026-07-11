@@ -288,7 +288,6 @@ class ArticleController extends Controller
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $linkedFileIds[] = $manuscriptFile->id;
         }
-
         if ($requestedStatus === ArticleStatus::SUBMITTED) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
@@ -325,12 +324,13 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser)
-            ->with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']);
+            ->with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks', 'latestVersion'])
+            ->withMax('versions as latest_submission_at', 'created_at');
 
         $this->applyAdminArticleFilters($query, $request);
 
         $perPage = $request->integer('per_page', 25);
-        $articles = $query->orderBy('created_at', 'desc')->paginate($perPage);
+        $articles = $query->orderByDesc('latest_submission_at')->orderByDesc('created_at')->paginate($perPage);
 
         $articles->getCollection()->transform(fn (Article $article) => $this->adminArticleSummaryPayload($article, $scopeUser));
 
@@ -699,6 +699,30 @@ class ArticleController extends Controller
             $updateData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
+        $linkedFileIds = [];
+        $additionalFileIds = collect($validated['additional_file_ids'] ?? [])->map(fn ($id) => (int) $id)->unique()->values();
+        if ($additionalFileIds->isNotEmpty()) {
+            $ownedAdditionalFiles = ArticleFile::query()
+                ->where('article_id', $article->id)
+                ->where('uploaded_by', $user->id)
+                ->where('scan_status', 'clean')
+                ->whereIn('id', $additionalFileIds)
+                ->pluck('id');
+            if ($ownedAdditionalFiles->count() !== $additionalFileIds->count()) {
+                return response()->json([
+                    'message' => 'One or more supporting files failed validation. The manuscript was not submitted.',
+                    'errors' => ['additional_file_ids' => ['Every supporting file must be clean and owned by the submitting author.']],
+                ], 422);
+            }
+            $linkedFileIds = $ownedAdditionalFiles->all();
+        }
+        $manuscriptUpload = !empty($validated['pdf_upload_id'])
+            ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision'])
+            : null;
+        $responseUpload = !empty($validated['revision_response_upload_id'])
+            ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
+            : null;
+
         \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user) {
             $article->update($updateData);
             $this->syncTags($article, $request->input('tags'));
@@ -706,14 +730,17 @@ class ArticleController extends Controller
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
         });
 
-        $linkedFileIds = [];
-        if (!empty($validated['pdf_upload_id'])) {
-            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision']);
-            $purposeConfig = config('media_uploads.purposes.' . $upload->purpose);
-            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $upload, $purposeConfig);
+        if ($manuscriptUpload) {
+            $purposeConfig = config('media_uploads.purposes.' . $manuscriptUpload->purpose);
+            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $manuscriptUpload, $purposeConfig);
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $pdfPath = $manuscriptFile->file_path;
             $linkedFileIds[] = $manuscriptFile->id;
+        }
+        if ($responseUpload) {
+            $purposeConfig = config('media_uploads.purposes.' . $responseUpload->purpose);
+            $responseFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $responseUpload, $purposeConfig);
+            $linkedFileIds[] = $responseFile->id;
         }
 
         if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
@@ -726,7 +753,7 @@ class ArticleController extends Controller
                 $user,
                 'Revised Manuscript',
                 $request->input('change_summary'),
-                $request->input('revision_response'),
+                null,
                 $linkedFileIds
             );
         } elseif (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
@@ -1175,11 +1202,14 @@ class ArticleController extends Controller
 
     private function adminArticleSummaryPayload(Article $article, User $viewer): array
     {
-        $article->loadMissing(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name']);
+        $article->loadMissing(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'latestVersion']);
 
         return [
             'id' => $article->id,
             'tracking_code' => $article->tracking_code,
+            'latest_tracking_code' => $article->latestVersion?->revision_tracking_code ?: $article->tracking_code,
+            'latest_revision_number' => $article->latestVersion?->revision_number,
+            'latest_submission_at' => $article->latestVersion?->created_at ?: $article->created_at,
             'magazine_id' => $article->magazine_id,
             'title' => $article->title,
             'subtitle' => $article->subtitle,

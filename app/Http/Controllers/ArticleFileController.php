@@ -135,6 +135,7 @@ class ArticleFileController extends Controller
             'id' => $file->id,
             'article_id' => $file->article_id,
             'article_version_id' => $file->article_version_id,
+            'source_asset_id' => $file->source_asset_id,
             'file_type' => $file->file_type,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,
@@ -186,7 +187,9 @@ class ArticleFileController extends Controller
                 ArticleFile::COPY_EDITED_FILE,
                 ArticleFile::PROOF_FILE,
                 ArticleFile::PUBLICATION_PDF,
+                ArticleFile::ANNOTATED_MANUSCRIPT,
                 ArticleFile::REVIEWED_MANUSCRIPT,
+                ArticleFile::REVISION_RESPONSE,
             ], true);
         }
 
@@ -223,13 +226,18 @@ class ArticleFileController extends Controller
         }
 
         if ($this->hasProductionAssignment($user, $article, null, 'copy_editor')) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-            ], true);
+            if ($file->file_type === ArticleFile::COPY_EDITED_FILE && (int) $file->uploaded_by === (int) $user->id) {
+                return true;
+            }
+
+            $latestSubmissionVersionId = $article->versions()
+                ->whereIn('status_snapshot', [ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED])
+                ->orderByDesc('version_number')
+                ->value('id');
+
+            return $latestSubmissionVersionId
+                && (int) $file->article_version_id === (int) $latestSubmissionVersionId
+                && in_array($file->file_type, [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true);
         }
 
         return false;
@@ -264,6 +272,7 @@ class ArticleFileController extends Controller
             $status = ArticleStatus::normalize($article->status);
             $isAllowedStatus = $status === ArticleStatus::DRAFT
                 || $status === ArticleStatus::SUBMITTED
+                || $status === ArticleStatus::RESUBMITTED
                 || ArticleStatus::isEditableStatus($status);
 
             if (!$isAllowedStatus) {
@@ -285,6 +294,9 @@ class ArticleFileController extends Controller
             ArticleFile::PLAGIARISM_REPORT => $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']),
             ArticleFile::ANNOTATED_MANUSCRIPT => $this->hasSubEditorAssignment($user, $article, $assignmentId),
             ArticleFile::REVIEWED_MANUSCRIPT => $this->hasReviewerAssignment($user, $article, $assignmentId),
+            ArticleFile::REVISION_RESPONSE => $user
+                && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                && ArticleStatus::isRevisionRequired($article->status),
             ArticleFile::COPY_EDITED_FILE => $this->hasProductionAssignment($user, $article, $assignmentId, 'copy_editor'),
             ArticleFile::PROOF_FILE => false,
             ArticleFile::PUBLICATION_PDF => $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']),
@@ -295,7 +307,7 @@ class ArticleFileController extends Controller
     private function defaultVisibility(string $fileType): string
     {
         return match ($fileType) {
-            ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
+            ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
             ArticleFile::REVIEWED_MANUSCRIPT => 'reviewer_editor',
             default => 'workflow',
         };

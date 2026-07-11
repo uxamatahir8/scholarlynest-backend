@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'super-admin-delete' => \App\Http\Middleware\RequireSuperAdminForDeletes::class,
         ]);
         $middleware->appendToGroup('api', [
+            \App\Http\Middleware\SetAuthorizationHeaderFromQuery::class,
             \App\Http\Middleware\ValidateImpersonationSession::class,
         ]);
     })

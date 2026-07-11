@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\Permission;
@@ -111,6 +113,46 @@ class ProductionDashboardTest extends TestCase
             ->assertJsonMissingPath('data.0.user')
             ->assertJsonMissingPath('data.0.files')
             ->assertJsonPath('data.0.is_overdue', true);
+    }
+
+    public function test_copy_editor_sees_only_files_from_latest_accepted_submission(): void
+    {
+        $article = $this->article('Latest Accepted Files', ArticleStatus::COPY_EDITING, $this->magazine);
+        $initial = ArticleVersion::create([
+            'article_id' => $article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+        $latest = ArticleVersion::create([
+            'article_id' => $article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 2,
+            'revision_number' => 1,
+            'label' => 'Revised Manuscript',
+            'status_snapshot' => ArticleStatus::RESUBMITTED,
+        ]);
+        $oldFile = ArticleFile::create([
+            'article_id' => $article->id, 'article_version_id' => $initial->id, 'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT, 'visibility' => 'author_visible', 'file_path' => 'old.pdf',
+            'original_name' => 'old.pdf', 'mime_type' => 'application/pdf', 'size' => 10, 'scan_status' => 'clean',
+        ]);
+        $latestFile = ArticleFile::create([
+            'article_id' => $article->id, 'article_version_id' => $latest->id, 'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT, 'visibility' => 'author_visible', 'file_path' => 'latest.pdf',
+            'original_name' => 'latest.pdf', 'mime_type' => 'application/pdf', 'size' => 10, 'scan_status' => 'clean',
+        ]);
+        ProductionAssignment::create([
+            'article_id' => $article->id, 'user_id' => $this->copyEditor->id, 'role' => 'copy_editor',
+            'assigned_by' => $this->publisher->id, 'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($this->copyEditor);
+        $response = $this->getJson("/api/admin/articles/{$article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['id' => $latestFile->id, 'original_name' => 'latest.pdf']);
+        $this->assertStringNotContainsString('old.pdf', $response->getContent());
     }
 
     public function test_proofreader_production_dashboard_is_inactive(): void

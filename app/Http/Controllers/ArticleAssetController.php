@@ -84,6 +84,12 @@ class ArticleAssetController extends Controller
             if (!$user || $user->cannot('view', $article)) {
                 return response()->json(['message' => 'This action is unauthorized.'], 403);
             }
+            if ($user->hasRole('copy_editor')) {
+                $sourceFile = \App\Models\ArticleFile::where('source_asset_id', $asset->id)->first();
+                if (!$sourceFile || !app(ArticleFileController::class)->canAccess($user, $sourceFile)) {
+                    return response()->json(['message' => 'This action is unauthorized.'], 403);
+                }
+            }
         }
 
         if (($asset->scan_status ?? 'clean') !== 'clean') {

@@ -256,11 +256,10 @@ class FinalWorkflowHardeningTest extends TestCase
             'abstract' => 'Updated abstract',
             'full_text' => 'Updated full text',
             'change_summary' => 'Addressed reviewer notes',
-            'revision_response' => 'Updated as requested',
-        ])->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('revision_response_upload_id');
 
-        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
+        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
             $article = $this->article($author, $status);
             $this->putJson("/api/admin/articles/{$article->id}", [
                 'magazine_id' => $this->magazine->id,

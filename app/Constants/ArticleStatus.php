@@ -103,7 +103,6 @@ final class ArticleStatus
         self::REVISION_REQUIRED,
         self::MINOR_REVISION_REQUIRED,
         self::MAJOR_REVISION_REQUIRED,
-        self::RESUBMITTED,
         self::READY_FOR_PUBLICATION,
     ];
 

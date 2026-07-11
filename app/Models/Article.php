@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
 
@@ -217,6 +218,11 @@ class Article extends Model
     public function versions(): HasMany
     {
         return $this->hasMany(ArticleVersion::class);
+    }
+
+    public function latestVersion(): HasOne
+    {
+        return $this->hasOne(ArticleVersion::class)->ofMany('version_number', 'max');
     }
 
     public function auditLogs(): HasMany

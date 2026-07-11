@@ -59,6 +59,7 @@ class ArticleVersionService
             ->whereIn('file_type', [
                 ArticleFile::MANUSCRIPT,
                 ArticleFile::SUPPLEMENTARY,
+                ArticleFile::REVISION_RESPONSE,
                 ArticleFile::PUBLICATION_PDF,
             ]);
 

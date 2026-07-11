@@ -349,6 +349,19 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonMissing(['Confidential Reviewer'])
             ->assertJsonMissing(['confidential.reviewer@example.test'])
             ->assertJsonMissing(['Confidential editorial note.']);
+
+        $this->article->update(['status' => ArticleStatus::MAJOR_REVISION_REQUIRED]);
+
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
     }
 
     public function test_public_invitation_context_requires_a_valid_token_and_excludes_files(): void
@@ -434,7 +447,7 @@ class ArticleWorkflowCompletionTest extends TestCase
             'scan_status' => 'clean',
         ]);
 
-        $section = ArticlePublicationSection::where('article_id', $this->article->id)->firstOrFail();
+        $section = ArticlePublicationSection::where('article_id', $this->article->id)->where('section_key', 'introduction')->firstOrFail();
         $this->assertStringNotContainsString('onclick', $section->content_html);
         $this->assertStringNotContainsString('javascript:', $section->content_html);
         $this->assertStringNotContainsString('<script>', $section->content_html);
@@ -454,9 +467,10 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonPath('article.open_access_label', 'Open Access')
             ->assertJsonPath('article.is_peer_reviewed', true)
             ->assertJsonPath('article.article_images.0.title', 'Figure 1')
-            ->assertJsonPath('article.publication_sections.0.section_key', 'custom_results')
-            ->assertJsonPath('article.publication_sections.1.section_key', 'introduction')
-            ->assertJsonPath('article.publication_sections.1.has_image', true)
+            ->assertJsonPath('article.publication_sections.0.section_key', 'abstract')
+            ->assertJsonPath('article.publication_sections.1.section_key', 'custom_results')
+            ->assertJsonPath('article.publication_sections.2.section_key', 'introduction')
+            ->assertJsonPath('article.publication_sections.2.has_image', true)
             ->assertJsonMissing(['reviewer_preferences'])
             ->assertJsonMissing(['private.reviewer@example.test'])
             ->assertJsonMissing(['invite_token_hash']);

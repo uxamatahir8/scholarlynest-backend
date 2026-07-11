@@ -40,6 +40,11 @@ class UpdateArticleRequest extends FormRequest
                 && !$this->truthy($this->input('terms_accepted'))) {
                 $validator->errors()->add('terms_accepted', 'You must accept the terms and conditions before submitting.');
             }
+            if ($article
+                && ArticleStatus::isRevisionRequired($article->status)
+                && !$this->input('revision_response_upload_id')) {
+                $validator->errors()->add('revision_response_upload_id', 'A response to the revision request is required as a PDF, DOC, or DOCX file.');
+            }
         });
     }
 }

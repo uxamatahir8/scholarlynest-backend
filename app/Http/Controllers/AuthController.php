@@ -765,6 +765,8 @@ class AuthController extends Controller
             return response()->json(['message' => 'Invalid or expired password reset token.'], 400);
         }
 
+        $isProvisionedAccountSetup = (bool) $user->needs_password_reset;
+
         $user->update([
             'password' => Hash::make($request->password),
             'needs_password_reset' => false,
@@ -772,9 +774,19 @@ class AuthController extends Controller
 
         $this->passwordSetupService->consumeToken($request->email);
 
-        return response()->json([
+        $payload = [
             'message' => 'Password has been reset successfully.',
-        ]);
+        ];
+
+        if ($isProvisionedAccountSetup) {
+            $user->tokens()->delete();
+            $payload['user'] = $this->authUserPayload($user->fresh());
+            $payload['access_token'] = $user->createToken('auth_token')->plainTextToken;
+            $payload['token_type'] = 'Bearer';
+            $payload['auto_login'] = true;
+        }
+
+        return response()->json($payload);
     }
 
     /**
