@@ -740,10 +740,12 @@ class ArticleWorkflowController extends Controller
         }
 
         $oldStatus = $assignment->article->status;
+        $recommendation = $this->recommendationFromQuestionnaire($assignment, $request->input('questionnaire_responses', []))
+            ?? $request->recommendation;
 
         $storedFile = null;
 
-        DB::transaction(function () use ($request, $assignment, $oldStatus, &$storedFile) {
+        DB::transaction(function () use ($request, $assignment, $oldStatus, $recommendation, &$storedFile) {
             if ($request->hasFile('reviewed_manuscript')) {
                 throw new HttpResponseException(response()->json([
                     'message' => 'Raw browser uploads are disabled for workflow files. Use the direct S3 upload-session flow.',
@@ -761,7 +763,7 @@ class ArticleWorkflowController extends Controller
             $assignment->update([
                 'status' => 'completed',
                 'scorecard' => $request->scorecard,
-                'recommendation' => $request->recommendation,
+                'recommendation' => $recommendation,
                 'comments_for_author' => $request->comments_for_author,
                 'confidential_comments' => $request->confidential_comments,
                 'completed_at' => now(),
@@ -771,7 +773,7 @@ class ArticleWorkflowController extends Controller
             $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
             $this->audit($assignment->article, $request->user()->id, 'review.submitted', $oldStatus, ArticleStatus::REVIEW_IN_PROGRESS, [
                 'reviewer_assignment_id' => $assignment->id,
-                'recommendation' => $request->recommendation,
+                'recommendation' => $recommendation,
             ]);
         });
 
@@ -1434,6 +1436,7 @@ class ArticleWorkflowController extends Controller
             'name' => 'required|string|max:255',
             'questions' => 'required|array|min:1',
             'questions.*.prompt' => 'required|string|max:1000',
+            'questions.*.comment_helper' => 'nullable|string|max:500',
             'questions.*.response_type' => 'required|in:radio,checkbox,dropdown,single_line,textarea',
             'questions.*.is_required' => 'nullable|boolean',
             'questions.*.options' => 'nullable|array',
@@ -1460,6 +1463,7 @@ class ArticleWorkflowController extends Controller
                 $question = \App\Models\ReviewQuestion::create([
                     'review_questionnaire_version_id' => $version->id,
                     'prompt' => $questionData['prompt'],
+                    'comment_helper' => $questionData['comment_helper'] ?? null,
                     'response_type' => $questionData['response_type'],
                     'is_required' => (bool) ($questionData['is_required'] ?? false),
                     'sort_order' => $index + 1,
@@ -1500,6 +1504,7 @@ class ArticleWorkflowController extends Controller
                 'questions' => $activeVersion->questions->map(fn ($question) => [
                     'id' => $question->id,
                     'prompt' => $question->prompt,
+                    'comment_helper' => $question->comment_helper,
                     'response_type' => $question->response_type,
                     'is_required' => $question->is_required,
                     'options' => $question->options->pluck('label')->values(),
@@ -1750,13 +1755,27 @@ class ArticleWorkflowController extends Controller
 
         $instance->loadMissing('version.questions.options');
         $answers = collect($responses)->keyBy(fn ($row) => (int) ($row['question_id'] ?? 0));
+        $allowedQuestionIds = $instance->version->questions->pluck('id')->map(fn ($id) => (int) $id);
+        if ($answers->keys()->diff($allowedQuestionIds)->isNotEmpty()) {
+            return 'One or more questionnaire responses do not belong to this review.';
+        }
+
         foreach ($instance->version->questions as $question) {
-            if (!$question->is_required) {
-                continue;
-            }
             $answer = $answers->get($question->id)['answer'] ?? null;
+            if (!$question->is_required) {
+                if ($answer === null || $answer === '') {
+                    continue;
+                }
+            }
             if ($answer === null || $answer === '' || (is_array($answer) && count(array_filter($answer, fn ($v) => $v !== null && $v !== '')) === 0)) {
                 return 'Please answer all required reviewer questionnaire questions before submitting your review.';
+            }
+            if ($question->options->isNotEmpty()) {
+                $submittedValues = is_array($answer) ? $answer : [$answer];
+                $validValues = $question->options->pluck('value');
+                if (collect($submittedValues)->contains(fn ($value) => !$validValues->contains((string) $value))) {
+                    return 'One or more questionnaire answers are invalid.';
+                }
             }
         }
 
@@ -1780,13 +1799,39 @@ class ArticleWorkflowController extends Controller
                     'review_questionnaire_instance_id' => $instance->id,
                     'review_question_id' => $questionId,
                 ],
-                ['answer' => $row['answer'] ?? null]
+                [
+                    'answer' => $row['answer'] ?? null,
+                    'comment' => isset($row['comment']) ? trim((string) $row['comment']) ?: null : null,
+                ]
             );
         }
         $instance->update([
             'reviewer_id' => $assignment->reviewer_id,
             'submitted_at' => now(),
         ]);
+    }
+
+    private function recommendationFromQuestionnaire(ReviewerAssignment $assignment, array $responses): ?string
+    {
+        $instance = $this->ensureQuestionnaireInstance($assignment);
+        if (!$instance) {
+            return null;
+        }
+
+        $instance->loadMissing('version.questions');
+        $finalQuestionId = $instance->version->questions
+            ->first(fn ($question) => strcasecmp($question->prompt, 'Final Decision') === 0)?->id;
+        if (!$finalQuestionId) {
+            return null;
+        }
+
+        $answer = collect($responses)->firstWhere('question_id', $finalQuestionId)['answer'] ?? null;
+
+        return match ($answer) {
+            'accept', 'minor_revision', 'major_revision', 'reject' => $answer,
+            'moderate_revision' => 'major_revision',
+            default => null,
+        };
     }
 
     private function issuePayload(MagazineIssue $issue): array
@@ -2355,14 +2400,17 @@ class ArticleWorkflowController extends Controller
             $payload['role'] = $assignment->role;
             $payload['user'] = $assignment->user ? ['id' => $assignment->user->id, 'name' => $assignment->user->name] : null;
         } elseif ($assignment instanceof ReviewerAssignment) {
+            $canViewReviewerIdentity = (int) $assignment->reviewer_id === (int) ($user?->id ?? 0)
+                || $this->canViewEditorialInternals($user, $assignment->article)
+                || $this->hasSubEditorAssignment($user, $assignment->article);
             $payload['reviewer_id'] = $assignment->reviewer_id;
-            $payload['invitee_name'] = $assignment->invitee_name;
-            $payload['invitee_email'] = ($this->canViewEditorialInternals($user, $assignment->article) || $this->hasSubEditorAssignment($user, $assignment->article)) ? $assignment->invitee_email : null;
+            $payload['invitee_name'] = $canViewReviewerIdentity ? $assignment->invitee_name : null;
+            $payload['invitee_email'] = $canViewReviewerIdentity ? $assignment->invitee_email : null;
             $payload['invited_at'] = $assignment->invited_at;
             $payload['accepted_at'] = $assignment->accepted_at;
             $payload['declined_at'] = $assignment->declined_at;
             $payload['invitation_state'] = $this->reviewerInvitationState($assignment);
-            $payload['reviewer'] = $assignment->reviewer ? [
+            $payload['reviewer'] = $canViewReviewerIdentity && $assignment->reviewer ? [
                 'id' => $assignment->reviewer->id,
                 'name' => $assignment->reviewer->name,
                 'email' => $assignment->reviewer->email,
@@ -2416,6 +2464,7 @@ class ArticleWorkflowController extends Controller
             'questions' => $instance->version?->questions->map(fn ($question) => [
                 'id' => $question->id,
                 'prompt' => $question->prompt,
+                'comment_helper' => $question->comment_helper,
                 'response_type' => $question->response_type,
                 'is_required' => $question->is_required,
                 'options' => $question->options->map(fn ($option) => [
@@ -2423,6 +2472,7 @@ class ArticleWorkflowController extends Controller
                     'value' => $option->value,
                 ])->values(),
                 'answer' => $responses->get($question->id)?->answer,
+                'comment' => $responses->get($question->id)?->comment,
             ])->values() ?? [],
         ];
     }
