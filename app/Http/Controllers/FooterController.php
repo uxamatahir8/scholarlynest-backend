@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\FooterCategory;
 use App\Models\FooterPage;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Cache;
 
 class FooterController extends Controller
 {
@@ -14,13 +13,11 @@ class FooterController extends Controller
      */
     public function index(): JsonResponse
     {
-        $categories = Cache::remember('public_footer_menu', 3600, function () {
-            return FooterCategory::with(['pages' => function ($query) {
+        $categories = FooterCategory::with(['pages' => function ($query) {
                 $query->where('is_visible', true)->orderBy('sort_order', 'asc');
             }])
             ->orderBy('sort_order', 'asc')
             ->get();
-        });
 
         return response()->json($categories);
     }

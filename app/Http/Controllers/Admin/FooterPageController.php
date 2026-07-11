@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\FooterPage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class FooterPageController extends Controller
@@ -63,7 +62,6 @@ class FooterPageController extends Controller
             'sort_order' => $validatedData['sort_order'] ?? 0,
         ]);
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Page ID {$page->id} created by User ID: {$request->user()->id}");
 
         return response()->json([
@@ -97,7 +95,6 @@ class FooterPageController extends Controller
 
         $page->update($validatedData);
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Page ID {$page->id} updated by User ID: {$request->user()->id}");
 
         return response()->json([
@@ -122,7 +119,6 @@ class FooterPageController extends Controller
 
         $page->delete();
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Page ID {$id} deleted by User ID: {$request->user()->id}");
 
         return response()->json([

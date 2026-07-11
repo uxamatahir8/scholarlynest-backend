@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\FooterCategory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class FooterCategoryController extends Controller
@@ -55,7 +54,6 @@ class FooterCategoryController extends Controller
             'sort_order' => $validatedData['sort_order'] ?? 0,
         ]);
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Category ID {$category->id} created by User ID: {$request->user()->id}");
 
         return response()->json([
@@ -85,7 +83,6 @@ class FooterCategoryController extends Controller
 
         $category->update($validatedData);
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Category ID {$category->id} updated by User ID: {$request->user()->id}");
 
         return response()->json([
@@ -110,7 +107,6 @@ class FooterCategoryController extends Controller
 
         $category->delete();
 
-        Cache::forget('public_footer_menu');
         Log::info("Footer Category ID {$id} deleted by User ID: {$request->user()->id}");
 
         return response()->json([
