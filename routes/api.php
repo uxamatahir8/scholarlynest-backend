@@ -58,14 +58,14 @@ Route::post('/newsletter/subscribe', [NewsletterController::class, 'subscribe'])
 Route::get('/newsletter/unsubscribe/{token}', [NewsletterController::class, 'unsubscribe']);
 
 // Public Magazines & Articles Read Routes
-Route::get('/magazines', [MagazineController::class, 'index']);
-Route::get('/magazines/latest', [MagazineController::class, 'latest']);
-Route::get('/magazines/{slug}/about-and-overview', [MagazineController::class, 'aboutAndOverview']);
-Route::get('/magazines/{slug}/table-of-contents', [MagazineController::class, 'tableOfContents']);
-Route::get('/magazines/{slug}/latest-published-articles', [MagazineController::class, 'latestPublishedArticles']);
-Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'publicPage']);
-Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
-Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
+Route::get('/magazines', [MagazineController::class, 'index'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/latest', [MagazineController::class, 'latest'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}/about-and-overview', [MagazineController::class, 'aboutAndOverview'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}/table-of-contents', [MagazineController::class, 'tableOfContents'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}/latest-published-articles', [MagazineController::class, 'latestPublishedArticles'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'publicPage'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}', [MagazineController::class, 'show'])->defaults('publication_type', 'magazine');
+Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles'])->defaults('publication_type', 'magazine');
 Route::prefix('journals')->group(function () {
     Route::get('/', [MagazineController::class, 'index'])->defaults('publication_type', 'journal');
     Route::get('/latest', [MagazineController::class, 'latest'])->defaults('publication_type', 'journal');
