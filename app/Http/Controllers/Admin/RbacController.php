@@ -751,6 +751,7 @@ class RbacController extends Controller
                     'id' => $magazine->id,
                     'title' => $magazine->title,
                     'slug' => $magazine->slug,
+                    'publication_type' => $magazine->publication_type,
                     'assignment_summary' => collect($summary)
                         ->map(fn (array $users) => collect($users)->unique('id')->values()->all())
                         ->all(),

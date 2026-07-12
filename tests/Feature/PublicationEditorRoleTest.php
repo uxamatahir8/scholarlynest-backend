@@ -76,6 +76,25 @@ class PublicationEditorRoleTest extends TestCase
             ->assertJsonMissing(['title' => 'Magazine Article']);
     }
 
+    public function test_magazine_assignment_options_includes_publication_type(): void
+    {
+        $admin = User::factory()->create(['role_id' => Role::where('name', 'super_admin')->value('id')]);
+        Sanctum::actingAs($admin);
+
+        $this->getJson('/api/admin/users/magazine-assignment-options')
+            ->assertOk()
+            ->assertJsonFragment([
+                'id' => $this->magazine->id,
+                'title' => 'Scoped Magazine',
+                'publication_type' => 'magazine',
+            ])
+            ->assertJsonFragment([
+                'id' => $this->journal->id,
+                'title' => 'Scoped Journal',
+                'publication_type' => 'journal',
+            ]);
+    }
+
     public function test_editor_transfer_access_rejects_wrong_publication_type(): void
     {
         $editor = $this->editor('magazine_editor', [$this->magazine, $this->journal]);
