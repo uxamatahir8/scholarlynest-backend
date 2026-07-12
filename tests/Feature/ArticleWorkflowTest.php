@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAuthor;
 use App\Models\Magazine;
+use App\Models\MagazineIssue;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -95,6 +96,38 @@ class ArticleWorkflowTest extends TestCase
             'article_id' => $this->article->id,
             'event' => 'reviewer.assigned',
         ]);
+    }
+
+    public function test_article_registry_supports_column_filters_and_scoped_author_options(): void
+    {
+        $issue = MagazineIssue::create([
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 12,
+            'issue_number' => 3,
+            'special_title' => 'Clinical Engineering',
+        ]);
+        $this->article->update(['magazine_issue_id' => $issue->id, 'title' => 'Advanced Biomedical Methods']);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson('/api/admin/articles?tracking_code=' . urlencode($this->article->tracking_code))
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?tracking_code=' . urlencode(substr($this->article->tracking_code, 0, -1)))
+            ->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson('/api/admin/articles?title=Biomedical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?issue=Clinical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=' . urlencode($this->article->tracking_code))
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=Biomedical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=Clinical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson("/api/admin/articles?author_id={$this->author->id}")
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles/filter-options')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $this->author->id, 'name' => $this->author->name]);
     }
 
     public function test_only_publisher_or_global_admin_can_assign_production(): void

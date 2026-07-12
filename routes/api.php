@@ -256,6 +256,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         // Article Review & Update Endpoints
         Route::get('/articles', [ArticleController::class, 'adminList'])->middleware('permission:articles.view-own');
         Route::get('/articles/status-options', [ArticleController::class, 'adminStatusOptions'])->middleware('permission:articles.view-own');
+        Route::get('/articles/filter-options', [ArticleController::class, 'adminFilterOptions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}', [ArticleController::class, 'showById'])->middleware('permission:articles.view-own');
         Route::put('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');
         Route::patch('/articles/{id}', [ArticleController::class, 'update'])->middleware('permission:articles.edit-own');

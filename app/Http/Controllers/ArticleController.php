@@ -374,6 +374,42 @@ class ArticleController extends Controller
     }
 
     /**
+     * Distinct filter values available inside the caller's scoped article registry.
+     */
+    public function adminFilterOptions(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        if ($user->hasRole('author') && !$user->hasPermission('articles.view-any')) {
+            return response()->json(['authors' => []]);
+        }
+
+        $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
+        $scopeUser = $observedUser ?: $user;
+        $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser);
+
+        if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
+            $query->where('magazine_id', $request->query('magazine_id'));
+        }
+
+        $authors = $query
+            ->whereNotNull('user_id')
+            ->select('user_id')
+            ->distinct()
+            ->with('user:id,name')
+            ->get()
+            ->map(fn ($article) => $article->user ? ['id' => $article->user->id, 'name' => $article->user->name] : null)
+            ->filter()
+            ->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values();
+
+        return response()->json(['authors' => $authors]);
+    }
+
+    /**
      * PATCH /api/admin/articles/{id}/review
      * Admin operations endpoint to approve or reject articles.
      */
@@ -1621,8 +1657,16 @@ class ArticleController extends Controller
         if ($request->filled('search')) {
             $search = $request->query('search');
             $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%")
+                $q->where('tracking_code', trim((string) $search))
+                    ->orWhere('title', 'like', "%{$search}%")
                     ->orWhere('abstract', 'like', "%{$search}%")
+                    ->orWhereHas('issue', function ($issueQuery) use ($search) {
+                        $issueQuery->where('special_title', 'like', "%{$search}%")
+                            ->orWhere('volume_number', 'like', "%{$search}%")
+                            ->orWhere('issue_number', 'like', "%{$search}%")
+                            ->orWhere('issue_month', 'like', "%{$search}%")
+                            ->orWhere('issue_year', 'like', "%{$search}%");
+                    })
                     ->orWhereHas('user', function ($uq) use ($search) {
                         $uq->where('name', 'like', "%{$search}%")
                             ->orWhere('email', 'like', "%{$search}%");
@@ -1631,6 +1675,30 @@ class ArticleController extends Controller
                         $tq->where('name', 'like', "%{$search}%");
                     });
             });
+        }
+
+        if ($request->filled('tracking_code')) {
+            $query->where('tracking_code', trim((string) $request->query('tracking_code')));
+        }
+
+        if ($request->filled('title')) {
+            $title = trim((string) $request->query('title'));
+            $query->where('title', 'like', "%{$title}%");
+        }
+
+        if ($request->filled('issue')) {
+            $issue = trim((string) $request->query('issue'));
+            $query->whereHas('issue', function ($issueQuery) use ($issue) {
+                $issueQuery->where('special_title', 'like', "%{$issue}%")
+                    ->orWhere('volume_number', 'like', "%{$issue}%")
+                    ->orWhere('issue_number', 'like', "%{$issue}%")
+                    ->orWhere('issue_month', 'like', "%{$issue}%")
+                    ->orWhere('issue_year', 'like', "%{$issue}%");
+            });
+        }
+
+        if ($request->filled('author_id')) {
+            $query->where('user_id', $request->integer('author_id'));
         }
     }
 

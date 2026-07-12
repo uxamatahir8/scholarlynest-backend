@@ -1282,6 +1282,7 @@ class ArticleWorkflowController extends Controller
             }
 
             $article->update([
+                'title' => $request->input('title', $article->title),
                 'status' => ArticleStatus::PUBLISHED,
                 'magazine_issue_id' => $request->magazine_issue_id,
                 'doi' => $request->doi,

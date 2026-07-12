@@ -24,6 +24,7 @@ class PublishArticleRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'title' => 'sometimes|required|string|max:255',
             'magazine_issue_id' => 'nullable|exists:magazine_issues,id',
             'doi' => 'nullable|string|max:255',
             'published_year' => 'required|integer|min:2000|max:' . now()->year,

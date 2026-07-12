@@ -401,6 +401,7 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($this->admin);
         $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'title' => 'Publisher Edited Article Title',
             'published_year' => 2026,
             'published_month' => 'July',
             'article_type' => 'Research Article',
@@ -463,6 +464,7 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         $this->getJson('/api/articles/workflow-completion-article')
             ->assertOk()
+            ->assertJsonPath('article.title', 'Publisher Edited Article Title')
             ->assertJsonMissingPath('article.tracking_code')
             ->assertJsonPath('article.open_access_label', 'Open Access')
             ->assertJsonPath('article.is_peer_reviewed', true)
