@@ -24,6 +24,8 @@ use App\Http\Controllers\Admin\ArticleCategoryController;
 use App\Http\Controllers\Admin\SubjectAreaController;
 use App\Http\Controllers\Admin\LanguageController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\AdvertisementResolutionController;
+use App\Http\Controllers\Admin\AdvertisementController;
 
 /*
 |--------------------------------------------------------------------------
@@ -36,6 +38,7 @@ use Illuminate\Support\Facades\Route;
 // ==========================================
 
 // Public Dynamic CMS Pages Fetching
+Route::get('/advertisements/resolve', AdvertisementResolutionController::class)->middleware('throttle:60,1');
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
 Route::get('/public/faqs', [FaqController::class, 'publicIndex']);
@@ -206,6 +209,18 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
  
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
+        Route::middleware('permission:advertisements.manage')->prefix('advertisements')->group(function () {
+            Route::get('/static-pages', [AdvertisementController::class, 'staticPages']);
+            Route::get('/publications', [AdvertisementController::class, 'publications']);
+            Route::get('/publications/{publication}/pages', [AdvertisementController::class, 'publicationPages']);
+            Route::get('/publications/{publication}/published-articles', [AdvertisementController::class, 'publishedArticles']);
+            Route::get('/', [AdvertisementController::class, 'index']);
+            Route::post('/', [AdvertisementController::class, 'store']);
+            Route::get('/{advertisement}', [AdvertisementController::class, 'show']);
+            Route::put('/{advertisement}', [AdvertisementController::class, 'update']);
+            Route::patch('/{advertisement}/status', [AdvertisementController::class, 'status']);
+            Route::delete('/{advertisement}', [AdvertisementController::class, 'destroy'])->middleware('super-admin-delete');
+        });
         // Dynamic Classifications CRUD (Settings Submenu)
         Route::apiResource('article-types', ArticleTypeController::class)->except(['index']);
         Route::apiResource('article-categories', ArticleCategoryController::class)->except(['index']);
