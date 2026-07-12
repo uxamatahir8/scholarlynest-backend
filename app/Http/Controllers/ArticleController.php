@@ -122,14 +122,21 @@ class ArticleController extends Controller
     {
         $limit = min($request->integer('limit', 10), 10);
         
-        $articles = Article::where('status', 'published')
+        $query = Article::where('status', 'published')
             ->with([
                 'magazine:id,title,slug,cover_image,publication_type',
                 'user:id,name',
                 'issue:id,volume_number,issue_number,special_title,issue_month,issue_year',
                 'articleAuthors:id,article_id,co_author_name,author_order,is_owner,is_corresponding',
-            ])
-            ->orderByDesc('published_at')
+            ]);
+
+        if ($request->has('publication_type')) {
+            $query->whereHas('magazine', function ($q) use ($request) {
+                $q->where('publication_type', $request->string('publication_type'));
+            });
+        }
+
+        $articles = $query->orderByDesc('published_at')
             ->latest()
             ->limit($limit)
             ->get()
@@ -176,7 +183,8 @@ class ArticleController extends Controller
 
         return response()->json([
             'published_articles_count' => $publishedArticleIds->count(),
-            'active_magazines_count' => Magazine::count(),
+            'active_magazines_count' => Magazine::where('publication_type', Magazine::TYPE_MAGAZINE)->count(),
+            'active_journals_count' => Magazine::where('publication_type', Magazine::TYPE_JOURNAL)->count(),
             'published_issues_count' => MagazineIssue::where(function ($query) {
                 $query->where('status', 'published')->orWhere('is_published', true);
             })->count(),

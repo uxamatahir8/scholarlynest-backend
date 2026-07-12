@@ -95,13 +95,23 @@ Route::get('/reviewer-invitations/{id}', [ArticleWorkflowController::class, 'sho
 Route::get('/media/objects/{token}', [MediaObjectController::class, 'show'])->middleware('throttle:media-download');
 
 Route::get('/public/magazines', function (\Illuminate\Http\Request $request) {
-    $query = \App\Models\Magazine::orderBy('created_at', 'desc');
+    $query = \App\Models\Magazine::where('publication_type', \App\Models\Magazine::TYPE_MAGAZINE)->orderBy('created_at', 'desc');
     if ($request->has('per_page') || $request->has('limit')) {
         $limit = $request->integer('per_page') ?: $request->integer('limit');
         $query->limit($limit);
     }
     $magazines = $query->get();
     return response()->json(['data' => $magazines]);
+});
+
+Route::get('/public/journals', function (\Illuminate\Http\Request $request) {
+    $query = \App\Models\Magazine::where('publication_type', \App\Models\Magazine::TYPE_JOURNAL)->orderBy('created_at', 'desc');
+    if ($request->has('per_page') || $request->has('limit')) {
+        $limit = $request->integer('per_page') ?: $request->integer('limit');
+        $query->limit($limit);
+    }
+    $journals = $query->get();
+    return response()->json(['data' => $journals]);
 });
 
 Route::get('/public/newsletters', function () {
