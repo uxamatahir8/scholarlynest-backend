@@ -12,6 +12,9 @@ class Magazine extends Model
 {
     use HasFactory, Auditable;
 
+    public const TYPE_MAGAZINE = 'magazine';
+    public const TYPE_JOURNAL = 'journal';
+
     protected $appends = [
         'cover_image_url',
     ];
@@ -26,7 +29,28 @@ class Magazine extends Model
         'seo_description',
         'seo_keywords',
         'is_active',
+        'publication_type',
     ];
+
+    public function isMagazine(): bool
+    {
+        return $this->publication_type === self::TYPE_MAGAZINE;
+    }
+
+    public function isJournal(): bool
+    {
+        return $this->publication_type === self::TYPE_JOURNAL;
+    }
+
+    public function publicationTypeLabel(): string
+    {
+        return $this->isJournal() ? 'Journal' : 'Magazine';
+    }
+
+    public function publicRoutePrefix(): string
+    {
+        return $this->isJournal() ? 'journals' : 'magazines';
+    }
 
     protected $casts = [
         'is_active' => 'boolean',

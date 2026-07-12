@@ -17,9 +17,12 @@ class ArticleTransferService
 {
     public function getEligibleTargetMagazines(Article $article): EloquentCollection
     {
+        $article->loadMissing('magazine');
+
         return Magazine::query()
-            ->select(['id', 'title', 'slug'])
+            ->select(['id', 'title', 'slug', 'publication_type'])
             ->where('id', '!=', $article->magazine_id)
+            ->where('publication_type', $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE)
             ->where(function ($query) {
                 $query->where('is_active', true)
                     ->orWhereNull('is_active');
@@ -199,6 +202,13 @@ class ArticleTransferService
         if ((int) $article->magazine_id === (int) $targetMagazine->id) {
             throw ValidationException::withMessages([
                 'to_magazine_id' => ['Choose a different target magazine.'],
+            ]);
+        }
+
+        $article->loadMissing('magazine');
+        if (($article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE) !== $targetMagazine->publication_type) {
+            throw ValidationException::withMessages([
+                'to_magazine_id' => ['Transfers are only allowed between the same publication type.'],
             ]);
         }
 

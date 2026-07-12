@@ -31,6 +31,8 @@ class MagazineController extends Controller
             $query->where('status', 'published');
         }]);
 
+        $this->applyPublicationTypeFilter($query, $request);
+
         $user = $request->user('sanctum') ?: $request->user();
 
 
@@ -48,10 +50,11 @@ class MagazineController extends Controller
      */
     public function latest(Request $request): JsonResponse
     {
-        $magazines = Magazine::withCount(['articles' => function ($query) {
+        $query = Magazine::withCount(['articles' => function ($query) {
             $query->where('status', 'published');
-        }])
-        ->latest()
+        }]);
+        $this->applyPublicationTypeFilter($query, $request);
+        $magazines = $query->latest()
         ->limit(10)
         ->get();
 
@@ -75,6 +78,7 @@ class MagazineController extends Controller
         $query = Magazine::with('editors')->withCount(['articles' => function ($query) {
             $query->where('status', 'published');
         }]);
+        $this->applyPublicationTypeFilter($query, $request);
 
         if (!$this->hasGlobalMagazineAccess($user)) {
             $assignedMagazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher']);
@@ -103,6 +107,7 @@ class MagazineController extends Controller
         }
 
         $magazine = Magazine::where('slug', $slug)
+            ->where('publication_type', $this->requestedPublicationType($request))
             ->with(['editors', 'pages' => function ($query) {
                 $query->orderBy('sort_order', 'asc');
             }])
@@ -131,9 +136,9 @@ class MagazineController extends Controller
      * GET /api/magazines/{slug}
      * Returns only the public magazine shell and active navigation pages.
      */
-    public function show(string $slug): JsonResponse
+    public function show(Request $request, string $slug): JsonResponse
     {
-        $magazine = $this->publicMagazineQuery($slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -146,9 +151,9 @@ class MagazineController extends Controller
      * GET /api/magazines/{slug}/about-and-overview
      * Returns public about/overview data for one magazine only.
      */
-    public function aboutAndOverview(string $slug): JsonResponse
+    public function aboutAndOverview(Request $request, string $slug): JsonResponse
     {
-        $magazine = $this->publicMagazineQuery($slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -168,7 +173,7 @@ class MagazineController extends Controller
      */
     public function latestPublishedArticles(string $slug, Request $request): JsonResponse
     {
-        $magazine = $this->publicMagazineQuery($slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -191,9 +196,9 @@ class MagazineController extends Controller
      * GET /api/magazines/{slug}/table-of-contents
      * Returns public table of contents grouped by article publication date for one magazine only.
      */
-    public function tableOfContents(string $slug): JsonResponse
+    public function tableOfContents(Request $request, string $slug): JsonResponse
     {
-        $magazine = $this->publicMagazineQuery($slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -241,13 +246,13 @@ class MagazineController extends Controller
      * GET /api/magazines/{slug}/pages/{pageSlug}
      * Returns one public active custom page scoped to the requested magazine.
      */
-    public function publicPage(string $slug, string $pageSlug): JsonResponse
+    public function publicPage(Request $request, string $slug, string $pageSlug): JsonResponse
     {
         if ($this->isReservedPublicPageSlug($pageSlug)) {
             return response()->json(['message' => 'Page not found.'], 404);
         }
 
-        $magazine = $this->publicMagazineQuery($slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -283,9 +288,9 @@ class MagazineController extends Controller
      * GET /api/magazines/{slug}/articles
      * Public paginated feed of published articles under a specific magazine.
      */
-    public function articles(string $slug): JsonResponse
+    public function articles(Request $request, string $slug): JsonResponse
     {
-        $magazine = Magazine::where('slug', $slug)->first();
+        $magazine = $this->publicMagazineQuery($slug, $this->requestedPublicationType($request))->first();
 
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
@@ -312,6 +317,7 @@ class MagazineController extends Controller
         }
 
         $validated = $request->validate([
+            'publication_type' => 'sometimes|in:magazine,journal',
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable', // can be file or string
             'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
@@ -340,6 +346,7 @@ class MagazineController extends Controller
             'cover_image' => $coverImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
+            'publication_type' => $this->requestedPublicationType($request),
         ];
 
         if ($user->hasPermission('seo.magazines')) {
@@ -383,8 +390,8 @@ class MagazineController extends Controller
                 }
 
                 $action = [
-                    'text' => 'Explore Magazine Issue',
-                    'url' => "{$frontendUrl}/magazines/{$magazine->slug}",
+                    'text' => 'Explore ' . $magazine->publicationTypeLabel(),
+                    'url' => "{$frontendUrl}/{$magazine->publicRoutePrefix()}/{$magazine->slug}",
                 ];
 
                 $this->notificationService->send(
@@ -405,7 +412,7 @@ class MagazineController extends Controller
         }
 
         return response()->json([
-            'message' => 'Magazine created successfully.',
+            'message' => $magazine->publicationTypeLabel() . ' created successfully.',
             'magazine' => $magazine->load('editors')
         ], 211);
     }
@@ -471,6 +478,10 @@ class MagazineController extends Controller
         $magazine = Magazine::find($id);
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
+        }
+
+        if ($magazine->publication_type !== $this->requestedPublicationType($request)) {
+            return response()->json(['message' => 'Publication not found.'], 404);
         }
 
         $validated = $request->validate([
@@ -632,9 +643,9 @@ class MagazineController extends Controller
         ]);
     }
 
-    private function publicMagazineQuery(string $slug)
+    private function publicMagazineQuery(string $slug, string $publicationType)
     {
-        return Magazine::where('slug', $slug);
+        return Magazine::where('slug', $slug)->where('publication_type', $publicationType);
     }
 
     private function publicMagazinePayload(Magazine $magazine): array
@@ -646,11 +657,27 @@ class MagazineController extends Controller
             'cover_image' => $magazine->cover_image_url,
             'cover_image_url' => $magazine->cover_image_url,
             'description' => $magazine->description,
+            'publication_type' => $magazine->publication_type,
+            'publication_label' => $magazine->publicationTypeLabel(),
+            'public_route_prefix' => $magazine->publicRoutePrefix(),
             'seo_title' => $magazine->seo_title ?: $magazine->title . ' | ScholarlyNest',
             'seo_description' => $magazine->seo_description ?: Str::limit(strip_tags((string) $magazine->description), 160, ''),
             'seo_keywords' => $magazine->seo_keywords ?: '',
             'og_image' => $magazine->cover_image_url,
         ];
+    }
+
+    private function requestedPublicationType(Request $request): string
+    {
+        return (string) ($request->route('publication_type') ?: $request->input('publication_type', Magazine::TYPE_MAGAZINE));
+    }
+
+    private function applyPublicationTypeFilter($query, Request $request): void
+    {
+        $type = $request->route('publication_type') ?: $request->query('publication_type');
+        if (in_array($type, [Magazine::TYPE_MAGAZINE, Magazine::TYPE_JOURNAL], true)) {
+            $query->where('publication_type', $type);
+        }
     }
 
     private function publicShellPayload(Magazine $magazine): array

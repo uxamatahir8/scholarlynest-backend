@@ -41,7 +41,7 @@ class ArticleController extends Controller
     public function show(string $idOrSlug): JsonResponse
     {
         $query = Article::with([
-            'magazine:id,title,slug,cover_image',
+            'magazine:id,title,slug,cover_image,publication_type',
             'user:id,name,created_at',
             'tags:id,name',
             'articleAuthors:id,article_id,co_author_name,affiliation,university_name,author_order,is_owner,is_corresponding',
@@ -124,7 +124,7 @@ class ArticleController extends Controller
         
         $articles = Article::where('status', 'published')
             ->with([
-                'magazine:id,title,slug,cover_image',
+                'magazine:id,title,slug,cover_image,publication_type',
                 'user:id,name',
                 'issue:id,volume_number,issue_number,special_title,issue_month,issue_year',
                 'articleAuthors:id,article_id,co_author_name,author_order,is_owner,is_corresponding',
@@ -139,6 +139,18 @@ class ArticleController extends Controller
             'status' => 'success',
             'data' => $articles
         ]);
+    }
+
+    public function showForPublication(Request $request, string $publicationSlug, string $articleSlug): JsonResponse
+    {
+        $type = (string) $request->route('publication_type');
+        $exists = Article::where('slug', $articleSlug)
+            ->whereHas('magazine', fn ($query) => $query
+                ->where('slug', $publicationSlug)
+                ->where('publication_type', $type))
+            ->exists();
+
+        return $exists ? $this->show($articleSlug) : response()->json(['message' => 'Article not found.'], 404);
     }
 
 
@@ -324,7 +336,7 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser)
-            ->with(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks', 'latestVersion'])
+            ->with(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'shareClicks', 'latestVersion'])
             ->withMax('versions as latest_submission_at', 'created_at');
 
         $this->applyAdminArticleFilters($query, $request);
@@ -513,7 +525,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article status updated successfully.',
-            'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'shareClicks']), $user)
+            'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'shareClicks']), $user)
         ]);
     }
 
@@ -530,7 +542,7 @@ class ArticleController extends Controller
 
         $article = Article::with([
             'tags:id,name',
-            'magazine:id,title,slug,cover_image',
+            'magazine:id,title,slug,cover_image,publication_type',
             'issue',
             'shareClicks',
             'articleAuthors',
@@ -584,7 +596,7 @@ class ArticleController extends Controller
 
         return response()->json($this->adminArticleDetailPayload($article->fresh([
             'tags:id,name',
-            'magazine:id,title,slug,cover_image',
+            'magazine:id,title,slug,cover_image,publication_type',
             'issue',
             'shareClicks',
             'articleAuthors',
@@ -830,7 +842,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article updated successfully.',
-            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image', 'issue', 'articleAuthors', 'reviewerPreferences', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
+            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image,publication_type', 'issue', 'articleAuthors', 'reviewerPreferences', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
         ]);
     }
 
@@ -1062,7 +1074,7 @@ class ArticleController extends Controller
         $totalImpressions = (clone $query)->sum('impressions');
 
         // Top articles by engagement
-        $topArticles = Article::with(['magazine:id,title,slug,cover_image', 'user:id,name'])
+        $topArticles = Article::with(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name'])
             ->when($magazineIds !== null, function($q) use ($magazineIds) {
                 $q->whereIn('magazine_id', $magazineIds);
             })
@@ -1115,7 +1127,7 @@ class ArticleController extends Controller
 
     private function publicArticlePayload(Article $article, bool $includeBody = false): array
     {
-        $article->loadMissing(['assets', 'publicationSections', 'tags']);
+        $article->loadMissing(['assets', 'publicationSections', 'tags', 'magazine']);
 
         $payload = [
             'id' => $article->id,
@@ -1152,12 +1164,16 @@ class ArticleController extends Controller
             'og_image' => $article->magazine?->cover_image_url,
             'has_pdf' => !empty($article->pdf_path),
             'pdf_url' => !empty($article->pdf_path) ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'public_url' => $article->magazine ? '/' . $article->magazine->publicRoutePrefix() . '/' . $article->magazine->slug . '/articles/' . $article->slug : null,
+            'publication_type' => $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE,
+            'publication_label' => $article->magazine?->publicationTypeLabel() ?? 'Magazine',
             'magazine' => $article->magazine ? [
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
                 'cover_image' => $article->magazine->cover_image_url,
                 'cover_image_url' => $article->magazine->cover_image_url,
+                'publication_type' => $article->magazine->publication_type,
             ] : null,
             'user' => $article->user ? [
                 'id' => $article->user->id,
@@ -1238,7 +1254,7 @@ class ArticleController extends Controller
 
     private function adminArticleSummaryPayload(Article $article, User $viewer): array
     {
-        $article->loadMissing(['magazine:id,title,slug,cover_image', 'user:id,name', 'tags:id,name', 'latestVersion']);
+        $article->loadMissing(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'latestVersion']);
 
         return [
             'id' => $article->id,
@@ -1247,6 +1263,8 @@ class ArticleController extends Controller
             'latest_revision_number' => $article->latestVersion?->revision_number,
             'latest_submission_at' => $article->latestVersion?->created_at ?: $article->created_at,
             'magazine_id' => $article->magazine_id,
+            'publication_type' => $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE,
+            'publication_label' => $article->magazine?->publicationTypeLabel() ?? 'Magazine',
             'title' => $article->title,
             'subtitle' => $article->subtitle,
             'slug' => $article->slug,
@@ -1269,6 +1287,7 @@ class ArticleController extends Controller
                 'slug' => $article->magazine->slug,
                 'cover_image' => $article->magazine->cover_image,
                 'cover_image_url' => $article->magazine->cover_image_url,
+                'publication_type' => $article->magazine->publication_type,
             ] : null,
             'user' => $article->user ? [
                 'id' => $article->user->id,

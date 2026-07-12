@@ -66,6 +66,20 @@ Route::get('/magazines/{slug}/latest-published-articles', [MagazineController::c
 Route::get('/magazines/{slug}/pages/{pageSlug}', [MagazineController::class, 'publicPage']);
 Route::get('/magazines/{slug}', [MagazineController::class, 'show']);
 Route::get('/magazines/{slug}/articles', [MagazineController::class, 'articles']);
+Route::prefix('journals')->group(function () {
+    Route::get('/', [MagazineController::class, 'index'])->defaults('publication_type', 'journal');
+    Route::get('/latest', [MagazineController::class, 'latest'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}/about-and-overview', [MagazineController::class, 'aboutAndOverview'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}/table-of-contents', [MagazineController::class, 'tableOfContents'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}/latest-published-articles', [MagazineController::class, 'latestPublishedArticles'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}/pages/{pageSlug}', [MagazineController::class, 'publicPage'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}', [MagazineController::class, 'show'])->defaults('publication_type', 'journal');
+    Route::get('/{slug}/articles', [MagazineController::class, 'articles'])->defaults('publication_type', 'journal');
+});
+Route::get('/magazines/{publicationSlug}/articles/{articleSlug}', [ArticleController::class, 'showForPublication'])
+    ->defaults('publication_type', 'magazine');
+Route::get('/journals/{publicationSlug}/articles/{articleSlug}', [ArticleController::class, 'showForPublication'])
+    ->defaults('publication_type', 'journal');
 Route::get('/articles/latest', [ArticleController::class, 'latest']);
 Route::get('/public/homepage-stats', [ArticleController::class, 'publicHomepageStats']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
@@ -247,6 +261,16 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/magazines/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.edit');
         Route::put('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.edit');
         Route::delete('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.edit']);
+        Route::prefix('journals')->group(function () {
+            Route::get('/', [MagazineController::class, 'adminIndex'])->defaults('publication_type', 'journal')->middleware('permission:magazines.view-own');
+            Route::get('/{slug}', [MagazineController::class, 'adminShow'])->defaults('publication_type', 'journal')->middleware('permission:magazines.view-own');
+            Route::post('/', [MagazineController::class, 'store'])->defaults('publication_type', 'journal')->middleware('permission:magazines.create');
+            Route::put('/{id}', [MagazineController::class, 'update'])->defaults('publication_type', 'journal')->middleware('permission:magazines.edit');
+            Route::delete('/{id}', [MagazineController::class, 'destroy'])->defaults('publication_type', 'journal')->middleware(['super-admin-delete', 'permission:magazines.delete']);
+            Route::post('/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.edit');
+            Route::put('/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.edit');
+            Route::delete('/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.edit']);
+        });
  
         // Tags Management
         Route::post('/tags', [TagController::class, 'store']);
