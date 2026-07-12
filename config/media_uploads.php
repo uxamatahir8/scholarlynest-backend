@@ -28,6 +28,14 @@ return [
     ],
 
     'purposes' => [
+        'advertisement_image' => [
+            'target' => 'media',
+            'clean_prefix' => 'clean/advertisements/',
+            'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
+            'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
+            'scan_required' => true,
+        ],
         'article_manuscript' => [
             'model' => Article::class,
             'target' => 'article',
