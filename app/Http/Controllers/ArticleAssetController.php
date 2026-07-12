@@ -84,6 +84,12 @@ class ArticleAssetController extends Controller
             if (!$user || $user->cannot('view', $article)) {
                 return response()->json(['message' => 'This action is unauthorized.'], 403);
             }
+            if ($user->hasRole('copy_editor')) {
+                $sourceFile = \App\Models\ArticleFile::where('source_asset_id', $asset->id)->first();
+                if (!$sourceFile || !app(ArticleFileController::class)->canAccess($user, $sourceFile)) {
+                    return response()->json(['message' => 'This action is unauthorized.'], 403);
+                }
+            }
         }
 
         if (($asset->scan_status ?? 'clean') !== 'clean') {
@@ -96,12 +102,25 @@ class ArticleAssetController extends Controller
                 return response()->json(['message' => 'The requested file is not available.'], 404);
             }
 
-            return redirect()->away(
-                Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
-                    'ResponseContentDisposition' => 'attachment; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
-                    'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
-                ])
-            );
+             if ($request->has('stream')) {
+                 return response()->streamDownload(function () use ($asset, $key) {
+                     $stream = Storage::disk($asset->disk)->readStream($key);
+                     if ($stream) {
+                         fpassthru($stream);
+                         fclose($stream);
+                     }
+                 }, $asset->safe_original_filename ?: $asset->original_filename, [
+                     'Content-Type' => $asset->mime_type ?: 'application/octet-stream',
+                     'X-Content-Type-Options' => 'nosniff',
+                 ]);
+             }
+
+             return redirect()->away(
+                 Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
+                     'ResponseContentDisposition' => 'attachment; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
+                     'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
+                 ])
+             );
         }
 
         $relativePath = str_replace('storage/', '', $asset->file_path);

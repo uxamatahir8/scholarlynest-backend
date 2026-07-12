@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ReviewQuestionResponse extends Model
 {
-    protected $fillable = ['review_questionnaire_instance_id', 'review_question_id', 'answer'];
+    protected $fillable = ['review_questionnaire_instance_id', 'review_question_id', 'answer', 'comment'];
 
     protected $casts = ['answer' => 'array'];
 

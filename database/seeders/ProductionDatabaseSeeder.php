@@ -13,6 +13,8 @@ class ProductionDatabaseSeeder extends Seeder
             SystemPermissionSeeder::class,
             RequiredSystemSettingsSeeder::class,
             DefaultSuperAdminSeeder::class,
+            FooterManagementSeeder::class,
+            ReviewerEvaluationQuestionnaireSeeder::class,
         ]);
     }
 }

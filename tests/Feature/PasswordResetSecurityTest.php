@@ -242,4 +242,23 @@ class PasswordResetSecurityTest extends TestCase
         ]);
         $loginResponse->assertStatus(200);
     }
+
+    public function test_newly_provisioned_user_is_logged_in_after_setting_password(): void
+    {
+        $this->user->update(['password' => null, 'needs_password_reset' => true]);
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $this->user->email],
+            ['token' => Hash::make(str_repeat('d', 64)), 'created_at' => now()]
+        );
+
+        $this->postJson('/api/reset-password', [
+            'email' => $this->user->email,
+            'token' => str_repeat('d', 64),
+            'password' => 'NewPassword@123',
+            'password_confirmation' => 'NewPassword@123',
+        ])->assertOk()
+            ->assertJsonPath('auto_login', true)
+            ->assertJsonPath('user.id', $this->user->id)
+            ->assertJsonStructure(['access_token']);
+    }
 }

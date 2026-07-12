@@ -13,6 +13,7 @@ class ReviewQuestion extends Model
     protected $fillable = [
         'review_questionnaire_version_id',
         'prompt',
+        'comment_helper',
         'response_type',
         'is_required',
         'sort_order',

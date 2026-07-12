@@ -19,6 +19,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Database\Seeders\ReviewerEvaluationQuestionnaireSeeder;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -206,15 +207,16 @@ class ArticleWorkflowCompletionTest extends TestCase
         $this->assertSame($firstVersionId, $assignment->questionnaireInstance->review_questionnaire_version_id);
 
         Sanctum::actingAs($this->admin);
-        $this->postJson('/api/admin/review-questionnaire', [
+        $updatedQuestionnaire = $this->postJson('/api/admin/review-questionnaire', [
             'name' => 'Default Reviewer Form',
             'questions' => [[
                 'prompt' => 'Updated required question',
                 'response_type' => 'textarea',
                 'is_required' => true,
             ]],
-        ])->assertCreated();
+        ])->assertCreated()->json('questionnaire');
         $this->assertSame(2, ReviewQuestionnaireVersion::count());
+        $secondQuestionId = $updatedQuestionnaire['active_version']['questions'][0]['id'];
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
@@ -230,7 +232,7 @@ class ArticleWorkflowCompletionTest extends TestCase
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [[
-                'question_id' => $firstQuestionId,
+                'question_id' => $secondQuestionId,
                 'answer' => 'yes',
             ]],
         ])->assertOk();
@@ -242,13 +244,124 @@ class ArticleWorkflowCompletionTest extends TestCase
         Sanctum::actingAs($this->editor);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
-            ->assertJsonFragment(['prompt' => 'Is the method sound?'])
-            ->assertJsonMissing(['prompt' => 'Updated required question']);
+            ->assertJsonFragment(['prompt' => 'Updated required question'])
+            ->assertJsonMissing(['prompt' => 'Is the method sound?']);
 
         Sanctum::actingAs($reviewer);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
             ->assertJsonMissing(['private.reviewer@example.test']);
+    }
+
+    public function test_seeded_questionnaire_submission_saves_comments_maps_decision_and_respects_blind_review(): void
+    {
+        $this->seed(ReviewerEvaluationQuestionnaireSeeder::class);
+        $reviewer = User::factory()->create([
+            'name' => 'Confidential Reviewer',
+            'email' => 'confidential.reviewer@example.test',
+            'role_id' => Role::where('name', 'reviewer')->value('id'),
+            'email_verified_at' => now(),
+        ]);
+        $assignment = ReviewerAssignment::create([
+            'article_id' => $this->article->id,
+            'reviewer_id' => $reviewer->id,
+            'invitee_name' => $reviewer->name,
+            'invitee_email' => $reviewer->email,
+            'assigned_by' => $this->editor->id,
+            'status' => 'accepted',
+            'accepted_at' => now(),
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'questionnaire_responses' => [],
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
+
+        $assignment->refresh()->load('questionnaireInstance.version.questions.options');
+        $questions = $assignment->questionnaireInstance->version->questions;
+        $responses = $questions->reject(fn ($question) => $question->prompt === 'Final Decision')->map(function ($question) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                default => 'yes',
+            };
+
+            return ['question_id' => $question->id, 'answer' => $answer];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'questionnaire_responses' => $responses,
+        ])->assertUnprocessable();
+
+        $finalQuestion = $questions->firstWhere('prompt', 'Final Decision');
+        $evaluationQuestion = $questions->firstWhere('prompt', 'Are scientific methods adequately used?');
+        $responses = $questions->map(function ($question) use ($finalQuestion, $evaluationQuestion) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                'Final Decision' => 'moderate_revision',
+                default => $question->id === $evaluationQuestion->id ? 'no' : 'yes',
+            };
+
+            return [
+                'question_id' => $question->id,
+                'answer' => $answer,
+                'comment' => $question->id === $evaluationQuestion->id
+                    ? 'Describe the sampling and statistical analysis in more detail.'
+                    : null,
+            ];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
+            'recommendation' => 'accept',
+            'comments_for_author' => 'Please address the methodological detail.',
+            'confidential_comments' => 'Confidential editorial note.',
+            'questionnaire_responses' => $responses,
+        ])->assertOk();
+
+        $assignment->refresh();
+        $this->assertSame('completed', $assignment->status);
+        $this->assertSame('major_revision', $assignment->recommendation);
+        $this->assertDatabaseHas('review_question_responses', [
+            'review_questionnaire_instance_id' => $assignment->questionnaire_instance_id,
+            'review_question_id' => $evaluationQuestion->id,
+            'comment' => 'Describe the sampling and statistical analysis in more detail.',
+        ]);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['name' => 'Confidential Reviewer'])
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.']);
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(0, 'article.reviewer_assignments')
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
+
+        $this->article->update(['status' => ArticleStatus::MAJOR_REVISION_REQUIRED]);
+
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
     }
 
     public function test_public_invitation_context_requires_a_valid_token_and_excludes_files(): void
@@ -288,6 +401,7 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($this->admin);
         $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'title' => 'Publisher Edited Article Title',
             'published_year' => 2026,
             'published_month' => 'July',
             'article_type' => 'Research Article',
@@ -334,7 +448,7 @@ class ArticleWorkflowCompletionTest extends TestCase
             'scan_status' => 'clean',
         ]);
 
-        $section = ArticlePublicationSection::where('article_id', $this->article->id)->firstOrFail();
+        $section = ArticlePublicationSection::where('article_id', $this->article->id)->where('section_key', 'introduction')->firstOrFail();
         $this->assertStringNotContainsString('onclick', $section->content_html);
         $this->assertStringNotContainsString('javascript:', $section->content_html);
         $this->assertStringNotContainsString('<script>', $section->content_html);
@@ -350,13 +464,15 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         $this->getJson('/api/articles/workflow-completion-article')
             ->assertOk()
+            ->assertJsonPath('article.title', 'Publisher Edited Article Title')
             ->assertJsonMissingPath('article.tracking_code')
             ->assertJsonPath('article.open_access_label', 'Open Access')
             ->assertJsonPath('article.is_peer_reviewed', true)
             ->assertJsonPath('article.article_images.0.title', 'Figure 1')
-            ->assertJsonPath('article.publication_sections.0.section_key', 'custom_results')
-            ->assertJsonPath('article.publication_sections.1.section_key', 'introduction')
-            ->assertJsonPath('article.publication_sections.1.has_image', true)
+            ->assertJsonPath('article.publication_sections.0.section_key', 'abstract')
+            ->assertJsonPath('article.publication_sections.1.section_key', 'custom_results')
+            ->assertJsonPath('article.publication_sections.2.section_key', 'introduction')
+            ->assertJsonPath('article.publication_sections.2.has_image', true)
             ->assertJsonMissing(['reviewer_preferences'])
             ->assertJsonMissing(['private.reviewer@example.test'])
             ->assertJsonMissing(['invite_token_hash']);

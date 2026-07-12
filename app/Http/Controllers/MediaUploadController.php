@@ -270,7 +270,7 @@ class MediaUploadController extends Controller
             $media = Media::create([
                 'filename' => $upload->safe_display_filename,
                 'safe_original_name' => $upload->safe_display_filename,
-                'url' => null,
+                'url' => app(\App\Services\Media\MediaStorageService::class)->publicOrTemporaryUrl($upload->s3_incoming_key) ?? '',
                 'disk' => $upload->disk,
                 'storage_key' => $upload->s3_incoming_key,
                 'mime_type' => $upload->declared_mime_type ?: 'application/octet-stream',

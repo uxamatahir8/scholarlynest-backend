@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAuthor;
 use App\Models\Magazine;
+use App\Models\MagazineIssue;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -97,6 +98,61 @@ class ArticleWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_article_registry_supports_column_filters_and_scoped_author_options(): void
+    {
+        $issue = MagazineIssue::create([
+            'magazine_id' => $this->magazine->id,
+            'volume_number' => 12,
+            'issue_number' => 3,
+            'special_title' => 'Clinical Engineering',
+        ]);
+        $this->article->update(['magazine_issue_id' => $issue->id, 'title' => 'Advanced Biomedical Methods']);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson('/api/admin/articles?tracking_code=' . urlencode($this->article->tracking_code))
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?tracking_code=' . urlencode(substr($this->article->tracking_code, 0, -1)))
+            ->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson('/api/admin/articles?title=Biomedical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?issue=Clinical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=' . urlencode($this->article->tracking_code))
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=Biomedical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles?search=Clinical')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson("/api/admin/articles?author_id={$this->author->id}")
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/admin/articles/filter-options')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $this->author->id, 'name' => $this->author->name]);
+    }
+
+    public function test_only_publisher_or_global_admin_can_assign_production(): void
+    {
+        $publisherRole = Role::create(['name' => 'publisher', 'display_name' => 'Publisher', 'is_system' => true]);
+        $copyEditorRole = Role::create(['name' => 'copy_editor', 'display_name' => 'Copy Editor', 'is_system' => true]);
+        $publisherRole->permissions()->sync(Permission::where('name', 'articles.approve')->pluck('id'));
+        $publisher = User::factory()->create(['role_id' => $publisherRole->id]);
+        $copyEditor = User::factory()->create(['role_id' => $copyEditorRole->id]);
+        $publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
+        $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/production-assignments", [
+            'user_id' => $copyEditor->id,
+            'role' => 'copy_editor',
+        ])->assertForbidden();
+
+        Sanctum::actingAs($publisher);
+        $this->postJson("/api/admin/articles/{$this->article->id}/production-assignments", [
+            'user_id' => $copyEditor->id,
+            'role' => 'copy_editor',
+        ])->assertCreated();
+    }
+
     public function test_reviewer_can_submit_review_and_editor_can_record_final_decision(): void
     {
         Sanctum::actingAs($this->editor);
@@ -120,26 +176,26 @@ class ArticleWorkflowTest extends TestCase
             ->assertJsonPath('article.status', ArticleStatus::ACCEPTED);
     }
 
-    public function test_author_final_review_moves_accepted_article_to_copy_editing_once(): void
+    public function test_author_final_review_moves_proofreading_article_to_ready_for_publication_once(): void
     {
-        $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+        $this->article->update(['status' => ArticleStatus::PROOFREADING]);
 
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::COPY_EDITING)
+            ->assertJsonPath('article.status', ArticleStatus::READY_FOR_PUBLICATION)
             ->assertJsonPath('article.can_author_final_review', false);
 
         $this->assertDatabaseHas('articles', [
             'id' => $this->article->id,
-            'status' => ArticleStatus::COPY_EDITING,
+            'status' => ArticleStatus::READY_FOR_PUBLICATION,
             'author_final_approved_by' => $this->author->id,
         ]);
         $this->assertNotNull($this->article->fresh()->author_final_approved_at);
 
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Only accepted manuscripts can be approved for final production review.');
+            ->assertJsonPath('message', 'Author final approval is available only during proofreading.');
     }
 
     public function test_author_final_review_blocks_wrong_state_wrong_user_and_duplicates(): void
@@ -159,9 +215,9 @@ class ArticleWorkflowTest extends TestCase
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Only accepted manuscripts can be approved for final production review.');
+            ->assertJsonPath('message', 'Author final approval is available only during proofreading.');
 
-        $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+        $this->article->update(['status' => ArticleStatus::PROOFREADING]);
 
         Sanctum::actingAs($otherAuthor);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
@@ -170,7 +226,7 @@ class ArticleWorkflowTest extends TestCase
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertOk();
-        Article::whereKey($this->article->id)->update(['status' => ArticleStatus::ACCEPTED]);
+        Article::whereKey($this->article->id)->update(['status' => ArticleStatus::PROOFREADING]);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
             ->assertJsonPath('message', 'This manuscript has already been approved for final review.');
@@ -280,5 +336,23 @@ class ArticleWorkflowTest extends TestCase
             'page_end' => 12,
         ])->assertStatus(200)
             ->assertJsonPath('article.status', ArticleStatus::PUBLISHED);
+    }
+
+    public function test_editor_can_send_reminder_to_reviewer(): void
+    {
+        Sanctum::actingAs($this->editor);
+        $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->json('assignment.id');
+
+        $assignmentBefore = \App\Models\ReviewerAssignment::findOrFail($assignmentId);
+        $oldHash = $assignmentBefore->invite_token_hash;
+
+        $response = $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/remind");
+        $response->assertStatus(200);
+
+        $assignmentAfter = \App\Models\ReviewerAssignment::findOrFail($assignmentId);
+        $this->assertNotEmpty($assignmentAfter->invite_token_hash);
+        $this->assertNotEquals($oldHash, $assignmentAfter->invite_token_hash);
     }
 }

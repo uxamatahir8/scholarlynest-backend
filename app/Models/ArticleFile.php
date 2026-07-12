@@ -12,6 +12,7 @@ class ArticleFile extends Model
     public const PLAGIARISM_REPORT = 'plagiarism_report';
     public const ANNOTATED_MANUSCRIPT = 'annotated_manuscript';
     public const REVIEWED_MANUSCRIPT = 'reviewed_manuscript';
+    public const REVISION_RESPONSE = 'revision_response';
     public const COPY_EDITED_FILE = 'copy_edited_file';
     public const PROOF_FILE = 'proof_file';
     public const PUBLICATION_PDF = 'publication_pdf';
@@ -22,6 +23,7 @@ class ArticleFile extends Model
         self::PLAGIARISM_REPORT,
         self::ANNOTATED_MANUSCRIPT,
         self::REVIEWED_MANUSCRIPT,
+        self::REVISION_RESPONSE,
         self::COPY_EDITED_FILE,
         self::PROOF_FILE,
         self::PUBLICATION_PDF,

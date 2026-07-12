@@ -50,6 +50,16 @@ return [
             'extensions' => ['pdf', 'doc', 'docx'],
             'scan_required' => true,
         ],
+        'article_revision_response' => [
+            'model' => Article::class,
+            'target' => 'article',
+            'article_file_type' => 'revision_response',
+            'clean_prefix' => 'clean/articles/revision-responses/',
+            'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'extensions' => ['pdf', 'doc', 'docx'],
+            'scan_required' => true,
+        ],
         'article_supplementary' => [
             'model' => Article::class,
             'target' => 'article',

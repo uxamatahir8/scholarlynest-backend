@@ -24,7 +24,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['super_admin', 'admin', 'author', 'editor', 'magazine_editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'] as $roleName) {
+        foreach (['super_admin', 'admin', 'author', 'editor', 'sub_editor', 'reviewer', 'publisher', 'copy_editor', 'proofreader'] as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
@@ -412,7 +412,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
     {
         Sanctum::actingAs($this->user('super_admin'));
 
-        foreach (['editor', 'magazine_editor', 'publisher'] as $roleName) {
+        foreach (['editor', 'publisher'] as $roleName) {
             $magazine = $this->magazine(Str::headline($roleName) . ' Magazine');
 
             $response = $this->postJson('/api/admin/users', [
@@ -430,7 +430,7 @@ class SuperAdminUserManagementSecurityTest extends TestCase
             $this->assertDatabaseHas('magazine_user', [
                 'user_id' => $user->id,
                 'magazine_id' => $magazine->id,
-                'role' => $roleName === 'magazine_editor' ? 'editor' : $roleName,
+                'role' => $roleName,
             ]);
         }
     }

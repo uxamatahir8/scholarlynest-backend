@@ -160,6 +160,10 @@ trait ValidatesArticleSubmission
             'abstract' => "{$draftRequired}|string",
             'pdf_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
             'pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'revision_response_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'additional_file_ids' => 'nullable|array',
+            'additional_file_ids.*' => 'integer|exists:article_files,id',
+            'revision_response' => 'prohibited',
             'tags' => 'nullable',
             'keywords' => 'nullable|array',
             'keywords.*' => 'nullable|string|max:120',
@@ -198,7 +202,6 @@ trait ValidatesArticleSubmission
             'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
             'seo_keywords' => 'nullable|string|max:500',
-            'revision_response' => 'nullable|string|max:10000',
             'change_summary' => 'nullable|string|max:10000',
             'status' => 'nullable|in:' . ArticleStatus::DRAFT . ',' . ArticleStatus::SUBMITTED,
             // The user id and timestamp are deliberately server-owned; a browser may only affirm acceptance.

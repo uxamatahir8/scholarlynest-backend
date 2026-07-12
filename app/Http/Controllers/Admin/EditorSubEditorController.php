@@ -23,7 +23,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -37,6 +37,7 @@ class EditorSubEditorController extends Controller
                 'created_at' => $subEditor->created_at,
                 'assigned_at' => ($subEditor->pivot && isset($subEditor->pivot->created_at)) ? $subEditor->pivot->created_at : $subEditor->created_at,
                 'editors_count' => $subEditor->assignedEditors()->count(),
+                'assigned_to_current_editor' => true,
             ];
         });
 
@@ -50,7 +51,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -86,7 +87,7 @@ class EditorSubEditorController extends Controller
                     $subEditor->save();
                 }
 
-                if ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
+                if ($user->hasRole('editor')) {
                     if ($user->assignedSubEditors()->where('sub_editor_id', $subEditor->id)->exists()) {
                         return [
                             'status' => 200,
@@ -118,6 +119,7 @@ class EditorSubEditorController extends Controller
                     'id' => $result['sub_editor']->id,
                     'name' => $result['sub_editor']->name,
                     'email' => $result['sub_editor']->email,
+                    'assigned_to_current_editor' => true,
                 ]
             ], $result['status']);
 
@@ -135,7 +137,7 @@ class EditorSubEditorController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasRole('editor') && !$user->hasRole('magazine_editor') && !$user->hasRole('magazine-editor')) {
+        if (!$user->hasRole('editor')) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 

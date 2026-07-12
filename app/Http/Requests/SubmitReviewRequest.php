@@ -35,6 +35,7 @@ class SubmitReviewRequest extends FormRequest
             'questionnaire_responses' => 'nullable|array',
             'questionnaire_responses.*.question_id' => 'required_with:questionnaire_responses|integer|exists:review_questions,id',
             'questionnaire_responses.*.answer' => 'nullable',
+            'questionnaire_responses.*.comment' => 'nullable|string|max:10000',
             'reviewed_manuscript' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
             'reviewed_manuscript_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ];

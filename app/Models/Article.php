@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
 
@@ -219,9 +220,26 @@ class Article extends Model
         return $this->hasMany(ArticleVersion::class);
     }
 
+    public function latestVersion(): HasOne
+    {
+        return $this->hasOne(ArticleVersion::class)->ofMany('version_number', 'max');
+    }
+
     public function auditLogs(): HasMany
     {
         return $this->hasMany(ArticleAuditLog::class);
+    }
+
+    public function transferRequests(): HasMany
+    {
+        return $this->hasMany(ArticleTransferRequest::class);
+    }
+
+    public function pendingTransferRequest()
+    {
+        return $this->hasOne(ArticleTransferRequest::class)
+            ->where('status', ArticleTransferRequest::STATUS_PENDING)
+            ->latestOfMany();
     }
 
     public function getFeaturedImageUrlAttribute(): ?string

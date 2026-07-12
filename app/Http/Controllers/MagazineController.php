@@ -32,11 +32,7 @@ class MagazineController extends Controller
         }]);
 
         $user = $request->user('sanctum') ?: $request->user();
-        if ($user && ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'))) {
-            $query->whereHas('editors', function($q) use ($user) {
-                $q->where('users.id', $user->id);
-            });
-        }
+
 
         if ($request->boolean('all', false)) {
             return response()->json($query->get());
@@ -81,7 +77,7 @@ class MagazineController extends Controller
         }]);
 
         if (!$this->hasGlobalMagazineAccess($user)) {
-            $assignedMagazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher', 'magazine_editor']);
+            $assignedMagazineIds = $this->assignedMagazineIds($user, ['editor', 'publisher']);
             if (empty($assignedMagazineIds)) {
                 return response()->json(['message' => 'Forbidden. Magazine assignment required.'], 403);
             }
@@ -116,7 +112,7 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Magazine not found.'], 404);
         }
 
-        if (!$this->hasGlobalMagazineAccess($user) && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'publisher', 'magazine_editor'])) {
+        if (!$this->hasGlobalMagazineAccess($user) && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'publisher'])) {
             return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
@@ -430,7 +426,7 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Magazine not found.'], 404);
         }
 
-        if ($user->hasRole('editor') && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'magazine_editor'])) {
+        if ($user->hasRole('editor') && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])) {
             return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
@@ -579,7 +575,7 @@ class MagazineController extends Controller
         }
 
         if ($user->hasRole('editor') && (
-            !$this->isAssignedMagazineRole($user, $magazine->id, ['editor', 'magazine_editor'])
+            !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])
             || (int) $page->created_by !== (int) $user->id
             || !$page->is_editor_created
         )) {
@@ -781,7 +777,7 @@ class MagazineController extends Controller
     {
         return $user
             && !$this->hasGlobalMagazineAccess($user)
-            && ($user->hasRole('editor') || $user->hasRole('magazine_editor') || $user->hasRole('magazine-editor'));
+            && $user->hasRole('editor');
     }
 
     private function assignedMagazineIds($user, array $roles): array
@@ -792,7 +788,6 @@ class MagazineController extends Controller
 
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();
@@ -813,7 +808,6 @@ class MagazineController extends Controller
     {
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();

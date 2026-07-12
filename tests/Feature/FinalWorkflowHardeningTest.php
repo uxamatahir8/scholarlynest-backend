@@ -256,11 +256,10 @@ class FinalWorkflowHardeningTest extends TestCase
             'abstract' => 'Updated abstract',
             'full_text' => 'Updated full text',
             'change_summary' => 'Addressed reviewer notes',
-            'revision_response' => 'Updated as requested',
-        ])->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('revision_response_upload_id');
 
-        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
+        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
             $article = $this->article($author, $status);
             $this->putJson("/api/admin/articles/{$article->id}", [
                 'magazine_id' => $this->magazine->id,
@@ -381,16 +380,16 @@ class FinalWorkflowHardeningTest extends TestCase
         $ownedArticle = $this->article($author, ArticleStatus::DRAFT);
         $otherArticle = $this->article($otherAuthor, ArticleStatus::SUBMITTED);
 
-        Sanctum::actingAs($author);
-        $this->getJson("/api/admin/articles/{$ownedArticle->id}")->assertOk();
-        $this->getJson("/api/admin/articles/{$otherArticle->id}")->assertForbidden();
+         Sanctum::actingAs($author);
+         $this->getJson("/api/admin/articles/{$ownedArticle->id}")->assertOk();
+         $this->getJson("/api/admin/articles/{$otherArticle->id}")->assertForbidden();
 
         $editor = $this->user('editor');
         $editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
         $unassignedMagazineArticle = $this->articleForMagazine($otherAuthor, $this->otherMagazine, ArticleStatus::SUBMITTED);
 
-        Sanctum::actingAs($editor);
-        $this->getJson("/api/admin/articles/{$unassignedMagazineArticle->id}")->assertForbidden();
+         Sanctum::actingAs($editor);
+         $this->getJson("/api/admin/articles/{$unassignedMagazineArticle->id}")->assertForbidden();
 
         $subEditor = $this->user('sub_editor');
         Sanctum::actingAs($subEditor);

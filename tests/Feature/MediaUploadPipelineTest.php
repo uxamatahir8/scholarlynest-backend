@@ -131,6 +131,25 @@ class MediaUploadPipelineTest extends TestCase
             ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
     }
 
+    public function test_author_can_upload_queued_revision_assets_after_resubmission(): void
+    {
+        $this->article->update(['status' => ArticleStatus::RESUBMITTED]);
+
+        Sanctum::actingAs($this->author);
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'revision-figure.webp',
+            'declared_mime_type' => 'image/webp',
+            'file_fingerprint' => 'revision-figure.webp:1024:1',
+        ]))->assertCreated();
+
+        Sanctum::actingAs($this->otherUser);
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertForbidden();
+    }
+
     public function test_direct_upload_keys_are_server_generated_under_configured_prefix(): void
     {
         Sanctum::actingAs($this->author);

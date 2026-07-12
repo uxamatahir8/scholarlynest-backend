@@ -83,8 +83,12 @@ class SendWorkflowDeadlineReminders extends Command
             $subject = $this->subjectFor($reminderType, $label, $article->title);
             $body = [
                 $this->bodyLineFor($reminderType, $label, $article->title),
-                'Magazine: ' . ($article->magazine?->title ?? 'ScholarlyNest'),
-                'Due date: ' . $assignment->due_date->toFormattedDateString(),
+                '<br><strong>Assignment Details:</strong>',
+                '• <strong>Manuscript:</strong> ' . e($article->title),
+                '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
+                '• <strong>Assignment:</strong> ' . e($label),
+                '• <strong>Due Date:</strong> ' . $assignment->due_date->toFormattedDateString(),
+                'Next Action: Open the workflow and complete the outstanding assignment as soon as possible.',
             ];
 
             $this->notificationService->send(

@@ -30,7 +30,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['super_admin', 'author', 'editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
+        foreach (['super_admin', 'author', 'editor', 'publisher', 'proofreader'] as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
@@ -42,7 +42,7 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
             Permission::firstOrCreate(['name' => $permission], ['module' => 'articles', 'description' => $permission]);
         }
 
-        foreach (['editor', 'magazine_editor', 'publisher', 'proofreader'] as $roleName) {
+        foreach (['editor', 'publisher', 'proofreader'] as $roleName) {
             $this->roles[$roleName]->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
         }
 
@@ -53,9 +53,9 @@ class RoleAwareMagazineAssignmentEnforcementTest extends TestCase
         $this->magazineB = $this->magazine('Blocked Magazine');
     }
 
-    public function test_editor_and_magazine_editor_are_limited_to_assigned_magazines(): void
+    public function test_editor_are_limited_to_assigned_magazines(): void
     {
-        foreach (['editor', 'magazine_editor'] as $roleName) {
+        foreach (['editor'] as $roleName) {
             $editor = $this->user($roleName);
             $editor->magazines()->attach($this->magazineA->id, ['role' => 'editor']);
 

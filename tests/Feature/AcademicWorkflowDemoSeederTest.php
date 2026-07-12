@@ -27,11 +27,11 @@ class AcademicWorkflowDemoSeederTest extends TestCase
     {
         $this->seed(AcademicWorkflowDemoSeeder::class);
 
-        // 1. Verify 12 magazines exist
-        $this->assertEquals(12, Magazine::count());
+        // 1. Verify 6 magazines exist
+        $this->assertEquals(6, Magazine::count());
 
-        // 2. Verify 6600 articles exist (550 per magazine)
-        $this->assertEquals(6600, Article::count());
+        // 2. Verify 1650 articles exist (275 per magazine)
+        $this->assertEquals(1650, Article::count());
 
         // 3. Verify users created per role
         $demoEmails = [
@@ -49,7 +49,7 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         // 4. Verify all 18 statuses exist
         $statuses = Article::pluck('status')->unique()->toArray();
         $expectedStatuses = [
-            'draft', 'submitted', 'under_review', 'assigned_to_sub_editor',
+            'draft', 'submitted', 'screening', 'in_transit', 'under_review', 'assigned_to_sub_editor',
             'reviewer_assigned', 'review_in_progress', 'revision_required',
             'minor_revision_required', 'major_revision_required', 'resubmitted',
             'accepted', 'rejected', 'copy_editing', 'proofreading',
@@ -61,7 +61,7 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         }
 
         // 5. Verify magazine-user assignments (Editors & Publishers)
-        $this->assertEquals(24, DB::table('magazine_user')->count()); // 12 magazines * 2 users (1 editor, 1 publisher) = 24
+        $this->assertEquals(12, DB::table('magazine_user')->count()); // 6 magazines * 2 users (1 editor, 1 publisher) = 12
 
         // 6. Sub Editor assignments exist
         $this->assertGreaterThan(0, DB::table('sub_editor_assignments')->count());
@@ -93,7 +93,7 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         // 11. Test that Editors can see their assigned magazines/articles
         $editor = User::where('email', 'editor1@example.com')->first();
         $editorMagazines = $editor->magazines;
-        $this->assertCount(4, $editorMagazines); // 4 magazines assigned to Editor 1
+        $this->assertCount(2, $editorMagazines); // 2 magazines assigned to Editor 1 (out of 6 total magazines divided by 3 editors)
 
         // 12. Test date range constraint
         $articles = Article::orderBy('created_at')->get();

@@ -33,15 +33,7 @@ class AppServiceProvider extends ServiceProvider
     {
         Gate::policy(Article::class, ArticlePolicy::class);
 
-        Event::listen(
-            ArticleSubmitted::class,
-            SendArticleSubmissionNotifications::class
-        );
-
-        Event::listen(
-            ArticleWorkflowEventOccurred::class,
-            SendArticleWorkflowNotifications::class
-        );
+        // Event listeners are auto-discovered by Laravel 11.
 
         foreach ([
             'media-upload-initiate' => config('media_uploads.rate_limit_per_minute', 150),

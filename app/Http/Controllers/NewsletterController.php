@@ -207,7 +207,7 @@ HTML;
 
         // Get matching users to check roles and registration status
         $emails = $subscribers->pluck('email')->toArray();
-        $users = \App\Models\User::whereIn('email', $emails)->with('roles')->get()->keyBy('email');
+        $users = \App\Models\User::whereIn('email', $emails)->with('role')->get()->keyBy('email');
 
         $result = $subscribers->map(function ($sub) use ($users) {
             $userRecord = $users->get($sub->email);
@@ -217,7 +217,7 @@ HTML;
                 'created_at' => $sub->created_at,
                 'updated_at' => $sub->updated_at,
                 'is_registered' => !is_null($userRecord),
-                'roles' => $userRecord ? $userRecord->roles->pluck('name')->toArray() : [],
+                'roles' => ($userRecord && $userRecord->role) ? [$userRecord->role->name] : [],
             ];
         });
 

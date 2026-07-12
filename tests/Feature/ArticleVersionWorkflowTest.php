@@ -100,9 +100,9 @@ class ArticleVersionWorkflowTest extends TestCase
             'title' => 'Revised Versioned Submission',
             'abstract' => $article->abstract,
             'full_text' => $article->full_text,
-            'revision_response' => 'We addressed every reviewer comment.',
             'change_summary' => 'Updated methods and discussion.',
             'pdf_upload_id' => $this->cleanUpload($this->author, 'article_revision', 'revised.pdf', $article)->id,
+            'revision_response_upload_id' => $this->cleanUpload($this->author, 'article_revision_response', 'response.docx', $article)->id,
         ])->assertOk()
             ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
 
@@ -112,7 +112,12 @@ class ArticleVersionWorkflowTest extends TestCase
             'label' => 'Revised Manuscript',
             'status_snapshot' => ArticleStatus::RESUBMITTED,
             'change_summary' => 'Updated methods and discussion.',
-            'author_response' => 'We addressed every reviewer comment.',
+            'author_response' => null,
+        ]);
+        $this->assertDatabaseHas('article_files', [
+            'article_id' => $article->id,
+            'file_type' => ArticleFile::REVISION_RESPONSE,
+            'original_name' => 'response.docx',
         ]);
     }
 

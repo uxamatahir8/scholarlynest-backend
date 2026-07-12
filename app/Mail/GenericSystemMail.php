@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Services\EmailContentFormatter;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
@@ -73,6 +74,7 @@ class GenericSystemMail extends Mailable
                 'subject' => $this->subject,
                 'greeting' => $this->greeting,
                 'bodyLines' => $this->bodyLines,
+                'bodyBlocks' => app(EmailContentFormatter::class)->format($this->bodyLines),
                 'action' => $this->action,
                 'unsubscribeUrl' => $this->unsubscribeUrl,
             ],

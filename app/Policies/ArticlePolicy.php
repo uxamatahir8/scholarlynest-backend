@@ -32,8 +32,8 @@ class ArticlePolicy
             return true;
         }
 
-        // Editors and legacy magazine editors can view assigned magazines.
-        if ($this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor'])) {
+        // Editors can view assigned magazines.
+        if ($this->isAssignedMagazineRole($user, $article, ['editor'])) {
             return true;
         }
 
@@ -125,14 +125,13 @@ class ArticlePolicy
             return true;
         }
 
-        return $this->isAssignedMagazineRole($user, $article, ['editor', 'magazine_editor']);
+        return $this->isAssignedMagazineRole($user, $article, ['editor']);
     }
 
     private function isAssignedMagazineRole(User $user, Article $article, array $roles): bool
     {
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
-            ->when(in_array('magazine_editor', $roles, true), fn ($collection) => $collection->push('editor'))
             ->unique()
             ->values()
             ->all();

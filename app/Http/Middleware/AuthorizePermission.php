@@ -26,70 +26,6 @@ class AuthorizePermission
             ], 401);
         }
 
-        if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-            // Check query parameter 'magazine_id'
-            if ($request->has('magazine_id')) {
-                $queryMagId = $request->query('magazine_id');
-                if ($queryMagId && $queryMagId !== 'all') {
-                    $isAssigned = \DB::table('magazine_user')
-                        ->where('user_id', $user->id)
-                        ->where('magazine_id', $queryMagId)
-                        ->exists();
-                    if (!$isAssigned) {
-                        return response()->json(['message' => 'Forbidden.'], 403);
-                    }
-                }
-            }
-
-            // Check route parameters for magazines or articles
-            if ($request->is('*admin/magazines*') || $request->is('*admin/articles*')) {
-                $resource = null;
-                $route = $request->route();
-                if ($route) {
-                    foreach ($route->parameters() as $key => $value) {
-                        if ($value instanceof \Illuminate\Database\Eloquent\Model) {
-                            $resource = $value;
-                            break;
-                        }
-                        
-                        $modelClass = null;
-                        if (str_contains($request->path(), 'articles')) {
-                            $modelClass = \App\Models\Article::class;
-                        } elseif (str_contains($request->path(), 'magazines')) {
-                            $modelClass = \App\Models\Magazine::class;
-                        }
-
-                        if ($modelClass && (is_numeric($value) || is_string($value))) {
-                            $queryField = is_numeric($value) ? 'id' : 'slug';
-                            $resource = $modelClass::where($queryField, $value)->first();
-                            if ($resource) {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if ($resource) {
-                    if ($resource instanceof \App\Models\Article) {
-                        $isAssigned = \DB::table('magazine_user')
-                            ->where('user_id', $user->id)
-                            ->where('magazine_id', $resource->magazine_id)
-                            ->exists();
-                        if (!$isAssigned) {
-                            return response()->json(['message' => 'Forbidden.'], 403);
-                        }
-                    } elseif ($resource instanceof \App\Models\Magazine) {
-                        $isAssigned = \DB::table('magazine_user')
-                            ->where('user_id', $user->id)
-                            ->where('magazine_id', $resource->id)
-                            ->exists();
-                        if (!$isAssigned) {
-                            return response()->json(['message' => 'Forbidden.'], 403);
-                        }
-                    }
-                }
-            }
-        }
 
 
         // 1. Universal override check (any)
@@ -143,28 +79,8 @@ class AuthorizePermission
                 }
             }
 
-            // Verify if resource belongs to the current user or falls under magazine_editor assignment bypass
+            // Verify if resource belongs to the current user or their assigned magazine(s)
             if ($resource) {
-                // Check if user is a magazine_editor and target resource falls under their assigned magazine(s)
-                if ($user->hasRole('magazine_editor') || $user->hasRole('magazine-editor')) {
-                    if ($resource instanceof \App\Models\Article) {
-                        $isAssigned = \DB::table('magazine_user')
-                            ->where('user_id', $user->id)
-                            ->where('magazine_id', $resource->magazine_id)
-                            ->exists();
-                        if ($isAssigned) {
-                            return $next($request);
-                        }
-                    } elseif ($resource instanceof \App\Models\Magazine) {
-                        $isAssigned = \DB::table('magazine_user')
-                            ->where('user_id', $user->id)
-                            ->where('magazine_id', $resource->id)
-                            ->exists();
-                        if ($isAssigned) {
-                            return $next($request);
-                        }
-                    }
-                }
 
                 if ($resource instanceof \App\Models\Article) {
                     if ($resource->user_id === $user->id) {
@@ -176,7 +92,7 @@ class AuthorizePermission
                         ->where(function ($query) {
                             $query->whereIn('role', [
                                 'editor',
-                                'magazine_editor',
+
                                 'sub_editor',
                                 'reviewer',
                                 'publisher',

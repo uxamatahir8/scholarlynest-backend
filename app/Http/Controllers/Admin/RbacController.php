@@ -39,7 +39,6 @@ class RbacController extends Controller
 
     private const MAGAZINE_ASSIGNMENT_ROLE_NAMES = [
         'editor',
-        'magazine_editor',
         'publisher',
     ];
 
@@ -719,7 +718,7 @@ class RbacController extends Controller
                     ->whereHas('role', function ($roleQuery) {
                         $roleQuery->whereIn('name', self::MAGAZINE_ASSIGNMENT_ROLE_NAMES);
                     })
-                    ->wherePivotIn('role', ['editor', 'magazine_editor', 'publisher'])
+                    ->wherePivotIn('role', ['editor', 'publisher'])
                     ->orderBy('users.name');
             }])
             ->orderBy('title')
@@ -734,7 +733,7 @@ class RbacController extends Controller
                     $pivotRole = str_replace('-', '_', (string) $user->pivot?->role);
                     $roleName = str_replace('-', '_', (string) $user->role?->name);
 
-                    if (in_array($pivotRole, ['editor', 'magazine_editor'], true) || in_array($roleName, ['editor', 'magazine_editor'], true)) {
+                    if (in_array($pivotRole, ['editor'], true) || in_array($roleName, ['editor'], true)) {
                         $summary['editors'][] = ['id' => $user->id, 'name' => $user->name];
                     } elseif ($pivotRole === 'publisher' || $roleName === 'publisher') {
                         $summary['publishers'][] = ['id' => $user->id, 'name' => $user->name];
@@ -790,7 +789,7 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
                         'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
@@ -849,7 +848,7 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
                         'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
@@ -895,7 +894,7 @@ class RbacController extends Controller
     }
 
     /**
-     * Update user details and sync magazines if magazine_editor role.
+     * Update user details and sync magazines if editor role.
      */
     public function updateUser(Request $request, int $id): JsonResponse
     {
@@ -932,7 +931,7 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor', 'magazine_editor', 'magazine-editor'])) {
+                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
                         'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
@@ -1116,7 +1115,6 @@ class RbacController extends Controller
         return in_array(str_replace('-', '_', $roleName), [
             'editor',
             'publisher',
-            'magazine_editor',
         ], true);
     }
 
@@ -1218,7 +1216,7 @@ class RbacController extends Controller
         $normalizedRole = str_replace('-', '_', $roleName);
 
         return match ($normalizedRole) {
-            'editor', 'magazine_editor' => 'editor',
+            'editor' => 'editor',
             'publisher' => 'publisher',
             default => null,
         };
@@ -1377,9 +1375,7 @@ class RbacController extends Controller
     private function magazineSyncPayload(array $magazineIds, string $roleName, ?int $assignedBy): array
     {
         $normalizedRole = str_replace('-', '_', $roleName);
-        if ($normalizedRole === 'magazine_editor') {
-            $normalizedRole = 'editor';
-        }
+
 
         return collect($magazineIds)
             ->mapWithKeys(fn ($magazineId) => [
