@@ -4,6 +4,7 @@ namespace App\Http\Requests\Concerns;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\Magazine;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Validator as ValidationValidator;
@@ -143,6 +144,7 @@ trait ValidatesArticleSubmission
             'opposed_reviewers' => $this->normalizedReviewerPreferences['opposed'],
             'keywords' => $this->decodeArrayInput($this->input('keywords', [])),
             'status' => ArticleStatus::normalize($this->input('status')),
+            'publication_type' => $this->input('publication_type', Magazine::TYPE_MAGAZINE),
         ]);
     }
 
@@ -155,6 +157,7 @@ trait ValidatesArticleSubmission
         $authorFieldRule = $isDraft ? 'nullable' : 'required';
 
         return [
+            'publication_type' => 'required|in:' . Magazine::TYPE_MAGAZINE . ',' . Magazine::TYPE_JOURNAL,
             'magazine_id' => "{$draftRequired}|integer|exists:magazines,id",
             'title' => "{$draftRequired}|string|max:255",
             'abstract' => "{$draftRequired}|string",
@@ -214,8 +217,11 @@ trait ValidatesArticleSubmission
         $authors = $this->normalizedAuthors;
         $isDraft = ArticleStatus::normalize($this->input('status')) === ArticleStatus::DRAFT;
         if ($isDraft && count($authors) === 0) {
+            $this->validatePublicationDestination($validator);
             return;
         }
+
+        $this->validatePublicationDestination($validator);
 
         $emails = array_filter(array_map(fn ($author) => $author['email'] ?? null, $authors));
 
@@ -268,6 +274,21 @@ trait ValidatesArticleSubmission
                 $validator->errors()->add('suggested_reviewers', 'Authors and co-authors cannot be suggested as reviewers.');
                 break;
             }
+        }
+    }
+
+    private function validatePublicationDestination(ValidationValidator $validator): void
+    {
+        if (!$this->filled('magazine_id') || !$this->filled('publication_type')) {
+            return;
+        }
+
+        $matches = Magazine::whereKey($this->input('magazine_id'))
+            ->where('publication_type', $this->input('publication_type'))
+            ->exists();
+
+        if (!$matches) {
+            $validator->errors()->add('magazine_id', 'The selected destination does not match the publication type.');
         }
     }
 
