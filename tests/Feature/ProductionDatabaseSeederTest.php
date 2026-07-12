@@ -44,7 +44,7 @@ class ProductionDatabaseSeederTest extends TestCase
         $this->seed(DatabaseSeeder::class);
 
         $this->assertEqualsCanonicalizing(
-            array_keys(SystemRoles::DEFINITIONS),
+            SystemRoles::seededNames(),
             Role::pluck('name')->all()
         );
         $this->assertSame(1, User::count());

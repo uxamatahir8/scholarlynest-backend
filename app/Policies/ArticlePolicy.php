@@ -5,6 +5,7 @@ namespace App\Policies;
 use App\Constants\ArticleStatus;
 use App\Models\User;
 use App\Models\Article;
+use App\Models\Magazine;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Illuminate\Support\Facades\DB;
 
@@ -130,6 +131,13 @@ class ArticlePolicy
 
     private function isAssignedMagazineRole(User $user, Article $article, array $roles): bool
     {
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $article->loadMissing('magazine:id,publication_type');
+            if (!$article->magazine || !in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
+        }
+
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
             ->unique()

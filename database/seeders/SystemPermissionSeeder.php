@@ -66,14 +66,16 @@ class SystemPermissionSeeder extends Seeder
             'articles.manage-assets',
             'seo.articles',
         ]);
-        $this->syncRole('editor', [
-            'magazines.view-any',
+        foreach (['super_editor', 'magazine_editor', 'journal_editor'] as $editorRole) {
+            $this->syncRole($editorRole, [
+            'magazines.view-own',
             'magazines.edit',
             'articles.view-own',
             'articles.approve',
             'articles.manage-assets',
             'seo.articles',
-        ]);
+            ]);
+        }
         $this->syncRole('sub_editor', [
             'magazines.view-own',
             'articles.view-own',

@@ -1167,6 +1167,8 @@ class ArticleController extends Controller
             'public_url' => $article->magazine ? '/' . $article->magazine->publicRoutePrefix() . '/' . $article->magazine->slug . '/articles/' . $article->slug : null,
             'publication_type' => $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE,
             'publication_label' => $article->magazine?->publicationTypeLabel() ?? 'Magazine',
+            'publication_name' => $article->magazine?->title,
+            'publication_slug' => $article->magazine?->slug,
             'magazine' => $article->magazine ? [
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
@@ -1265,6 +1267,8 @@ class ArticleController extends Controller
             'magazine_id' => $article->magazine_id,
             'publication_type' => $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE,
             'publication_label' => $article->magazine?->publicationTypeLabel() ?? 'Magazine',
+            'publication_name' => $article->magazine?->title,
+            'publication_slug' => $article->magazine?->slug,
             'title' => $article->title,
             'subtitle' => $article->subtitle,
             'slug' => $article->slug,
@@ -1655,6 +1659,11 @@ class ArticleController extends Controller
 
     private function applyAdminArticleFilters($query, Request $request, bool $includeStatus = true): void
     {
+        $publicationType = $request->query('publication_type');
+        if (in_array($publicationType, [Magazine::TYPE_MAGAZINE, Magazine::TYPE_JOURNAL], true)) {
+            $query->whereHas('magazine', fn ($publicationQuery) => $publicationQuery->where('publication_type', $publicationType));
+        }
+
         if ($includeStatus && $request->filled('status') && $request->query('status') !== 'all') {
             $statuses = collect(explode(',', (string) $request->query('status')))
                 ->map(fn ($status) => trim($status))
@@ -1728,7 +1737,7 @@ class ArticleController extends Controller
 
     private function usesEditorialArticleScope($user): bool
     {
-        return $user && $user->hasRole('editor');
+        return $user && $user->isPublicationEditor();
     }
 
     private function usesPublisherArticleScope($user): bool
@@ -1755,13 +1764,20 @@ class ArticleController extends Controller
             ->values()
             ->all();
 
-        return \DB::table('magazine_user')
-            ->where('user_id', $user->id)
+        $query = \DB::table('magazine_user')
+            ->join('magazines', 'magazines.id', '=', 'magazine_user.magazine_id')
+            ->where('magazine_user.user_id', $user->id)
             ->where(function ($query) use ($normalizedRoles) {
                 $query->whereIn('role', $normalizedRoles)
                     ->orWhereNull('role');
             })
-            ->pluck('magazine_id')
+            ->select('magazine_user.magazine_id');
+
+        if ($user->isPublicationEditor()) {
+            $query->whereIn('magazines.publication_type', $user->editorPublicationTypes());
+        }
+
+        return $query->pluck('magazine_user.magazine_id')
             ->toArray();
     }
 

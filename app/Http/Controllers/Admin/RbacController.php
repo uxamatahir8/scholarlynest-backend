@@ -39,6 +39,9 @@ class RbacController extends Controller
 
     private const MAGAZINE_ASSIGNMENT_ROLE_NAMES = [
         'editor',
+        'super_editor',
+        'magazine_editor',
+        'journal_editor',
         'publisher',
     ];
 
@@ -687,8 +690,12 @@ class RbacController extends Controller
             })
             ->when($roleFilter, function ($query) use ($roleFilter) {
                 return $query->whereHas('role', function ($q) use ($roleFilter) {
-                    $q->where('name', $roleFilter)
-                      ->orWhere('name', str_replace('_', '-', $roleFilter));
+                    if ($roleFilter === 'editor') {
+                        $q->whereIn('name', ['editor', 'super_editor', 'magazine_editor', 'journal_editor']);
+                    } else {
+                        $q->where('name', $roleFilter)
+                            ->orWhere('name', str_replace('_', '-', $roleFilter));
+                    }
                 });
             })
             ->get();
@@ -711,7 +718,7 @@ class RbacController extends Controller
         }
 
         $magazines = Magazine::query()
-            ->select(['id', 'title', 'slug'])
+            ->select(['id', 'title', 'slug', 'publication_type'])
             ->with(['editors' => function ($query) {
                 $query->select(['users.id', 'users.name', 'users.role_id'])
                     ->with('role:id,name')
@@ -1114,6 +1121,9 @@ class RbacController extends Controller
     {
         return in_array(str_replace('-', '_', $roleName), [
             'editor',
+            'super_editor',
+            'magazine_editor',
+            'journal_editor',
             'publisher',
         ], true);
     }
@@ -1153,11 +1163,25 @@ class RbacController extends Controller
             return [];
         }
 
-        return collect($validated['magazine_ids'] ?? [])
+        $ids = collect($validated['magazine_ids'] ?? [])
             ->map(fn ($magazineId) => (int) $magazineId)
             ->unique()
             ->values()
             ->all();
+
+        $roleName = str_replace('-', '_', (string) $role?->name);
+        $requiredType = match ($roleName) {
+            'magazine_editor' => Magazine::TYPE_MAGAZINE,
+            'journal_editor' => Magazine::TYPE_JOURNAL,
+            default => null,
+        };
+        if ($requiredType && Magazine::whereIn('id', $ids)->where('publication_type', '!=', $requiredType)->exists()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'magazine_ids' => ["Selected assignments must be {$requiredType} publications for this role."],
+            ]);
+        }
+
+        return $ids;
     }
 
     private function syncRoleMagazineAssignments(User $user, ?Role $previousRole, ?Role $selectedRole, array $magazineIds, ?int $assignedBy): void
@@ -1216,7 +1240,7 @@ class RbacController extends Controller
         $normalizedRole = str_replace('-', '_', $roleName);
 
         return match ($normalizedRole) {
-            'editor' => 'editor',
+            'editor', 'super_editor', 'magazine_editor', 'journal_editor' => 'editor',
             'publisher' => 'publisher',
             default => null,
         };

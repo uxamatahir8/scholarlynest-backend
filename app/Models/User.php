@@ -94,10 +94,35 @@ class User extends Authenticatable
             $roles = array_map(function($r) {
                 return str_replace('_', '-', $r);
             }, $role);
-            return in_array($userRoleName, $roles);
+            return in_array($userRoleName, $roles) || (in_array('editor', $roles, true) && $this->isPublicationEditor());
         }
 
-        return $userRoleName === str_replace('_', '-', $role);
+        $expected = str_replace('_', '-', $role);
+        return $userRoleName === $expected || ($expected === 'editor' && $this->isPublicationEditor());
+    }
+
+    public function isPublicationEditor(): bool
+    {
+        return in_array(str_replace('-', '_', (string) $this->role?->name), [
+            'editor', 'super_editor', 'magazine_editor', 'journal_editor',
+        ], true);
+    }
+
+    public function editorPublicationTypes(): array
+    {
+        return match (str_replace('-', '_', (string) $this->role?->name)) {
+            'magazine_editor' => [Magazine::TYPE_MAGAZINE],
+            'journal_editor' => [Magazine::TYPE_JOURNAL],
+            'editor', 'super_editor' => [Magazine::TYPE_MAGAZINE, Magazine::TYPE_JOURNAL],
+            default => [],
+        };
+    }
+
+    public function canEditPublication(Magazine $publication): bool
+    {
+        return $this->isPublicationEditor()
+            && in_array($publication->publication_type, $this->editorPublicationTypes(), true)
+            && $this->magazines()->where('magazines.id', $publication->id)->exists();
     }
 
     /**
@@ -153,7 +178,7 @@ class User extends Authenticatable
                     'magazines.view-own'
                 ]);
             }
-            if ($roleName === 'editor') {
+            if (in_array(str_replace('-', '_', $roleName), ['editor', 'super_editor', 'magazine_editor', 'journal_editor'], true)) {
                 return in_array($permission, [
                     'magazines.view-any',
                     'magazines.view-own',

@@ -2088,13 +2088,20 @@ class ArticleWorkflowController extends Controller
             ->values()
             ->all();
 
-        return DB::table('magazine_user')
-            ->where('user_id', $user->id)
+        $query = DB::table('magazine_user')
+            ->join('magazines', 'magazines.id', '=', 'magazine_user.magazine_id')
+            ->where('magazine_user.user_id', $user->id)
             ->where(function ($query) use ($normalizedRoles) {
                 $query->whereIn('role', $normalizedRoles)
                     ->orWhereNull('role');
             })
-            ->pluck('magazine_id')
+            ->select('magazine_user.magazine_id');
+
+        if ($user->isPublicationEditor()) {
+            $query->whereIn('magazines.publication_type', $user->editorPublicationTypes());
+        }
+
+        return $query->pluck('magazine_user.magazine_id')
             ->unique()
             ->values()
             ->all();
@@ -2781,6 +2788,13 @@ class ArticleWorkflowController extends Controller
 
     private function isAssignedToMagazine($user, int $magazineId, array $roles): bool
     {
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $type = \App\Models\Magazine::whereKey($magazineId)->value('publication_type');
+            if (!in_array($type, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
+        }
+
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
             ->unique()
