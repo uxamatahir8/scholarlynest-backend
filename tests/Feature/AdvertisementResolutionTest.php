@@ -59,6 +59,29 @@ class AdvertisementResolutionTest extends TestCase
         $this->assertCount(0, app(AdvertisementPlacementService::class)->forWebsitePage('home')['content_top']);
     }
 
+    public function test_article_ads_never_resolve_for_a_non_published_article_context(): void
+    {
+        $magazine = Magazine::create(['title' => 'Magazine', 'slug' => 'magazine', 'publication_type' => 'magazine']);
+        $draft = $this->article($magazine, 'draft-article', 'draft');
+        $this->ad(['target_area' => 'article', 'target_mode' => 'all_articles', 'publication_type' => 'magazine', 'publication_id' => $magazine->id], 0, 'sidebar_sticky');
+
+        $this->assertCount(0, app(AdvertisementPlacementService::class)->forArticlePage($draft)['sidebar_sticky']);
+        $this->getJson('/api/advertisements/resolve?context=article&publication_type=magazine&publication_slug=magazine&article_slug=draft-article')
+            ->assertNotFound();
+    }
+
+    public function test_public_resolver_returns_article_ads_for_published_magazine_and_journal_pages(): void
+    {
+        foreach (['magazine', 'journal'] as $type) {
+            $publication = Magazine::create(['title' => ucfirst($type), 'slug' => "public-$type", 'publication_type' => $type]);
+            $article = $this->article($publication, "published-$type");
+            $ad = $this->ad(['target_area' => 'article', 'target_mode' => 'all_articles', 'publication_type' => $type, 'publication_id' => $publication->id], 0, 'sidebar_sticky');
+
+            $this->getJson("/api/advertisements/resolve?context=article&publication_type=$type&publication_slug={$publication->slug}&article_slug={$article->slug}")
+                ->assertOk()->assertJsonPath('advertisements.sidebar_sticky.0.id', $ad->id);
+        }
+    }
+
     private function ad(array $target, int $priority = 0, string $placement = 'content_top', array $overrides = []): Advertisement
     {
         $ad = Advertisement::create(array_merge(['title' => 'Ad '.$priority, 'image_media_id' => $this->media->id, 'placement' => $placement, 'status' => 'active', 'priority' => $priority, 'created_by' => $this->user->id], $overrides));
@@ -66,8 +89,8 @@ class AdvertisementResolutionTest extends TestCase
         return $ad;
     }
 
-    private function article(Magazine $magazine, string $slug): Article
+    private function article(Magazine $magazine, string $slug, string $status = 'published'): Article
     {
-        return Article::create(['magazine_id' => $magazine->id, 'user_id' => $this->user->id, 'title' => ucfirst($slug), 'slug' => $slug, 'abstract' => 'Abstract', 'full_text' => 'Text', 'status' => 'published']);
+        return Article::create(['magazine_id' => $magazine->id, 'user_id' => $this->user->id, 'title' => ucfirst($slug), 'slug' => $slug, 'abstract' => 'Abstract', 'full_text' => 'Text', 'status' => $status]);
     }
 }

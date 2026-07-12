@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Constants\ArticleStatus;
 use App\Models\Advertisement;
 use App\Models\Article;
 use App\Models\Magazine;
@@ -23,6 +24,10 @@ class AdvertisementPlacementService
 
     public function forArticlePage(Article $article): array
     {
+        if (ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
+            return $this->emptyPlacements();
+        }
+
         $article->loadMissing('magazine');
         return $this->resolve(fn (Builder $q) => $q->where('publication_type', $article->magazine->publication_type)
             ->where('publication_id', $article->magazine_id)
@@ -43,5 +48,10 @@ class AdvertisementPlacementService
         return collect(Advertisement::PLACEMENTS)->mapWithKeys(fn ($placement) => [
             $placement => $ads->where('placement', $placement)->map->publicPayload()->values()->all(),
         ])->all();
+    }
+
+    private function emptyPlacements(): array
+    {
+        return collect(Advertisement::PLACEMENTS)->mapWithKeys(fn ($placement) => [$placement => []])->all();
     }
 }

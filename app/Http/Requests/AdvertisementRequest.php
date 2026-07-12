@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Constants\ArticleStatus;
 use App\Models\Advertisement;
 use App\Models\Article;
 use App\Models\Magazine;
@@ -56,7 +57,10 @@ class AdvertisementRequest extends FormRequest
                         $validator->errors()->add("$prefix.page_key", 'A page is required for a specific-page target.');
                     }
                     if ($mode === 'specific_articles') {
-                        $valid = Article::whereKey($target['article_id'] ?? null)->where('magazine_id', $target['publication_id'] ?? null)->where('status', 'published')->exists();
+                        $valid = Article::whereKey($target['article_id'] ?? null)
+                            ->where('magazine_id', $target['publication_id'] ?? null)
+                            ->whereIn('status', ArticleStatus::queryValues(ArticleStatus::PUBLISHED))
+                            ->exists();
                         if (!$valid) $validator->errors()->add("$prefix.article_id", 'The article must be published and belong to the selected publication.');
                     }
                 }

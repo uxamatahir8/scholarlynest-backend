@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Constants\ArticleStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AdvertisementRequest;
 use App\Models\Advertisement;
@@ -77,7 +78,9 @@ class AdvertisementController extends Controller
 
     public function publishedArticles(Magazine $publication): JsonResponse
     {
-        return response()->json(['data' => $publication->articles()->where('status', 'published')->orderBy('title')->get(['id', 'title', 'slug', 'magazine_id'])]);
+        return response()->json(['data' => $publication->articles()
+            ->whereIn('status', ArticleStatus::queryValues(ArticleStatus::PUBLISHED))
+            ->orderBy('title')->get(['id', 'title', 'slug', 'magazine_id'])]);
     }
 
     private function adminPayload(Advertisement $advertisement): Advertisement

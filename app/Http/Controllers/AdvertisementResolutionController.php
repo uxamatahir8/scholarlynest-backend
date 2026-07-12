@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Services\AdvertisementPlacementService;
@@ -22,7 +23,10 @@ class AdvertisementResolutionController extends Controller
             $publication = Magazine::where('slug', $data['publication_slug'] ?? '')->where('publication_type', $data['publication_type'] ?? '')->firstOrFail();
             $ads = $service->forPublicationPage($publication, $data['page_key'] ?? 'about-and-overview');
         } else {
-            $article = Article::where('slug', $data['article_slug'] ?? '')->where('status', 'published')->whereHas('magazine', fn ($q) => $q->where('slug', $data['publication_slug'] ?? '')->where('publication_type', $data['publication_type'] ?? ''))->firstOrFail();
+            $article = Article::where('slug', $data['article_slug'] ?? '')
+                ->whereIn('status', ArticleStatus::queryValues(ArticleStatus::PUBLISHED))
+                ->whereHas('magazine', fn ($q) => $q->where('slug', $data['publication_slug'] ?? '')->where('publication_type', $data['publication_type'] ?? ''))
+                ->firstOrFail();
             $ads = $service->forArticlePage($article);
         }
         return response()->json(['advertisements' => $ads]);
