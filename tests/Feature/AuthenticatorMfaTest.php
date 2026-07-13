@@ -45,6 +45,18 @@ class AuthenticatorMfaTest extends TestCase
         $this->assertSame($secret, Crypt::decryptString($method->pending_secret_encrypted));
     }
 
+    public function test_account_page_requests_do_not_consume_the_totp_setup_rate_limit(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        for ($request = 0; $request < 6; $request++) {
+            $this->getJson('/api/me/security/mfa')->assertOk();
+        }
+
+        $this->postJson('/api/me/security/mfa/totp/setup')->assertOk();
+    }
+
     public function test_valid_setup_code_enables_totp_and_returns_hashed_one_time_recovery_codes(): void
     {
         $user = User::factory()->create();

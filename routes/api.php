@@ -172,11 +172,11 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('/2fa/request-disable-code', [AuthController::class, 'request2FaDisableCode']);
     Route::post('/2fa/disable', [AuthController::class, 'disable2Fa']);
     Route::get('/me/security/mfa', [MfaController::class, 'status']);
-    Route::post('/me/security/mfa/totp/setup', [MfaController::class, 'startTotpSetup'])->middleware('throttle:5,1');
-    Route::post('/me/security/mfa/totp/verify', [MfaController::class, 'verifyTotpSetup'])->middleware('throttle:10,1');
-    Route::post('/me/security/mfa/totp/disable', [MfaController::class, 'disableTotp'])->middleware('throttle:5,1');
+    Route::post('/me/security/mfa/totp/setup', [MfaController::class, 'startTotpSetup'])->middleware('throttle:mfa-setup');
+    Route::post('/me/security/mfa/totp/verify', [MfaController::class, 'verifyTotpSetup'])->middleware('throttle:mfa-verify');
+    Route::post('/me/security/mfa/totp/disable', [MfaController::class, 'disableTotp'])->middleware('throttle:mfa-sensitive');
     Route::post('/me/security/mfa/default-method', [MfaController::class, 'setDefault']);
-    Route::post('/me/security/mfa/recovery-codes/regenerate', [MfaController::class, 'regenerateRecoveryCodes'])->middleware('throttle:5,1');
+    Route::post('/me/security/mfa/recovery-codes/regenerate', [MfaController::class, 'regenerateRecoveryCodes'])->middleware('throttle:mfa-sensitive');
     Route::post('/password/request-code', [AuthController::class, 'requestPasswordChangeCode']);
     Route::post('/password/verify-code', [AuthController::class, 'verifyPasswordChangeCode']);
     Route::post('/password/change', [AuthController::class, 'changePassword']);
