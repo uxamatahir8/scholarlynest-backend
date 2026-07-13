@@ -2,30 +2,36 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\User;
+use App\Models\NewsletterSubscriber;
 use App\Models\Role;
 use App\Models\Setting;
+use App\Models\User;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\MfaService;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
+use Google\Client;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
     protected NotificationService $notificationService;
+
     protected PasswordSetupService $passwordSetupService;
 
-    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService)
+    protected MfaService $mfaService;
+
+    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService, MfaService $mfaService)
     {
         $this->notificationService = $notificationService;
         $this->passwordSetupService = $passwordSetupService;
+        $this->mfaService = $mfaService;
     }
 
     /**
@@ -38,21 +44,20 @@ class AuthController extends Controller
 
         $bodyLines = [
             $description,
-            '<div class="code-box"><div class="code-value">' . htmlspecialchars($code) . '</div></div>',
-            '<div style="font-size: 12px; color: #a1a1aa; text-align: center; margin-top: 16px;">This code is highly sensitive and is valid for the next 15 minutes. Do not share this code with anyone.</div>'
+            '<div class="code-box"><div class="code-value">'.htmlspecialchars($code).'</div></div>',
+            '<div style="font-size: 12px; color: #a1a1aa; text-align: center; margin-top: 16px;">This code is highly sensitive and is valid for the next 15 minutes. Do not share this code with anyone.</div>',
         ];
 
-        $this->notificationService->send(
+        $this->notificationService->sendSensitive(
             $email,
             $subject,
             $title,
             $bodyLines,
             $action,
             'high',
-            $userId
+            $userId,
         );
     }
-
 
     /**
      * Handle public user registration.
@@ -63,7 +68,7 @@ class AuthController extends Controller
             return response()->json(['message' => 'Authenticated users cannot access registration.'], 403);
         }
 
-        if (!$this->publicRegistrationEnabled()) {
+        if (! $this->publicRegistrationEnabled()) {
             return response()->json(['message' => 'Registration is currently closed.'], 403);
         }
 
@@ -76,7 +81,7 @@ class AuthController extends Controller
                 'string',
                 'min:8',
                 'confirmed',
-                Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+                Password::min(8)->letters()->mixedCase()->numbers()->symbols(),
             ],
         ]);
 
@@ -94,16 +99,16 @@ class AuthController extends Controller
         ]);
 
         if ($request->boolean('subscribe_newsletter')) {
-            \App\Models\NewsletterSubscriber::firstOrCreate([
+            NewsletterSubscriber::firstOrCreate([
                 'email' => strtolower(trim($user->email)),
             ]);
         }
 
         $this->sendHtmlEmail(
             $user->email,
-            "Verify Your Scholar Account",
-            "Verify Your Account",
-            "Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.",
+            'Verify Your Scholar Account',
+            'Verify Your Account',
+            'Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.',
             $code
         );
 
@@ -125,7 +130,7 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
@@ -172,7 +177,7 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
@@ -188,9 +193,9 @@ class AuthController extends Controller
 
         $this->sendHtmlEmail(
             $user->email,
-            "Verify Your Scholar Account",
-            "Verify Your Account",
-            "Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.",
+            'Verify Your Scholar Account',
+            'Verify Your Account',
+            'Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.',
             $code
         );
 
@@ -215,15 +220,15 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
+        if (! $user || ! Hash::check($request->password, $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials do not match our records.'],
             ]);
         }
 
         // If email is not verified, return verification required status
-        if (!$user->email_verified_at) {
-            if (!$user->verification_code || now()->gt($user->verification_code_expires_at)) {
+        if (! $user->email_verified_at) {
+            if (! $user->verification_code || now()->gt($user->verification_code_expires_at)) {
                 $code = strval(random_int(100000, 999999));
                 $user->update([
                     'verification_code' => $code,
@@ -231,36 +236,21 @@ class AuthController extends Controller
                 ]);
                 $this->sendHtmlEmail(
                     $user->email,
-                    "Verify Your Scholar Account",
-                    "Verify Your Account",
-                    "Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.",
+                    'Verify Your Scholar Account',
+                    'Verify Your Account',
+                    'Thank you for registering at ScholarlyNest. Please use the 6-digit confirmation code below to verify your email address.',
                     $code
                 );
             }
+
             return response()->json([
                 'message' => 'verification_required',
                 'email' => $user->email,
             ], 403);
         }
 
-        // If Two-Factor Authentication is enabled, trigger the validation workflow
-        if ($user->two_factor_enabled) {
-            $code = strval(random_int(100000, 999999));
-            $user->update([
-                'two_factor_code' => $code,
-                'two_factor_code_expires_at' => now()->addMinutes(15),
-            ]);
-            $this->sendHtmlEmail(
-                $user->email,
-                "Your Two-Factor Authentication Code",
-                "Two-Factor Authentication",
-                "A sign-in attempt was detected for your ScholarlyNest profile. Use the 6-digit verification code below to authorize your session.",
-                $code
-            );
-            return response()->json([
-                'message' => '2fa_required',
-                'email' => $user->email,
-            ], 202);
+        if ($this->mfaService->methods($user) !== []) {
+            return $this->mfaChallengeResponse($user, $request);
         }
 
         // Generate Sanctum token
@@ -285,7 +275,7 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
@@ -321,6 +311,9 @@ class AuthController extends Controller
         $user = $request->user();
         $user->two_factor_enabled = true;
         $user->save();
+        $user->mfaMethods()->updateOrCreate(['method' => 'email'], ['is_enabled' => true, 'is_verified' => true]);
+        $setting = $user->mfaSetting()->firstOrCreate();
+        $setting->update(['is_enabled' => true, 'default_method' => $setting->default_method ?: 'email']);
 
         return response()->json([
             'message' => 'Two-Factor Authentication has been enabled successfully.',
@@ -343,9 +336,9 @@ class AuthController extends Controller
 
         $this->sendHtmlEmail(
             $user->email,
-            "Request to Disable Two-Factor Authentication",
-            "Disable Two-Factor Authentication",
-            "We received a request to disable Two-Factor Authentication on your ScholarlyNest account. Please use the 6-digit confirmation code below to proceed.",
+            'Request to Disable Two-Factor Authentication',
+            'Disable Two-Factor Authentication',
+            'We received a request to disable Two-Factor Authentication on your ScholarlyNest account. Please use the 6-digit confirmation code below to proceed.',
             $code
         );
 
@@ -378,6 +371,12 @@ class AuthController extends Controller
             'two_factor_code' => null,
             'two_factor_code_expires_at' => null,
         ]);
+        $user->mfaMethods()->where('method', 'email')->update(['is_enabled' => false]);
+        $methods = $this->mfaService->methods($user->refresh());
+        $user->mfaSetting()->updateOrCreate([], [
+            'is_enabled' => $methods !== [],
+            'default_method' => in_array('totp', $methods, true) ? 'totp' : null,
+        ]);
 
         return response()->json([
             'message' => 'Two-Factor Authentication has been disabled successfully.',
@@ -403,8 +402,8 @@ class AuthController extends Controller
         $this->sendHtmlEmail(
             $user->email,
             'Verify Your Password Change Request',
-            'Dear ' . $user->name . ',',
-            'A password change was requested for your Scholarly Nest account. Verification Details: Account Email: ' . $user->email . '. Requested At: ' . now()->toDateTimeString() . '. Enter the verification code below in Scholarly Nest to continue changing your password. If you did not request this change, secure your account immediately and contact support.',
+            'Dear '.$user->name.',',
+            'A password change was requested for your Scholarly Nest account. Verification Details: Account Email: '.$user->email.'. Requested At: '.now()->toDateTimeString().'. Enter the verification code below in Scholarly Nest to continue changing your password. If you did not request this change, secure your account immediately and contact support.',
             $code
         );
 
@@ -425,13 +424,13 @@ class AuthController extends Controller
                 'string',
                 'min:8',
                 'confirmed',
-                Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+                Password::min(8)->letters()->mixedCase()->numbers()->symbols(),
             ],
         ]);
 
         $user = $request->user();
 
-        if (!$user->password_change_code || !$user->password_change_verified_at) {
+        if (! $user->password_change_code || ! $user->password_change_verified_at) {
             return response()->json(['message' => 'Verify your password change code before updating your password.'], 403);
         }
 
@@ -439,8 +438,9 @@ class AuthController extends Controller
             return response()->json(['message' => 'Password change code has expired.'], 400);
         }
 
-        if ($request->filled('code') && !hash_equals((string) $user->password_change_code, (string) $request->code)) {
+        if ($request->filled('code') && ! hash_equals((string) $user->password_change_code, (string) $request->code)) {
             $this->recordPasswordChangeFailure($user);
+
             return response()->json(['message' => 'Invalid password change code.'], 400);
         }
 
@@ -452,9 +452,9 @@ class AuthController extends Controller
             'password_change_failed_attempts' => 0,
         ]);
 
-        $this->notificationService->send($user->email, 'Your Scholarly Nest Password Was Changed', 'Dear ' . $user->name . ',', [
+        $this->notificationService->send($user->email, 'Your Scholarly Nest Password Was Changed', 'Dear '.$user->name.',', [
             'Your Scholarly Nest account password was changed successfully.',
-            'Account: Email: ' . $user->email . '. Changed At: ' . now()->toDateTimeString() . '.',
+            'Account: Email: '.$user->email.'. Changed At: '.now()->toDateTimeString().'.',
             'If you made this change, no further action is required. If you did not make this change, please contact support immediately.',
         ], null, 'high', $user->id);
 
@@ -478,8 +478,9 @@ class AuthController extends Controller
             return response()->json(['message' => 'Too many failed verification attempts. Please request a new code.'], 429);
         }
 
-        if (!$user->password_change_code || !hash_equals((string) $user->password_change_code, (string) $request->code)) {
+        if (! $user->password_change_code || ! hash_equals((string) $user->password_change_code, (string) $request->code)) {
             $this->recordPasswordChangeFailure($user);
+
             return response()->json(['message' => 'Invalid password change code.'], 400);
         }
 
@@ -512,7 +513,7 @@ class AuthController extends Controller
             'token' => 'required|string|min:32',
         ]);
 
-        if (!$this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
+        if (! $this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
             return response()->json(['message' => 'Invalid or expired password reset token.'], 400);
         }
 
@@ -535,7 +536,7 @@ class AuthController extends Controller
         }
 
         return response()->json([
-            'message' => 'Logged out successfully'
+            'message' => 'Logged out successfully',
         ]);
     }
 
@@ -545,7 +546,7 @@ class AuthController extends Controller
     public function me(Request $request): JsonResponse
     {
         return response()->json([
-            'user' => $this->authUserPayload($request->user())
+            'user' => $this->authUserPayload($request->user()),
         ]);
     }
 
@@ -559,14 +560,14 @@ class AuthController extends Controller
         ]);
 
         $clientId = env('GOOGLE_CLIENT_ID');
-        if (!$clientId) {
+        if (! $clientId) {
             return response()->json(['message' => 'Google Client ID is not configured on the server.'], 500);
         }
 
-        $client = new \Google\Client(['client_id' => $clientId]);
+        $client = new Client(['client_id' => $clientId]);
         $payload = $client->verifyIdToken($request->credential);
 
-        if (!$payload) {
+        if (! $payload) {
             return response()->json(['message' => 'Invalid Google credential.'], 400);
         }
 
@@ -578,42 +579,26 @@ class AuthController extends Controller
             ->orWhere('email', $email)
             ->first();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json([
                 'message' => 'no_account_exists',
                 'google_info' => [
                     'name' => $payload['name'] ?? '',
                     'email' => $email,
                     'google_id' => $googleId,
-                ]
+                ],
             ], 404);
         }
 
         // Link Google ID and mark verified (since google accounts are pre-verified)
         $user->google_id = $googleId;
-        if (!$user->email_verified_at) {
+        if (! $user->email_verified_at) {
             $user->email_verified_at = now();
         }
         $user->save();
 
-        // If Two-Factor Authentication is enabled, trigger the validation workflow
-        if ($user->two_factor_enabled) {
-            $code = strval(random_int(100000, 999999));
-            $user->update([
-                'two_factor_code' => $code,
-                'two_factor_code_expires_at' => now()->addMinutes(15),
-            ]);
-            $this->sendHtmlEmail(
-                $user->email,
-                "Your Two-Factor Authentication Code",
-                "Two-Factor Authentication",
-                "A sign-in attempt was detected for your ScholarlyNest profile. Use the 6-digit verification code below to authorize your session.",
-                $code
-            );
-            return response()->json([
-                'message' => '2fa_required',
-                'email' => $user->email,
-            ], 202);
+        if ($this->mfaService->methods($user) !== []) {
+            return $this->mfaChallengeResponse($user, $request);
         }
 
         // Generate Sanctum token
@@ -631,7 +616,7 @@ class AuthController extends Controller
      */
     public function googleSignUp(Request $request): JsonResponse
     {
-        if (!$this->publicRegistrationEnabled()) {
+        if (! $this->publicRegistrationEnabled()) {
             return response()->json(['message' => 'Registration is currently closed.'], 403);
         }
 
@@ -640,14 +625,14 @@ class AuthController extends Controller
         ]);
 
         $clientId = env('GOOGLE_CLIENT_ID');
-        if (!$clientId) {
+        if (! $clientId) {
             return response()->json(['message' => 'Google Client ID is not configured on the server.'], 500);
         }
 
-        $client = new \Google\Client(['client_id' => $clientId]);
+        $client = new Client(['client_id' => $clientId]);
         $payload = $client->verifyIdToken($request->credential);
 
-        if (!$payload) {
+        if (! $payload) {
             return response()->json(['message' => 'Invalid Google credential.'], 400);
         }
 
@@ -680,29 +665,13 @@ class AuthController extends Controller
         ]);
 
         if ($request->boolean('subscribe_newsletter')) {
-            \App\Models\NewsletterSubscriber::firstOrCreate([
+            NewsletterSubscriber::firstOrCreate([
                 'email' => strtolower(trim($user->email)),
             ]);
         }
 
-        // If Two-Factor Authentication is enabled, trigger the validation workflow
-        if ($user->two_factor_enabled) {
-            $code = strval(random_int(100000, 999999));
-            $user->update([
-                'two_factor_code' => $code,
-                'two_factor_code_expires_at' => now()->addMinutes(15),
-            ]);
-            $this->sendHtmlEmail(
-                $user->email,
-                "Your Two-Factor Authentication Code",
-                "Two-Factor Authentication",
-                "A sign-in attempt was detected for your ScholarlyNest profile. Use the 6-digit verification code below to authorize your session.",
-                $code
-            );
-            return response()->json([
-                'message' => '2fa_required',
-                'email' => $user->email,
-            ], 202);
+        if ($this->mfaService->methods($user) !== []) {
+            return $this->mfaChallengeResponse($user, $request);
         }
 
         // Generate Sanctum token
@@ -756,12 +725,12 @@ class AuthController extends Controller
                 'string',
                 'min:8',
                 'confirmed',
-                Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+                Password::min(8)->letters()->mixedCase()->numbers()->symbols(),
             ],
         ]);
 
         $user = User::where('email', $request->email)->first();
-        if (!$user || !$this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
+        if (! $user || ! $this->passwordSetupService->tokenIsValid($request->email, $request->token)) {
             return response()->json(['message' => 'Invalid or expired password reset token.'], 400);
         }
 
@@ -794,18 +763,18 @@ class AuthController extends Controller
      */
     private function sendWelcomeHtmlEmail(string $email, string $name, ?string $createPasswordLink): void
     {
-        $subject = "Welcome to ScholarlyNest!";
-        $title = "Welcome to ScholarlyNest, " . htmlspecialchars($name) . "!";
-        
+        $subject = 'Welcome to ScholarlyNest!';
+        $title = 'Welcome to ScholarlyNest, '.htmlspecialchars($name).'!';
+
         $action = null;
         if ($createPasswordLink) {
             $action = [
                 'text' => 'Create Your Password',
                 'url' => $createPasswordLink,
             ];
-            $description = "An administrator has created your ScholarlyNest account. To complete your setup and begin collaborating, please click the button below to establish your password.";
+            $description = 'An administrator has created your ScholarlyNest account. To complete your setup and begin collaborating, please click the button below to establish your password.';
         } else {
-            $description = "Thank you for verifying your email address! Your registration is complete, and your ScholarlyNest account is now active. We are thrilled to welcome you to our scientific research community.";
+            $description = 'Thank you for verifying your email address! Your registration is complete, and your ScholarlyNest account is now active. We are thrilled to welcome you to our scientific research community.';
         }
 
         $user = User::where('email', $email)->first();
@@ -828,7 +797,7 @@ class AuthController extends Controller
     public function resetEnforcedPassword(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user->needs_password_reset) {
+        if (! $user->needs_password_reset) {
             return response()->json(['message' => 'Password reset is not required.'], 400);
         }
 
@@ -838,18 +807,18 @@ class AuthController extends Controller
                 'string',
                 'min:8',
                 'confirmed',
-                \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols()
+                Password::min(8)->letters()->mixedCase()->numbers()->symbols(),
             ],
         ]);
 
         $user->update([
-            'password' => \Illuminate\Support\Facades\Hash::make($request->password),
+            'password' => Hash::make($request->password),
             'needs_password_reset' => false,
         ]);
 
         return response()->json([
             'message' => 'Password updated successfully.',
-            'user' => $this->authUserPayload($user)
+            'user' => $this->authUserPayload($user),
         ]);
     }
 
@@ -894,7 +863,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Profile updated successfully.',
-            'user' => $this->authUserPayload($user)
+            'user' => $this->authUserPayload($user),
         ]);
     }
 
@@ -904,7 +873,7 @@ class AuthController extends Controller
     public function requestCurrentEmailCode(Request $request): JsonResponse
     {
         $user = $request->user();
-        $code = sprintf("%06d", random_int(100000, 999999));
+        $code = sprintf('%06d', random_int(100000, 999999));
 
         $user->update([
             'email_change_code' => $code,
@@ -915,13 +884,13 @@ class AuthController extends Controller
         // Send email
         $this->notificationService->send(
             $user->email,
-            "Email Change Verification Code",
-            "Verify Current Email Ownership",
+            'Email Change Verification Code',
+            'Verify Current Email Ownership',
             [
-                "You have requested to change your ScholarlyNest account email.",
-                "Please use the 6-digit verification code below to authorize the first step of this change:",
-                "Verification Code: " . $code,
-                "This code will expire in 15 minutes. If you did not initiate this change, please ignore this email and secure your account credentials."
+                'You have requested to change your ScholarlyNest account email.',
+                'Please use the 6-digit verification code below to authorize the first step of this change:',
+                'Verification Code: '.$code,
+                'This code will expire in 15 minutes. If you did not initiate this change, please ignore this email and secure your account credentials.',
             ],
             null,
             'high',
@@ -929,7 +898,7 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'message' => 'Verification code sent to your current email address.'
+            'message' => 'Verification code sent to your current email address.',
         ]);
     }
 
@@ -944,7 +913,7 @@ class AuthController extends Controller
             'code' => 'required|string|size:6',
         ]);
 
-        if (!$user->email_change_code || $user->email_change_code !== $request->code) {
+        if (! $user->email_change_code || $user->email_change_code !== $request->code) {
             return response()->json(['message' => 'Invalid verification code.'], 400);
         }
 
@@ -959,7 +928,7 @@ class AuthController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Current email verified. You may now specify your new email address.'
+            'message' => 'Current email verified. You may now specify your new email address.',
         ]);
     }
 
@@ -970,7 +939,7 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->current_email_verified) {
+        if (! $user->current_email_verified) {
             return response()->json(['message' => 'Please verify ownership of your current email first.'], 403);
         }
 
@@ -978,7 +947,7 @@ class AuthController extends Controller
             'email' => 'required|string|email|max:255|unique:users,email',
         ]);
 
-        $code = sprintf("%06d", random_int(100000, 999999));
+        $code = sprintf('%06d', random_int(100000, 999999));
 
         $user->update([
             'pending_email' => $request->email,
@@ -989,13 +958,13 @@ class AuthController extends Controller
         // Send email to new email address
         $this->notificationService->send(
             $request->email,
-            "Confirm New Email Address",
-            "Verify New Email Ownership",
+            'Confirm New Email Address',
+            'Verify New Email Ownership',
             [
-                "A request was made to set this email as the primary academic email for your ScholarlyNest account.",
-                "Please use the 6-digit confirmation code below to complete the transition:",
-                "Confirmation Code: " . $code,
-                "This code will expire in 15 minutes. If you did not request this update, no action is required."
+                'A request was made to set this email as the primary academic email for your ScholarlyNest account.',
+                'Please use the 6-digit confirmation code below to complete the transition:',
+                'Confirmation Code: '.$code,
+                'This code will expire in 15 minutes. If you did not request this update, no action is required.',
             ],
             null,
             'high',
@@ -1003,7 +972,7 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'message' => 'Verification code sent to your new email address.'
+            'message' => 'Verification code sent to your new email address.',
         ]);
     }
 
@@ -1014,7 +983,7 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->current_email_verified || !$user->pending_email) {
+        if (! $user->current_email_verified || ! $user->pending_email) {
             return response()->json(['message' => 'Verify current email and submit a new email address first.'], 403);
         }
 
@@ -1028,7 +997,7 @@ class AuthController extends Controller
             return response()->json(['message' => 'The pending email address has already been taken.'], 422);
         }
 
-        if (!$user->new_email_verification_code || $user->new_email_verification_code !== $request->code) {
+        if (! $user->new_email_verification_code || $user->new_email_verification_code !== $request->code) {
             return response()->json(['message' => 'Invalid verification code.'], 400);
         }
 
@@ -1047,7 +1016,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Email updated successfully.',
-            'user' => $this->authUserPayload($user)
+            'user' => $this->authUserPayload($user),
         ]);
     }
 
@@ -1066,7 +1035,7 @@ class AuthController extends Controller
         $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
         $role = Role::where('name', $roleName)->first();
 
-        if (!$this->isRegistrationEligibleRole($role)) {
+        if (! $this->isRegistrationEligibleRole($role)) {
             $role = Role::where('name', 'author')->first();
         }
 
@@ -1078,7 +1047,7 @@ class AuthController extends Controller
         return $role && $role->name === 'author';
     }
 
-    private function authUserPayload(User $user): array
+    public function userPayload(User $user): array
     {
         $user->loadMissing('role.permissions');
         $role = $user->role;
@@ -1096,7 +1065,7 @@ class AuthController extends Controller
             'university_name' => $user->university_name,
             'email_verified_at' => $user->email_verified_at,
             'needs_password_reset' => (bool) $user->needs_password_reset,
-            'two_factor_enabled' => (bool) $user->two_factor_enabled,
+            'two_factor_enabled' => $this->mfaService->methods($user) !== [],
             'role_id' => $user->role_id,
             'role' => $role ? [
                 'id' => $role->id,
@@ -1122,6 +1091,33 @@ class AuthController extends Controller
         }
 
         return $payload;
+    }
+
+    private function authUserPayload(User $user): array
+    {
+        return $this->userPayload($user);
+    }
+
+    private function mfaChallengeResponse(User $user, Request $request): JsonResponse
+    {
+        $result = $this->mfaService->createChallenge($user, $request);
+        if ($result['email_code']) {
+            $this->sendHtmlEmail(
+                $user->email,
+                'Your Two-Factor Authentication Code',
+                'Two-Factor Authentication',
+                'A sign-in attempt was detected for your Scholarly Nest profile. Use the 6-digit verification code below to authorize your session.',
+                $result['email_code']
+            );
+        }
+
+        return response()->json([
+            'message' => '2fa_required',
+            'requires_mfa' => true,
+            'mfa_challenge_token' => $result['token'],
+            'available_methods' => $result['methods'],
+            'default_method' => $result['default'],
+        ], 202);
     }
 
     private function capabilityPayload(array $permissionNames, User $user): array
@@ -1172,7 +1168,7 @@ class AuthController extends Controller
 
     private function passwordChangeRateKey(User $user): string
     {
-        return 'password-change-verify:' . $user->id;
+        return 'password-change-verify:'.$user->id;
     }
 
     private function hasAuthenticatedBearer(Request $request): bool

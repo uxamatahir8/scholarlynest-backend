@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Mail;
 use Throwable;
 
@@ -18,15 +19,11 @@ class SendNotificationJob implements ShouldQueue
 
     /**
      * The number of times the job may be attempted.
-     *
-     * @var int
      */
     public int $tries = 5;
 
     /**
      * The database log ID associated with this dispatch.
-     *
-     * @var int
      */
     public int $logId;
 
@@ -57,6 +54,10 @@ class SendNotificationJob implements ShouldQueue
 
         try {
             $payload = $log->payload;
+            $sensitive = isset($payload['encrypted']);
+            if ($sensitive) {
+                $payload = json_decode(Crypt::decryptString($payload['encrypted']), true, flags: JSON_THROW_ON_ERROR);
+            }
             $action = $payload['action'] ?? null;
             $replyToEmail = $payload['reply_to_email'] ?? null;
             $replyToName = $payload['reply_to_name'] ?? null;
@@ -78,12 +79,13 @@ class SendNotificationJob implements ShouldQueue
             $log->update([
                 'status' => 'sent',
                 'error_message' => null,
+                ...($sensitive ? ['payload' => ['redacted' => true]] : []),
             ]);
         } catch (Throwable $exception) {
             $log->increment('retry_count');
             $log->update([
                 'status' => 'failed',
-                'error_message' => $exception->getMessage() . "\n" . $exception->getTraceAsString(),
+                'error_message' => $exception->getMessage()."\n".$exception->getTraceAsString(),
             ]);
             throw $exception;
         }
@@ -98,7 +100,7 @@ class SendNotificationJob implements ShouldQueue
         if ($log) {
             $log->update([
                 'status' => 'failed',
-                'error_message' => 'Job Failed after max retries: ' . $exception->getMessage() . "\n" . $exception->getTraceAsString(),
+                'error_message' => 'Job Failed after max retries: '.$exception->getMessage()."\n".$exception->getTraceAsString(),
             ]);
         }
     }
