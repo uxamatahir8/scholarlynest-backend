@@ -10,6 +10,13 @@ use Illuminate\Validation\Rule;
 
 class DeskObserverController extends Controller
 {
+    public const EDITOR_ROLES = [
+        'editor',
+        'super_editor',
+        'magazine_editor',
+        'journal_editor',
+    ];
+
     public const SUPPORTED_ROLES = [
         'reviewer',
         'sub_editor',
@@ -36,8 +43,12 @@ class DeskObserverController extends Controller
             ->with('role:id,name')
             ->whereNotNull('email_verified_at')
             ->whereHas('role', function ($query) use ($role) {
-                $query->where('name', $role)
-                    ->orWhere('name', str_replace('_', '-', $role));
+                if ($role === 'editor') {
+                    $query->whereIn('name', self::roleNameVariants(self::EDITOR_ROLES));
+                    return;
+                }
+
+                $query->whereIn('name', self::roleNameVariants([$role]));
             })
             ->orderBy('name')
             ->get()
@@ -78,6 +89,7 @@ class DeskObserverController extends Controller
 
         $allowedRoles = collect((array) $roles)
             ->map(fn ($role) => str_replace('-', '_', (string) $role))
+            ->flatMap(fn ($role) => $role === 'editor' ? self::EDITOR_ROLES : [$role])
             ->unique()
             ->values();
 
@@ -92,5 +104,14 @@ class DeskObserverController extends Controller
         }
 
         return $user;
+    }
+
+    private static function roleNameVariants(array $roles): array
+    {
+        return collect($roles)
+            ->flatMap(fn ($role) => [$role, str_replace('_', '-', $role)])
+            ->unique()
+            ->values()
+            ->all();
     }
 }
