@@ -115,11 +115,28 @@ class DeskObserverTest extends TestCase
 
         $response = $this->getJson('/api/admin/desk-observer/users?role=editor')
             ->assertOk()
-            ->assertJsonFragment(['name' => 'Super Editor A', 'role' => 'super_editor'])
-            ->assertJsonFragment(['name' => 'Magazine Editor A', 'role' => 'magazine_editor'])
-            ->assertJsonFragment(['name' => 'Journal Editor A', 'role' => 'journal_editor']);
+            ->assertJsonFragment(['name' => 'Super Editor A', 'role' => 'super_editor', 'role_label' => 'Super Editor'])
+            ->assertJsonFragment(['name' => 'Magazine Editor A', 'role' => 'magazine_editor', 'role_label' => 'Magazine Editor'])
+            ->assertJsonFragment(['name' => 'Journal Editor A', 'role' => 'journal_editor', 'role_label' => 'Journal Editor']);
 
         $this->assertSame(4, count($response->json('users')));
+
+        $this->getJson('/api/admin/desk-observer/users?role=super_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Super Editor A', 'role' => 'super_editor']);
+
+        $this->getJson('/api/admin/desk-observer/users?role=magazine_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Magazine Editor A', 'role' => 'magazine_editor'])
+            ->assertJsonMissing(['name' => 'Journal Editor A']);
+
+        $this->getJson('/api/admin/desk-observer/users?role=journal_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Journal Editor A', 'role' => 'journal_editor'])
+            ->assertJsonMissing(['name' => 'Magazine Editor A']);
     }
 
     public function test_current_editor_observer_desks_keep_assignment_and_publication_type_scope(): void

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class DeskObserverController extends Controller
@@ -24,6 +25,9 @@ class DeskObserverController extends Controller
         'proofreader',
         'publisher',
         'editor',
+        'super_editor',
+        'magazine_editor',
+        'journal_editor',
     ];
 
     public function users(Request $request): JsonResponse
@@ -40,7 +44,7 @@ class DeskObserverController extends Controller
 
         $users = User::query()
             ->select(['id', 'name', 'role_id'])
-            ->with('role:id,name')
+            ->with('role:id,name,display_name')
             ->whereNotNull('email_verified_at')
             ->whereHas('role', function ($query) use ($role) {
                 if ($role === 'editor') {
@@ -56,6 +60,7 @@ class DeskObserverController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'role' => str_replace('-', '_', (string) $user->role?->name),
+                'role_label' => $user->role?->display_name ?: Str::headline((string) $user->role?->name),
             ])
             ->values();
 
