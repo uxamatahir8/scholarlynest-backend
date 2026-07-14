@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
+use App\Models\User;
 use App\Constants\ArticleStatus;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -30,23 +31,25 @@ class SearchController extends Controller
             ]);
         }
 
+        $hasGlobalAccess = $user->hasRole('super_admin') || $user->hasRole('admin');
+        $assignedPublicationIds = $hasGlobalAccess ? [] : $this->assignedPublicationIds($user);
+        $allowedPublicationTypes = $user->isPublicationEditor() ? $user->editorPublicationTypes() : [];
+
         // 1. SEARCH ARTICLES (SCOPED BY ROLE/PERMISSIONS)
         $articleQuery = Article::with(['magazine', 'user']);
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin')) {
+        if ($allowedPublicationTypes !== []) {
+            $articleQuery->whereHas('magazine', function ($publicationQuery) use ($allowedPublicationTypes) {
+                $publicationQuery->whereIn('publication_type', $allowedPublicationTypes);
+            });
+        }
+
+        if (!$hasGlobalAccess && $user->isPublicationEditor()) {
+            $articleQuery->whereIn('magazine_id', $this->assignedPublicationIds($user, ['editor']));
+        } elseif (!$hasGlobalAccess) {
             $articleQuery->where(function ($q) use ($user) {
                 // Own submissions
                 $q->where('user_id', $user->id);
-
-                // Editor Scope
-                if ($user->hasRole('editor')) {
-                    $editorMagazineIds = DB::table('magazine_user')
-                        ->where('user_id', $user->id)
-                        ->whereIn('role', ['editor'])
-                        ->pluck('magazine_id')
-                        ->toArray();
-                    $q->orWhereIn('magazine_id', $editorMagazineIds);
-                }
 
                 // Publisher Scope
                 if ($user->hasRole('publisher')) {
@@ -137,12 +140,11 @@ class SearchController extends Controller
         // 2. SEARCH MAGAZINES (SCOPED)
         $magazineQuery = Magazine::query();
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin')) {
-            $assignedMagazineIds = DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->pluck('magazine_id')
-                ->toArray();
-            $magazineQuery->whereIn('id', $assignedMagazineIds);
+        if (!$hasGlobalAccess) {
+            $magazineQuery->whereIn('id', $assignedPublicationIds);
+            if ($allowedPublicationTypes !== []) {
+                $magazineQuery->whereIn('publication_type', $allowedPublicationTypes);
+            }
         }
 
         $magazines = $magazineQuery->where(function ($q) use ($queryStr) {
@@ -164,12 +166,13 @@ class SearchController extends Controller
         // 3. SEARCH ISSUES (SCOPED)
         $issueQuery = MagazineIssue::with('magazine');
 
-        if (!$user->hasRole('super_admin') && !$user->hasRole('admin')) {
-            $assignedMagazineIds = DB::table('magazine_user')
-                ->where('user_id', $user->id)
-                ->pluck('magazine_id')
-                ->toArray();
-            $issueQuery->whereIn('magazine_id', $assignedMagazineIds);
+        if (!$hasGlobalAccess) {
+            $issueQuery->whereIn('magazine_id', $assignedPublicationIds);
+            if ($allowedPublicationTypes !== []) {
+                $issueQuery->whereHas('magazine', function ($publicationQuery) use ($allowedPublicationTypes) {
+                    $publicationQuery->whereIn('publication_type', $allowedPublicationTypes);
+                });
+            }
         }
 
         $issues = $issueQuery->where(function ($q) use ($queryStr) {
@@ -199,5 +202,20 @@ class SearchController extends Controller
             'magazines' => $magazines,
             'issues' => $issues
         ]);
+    }
+
+    private function assignedPublicationIds(User $user, array $relationshipRoles = []): array
+    {
+        return DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->when($relationshipRoles !== [], function ($query) use ($relationshipRoles) {
+                $query->where(function ($roleQuery) use ($relationshipRoles) {
+                    $roleQuery->whereIn('role', $relationshipRoles)->orWhereNull('role');
+                });
+            })
+            ->pluck('magazine_id')
+            ->unique()
+            ->values()
+            ->all();
     }
 }
