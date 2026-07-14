@@ -12,6 +12,7 @@ use App\Http\Controllers\Admin\ImpersonationController;
 use App\Http\Controllers\Admin\LanguageController;
 use App\Http\Controllers\Admin\RbacController;
 use App\Http\Controllers\Admin\SearchController;
+use App\Http\Controllers\Admin\SharedPublicPageController;
 use App\Http\Controllers\Admin\SubjectAreaController;
 use App\Http\Controllers\AdvertisementResolutionController;
 use App\Http\Controllers\ArticleAssetController;
@@ -347,6 +348,15 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
         // Scoped Panel Search
         Route::get('/search', [SearchController::class, 'search'])->middleware('permission:articles.view-own');
+        Route::prefix('shared-pages')->middleware('permission:shared_pages.manage')->group(function () {
+            Route::get('/publications', [SharedPublicPageController::class, 'publications']);
+            Route::get('/', [SharedPublicPageController::class, 'index']);
+            Route::post('/', [SharedPublicPageController::class, 'store']);
+            Route::get('/{sharedPage}', [SharedPublicPageController::class, 'show']);
+            Route::put('/{sharedPage}', [SharedPublicPageController::class, 'update']);
+            Route::delete('/{sharedPage}', [SharedPublicPageController::class, 'destroy']);
+            Route::patch('/{sharedPage}/status', [SharedPublicPageController::class, 'status']);
+        });
         Route::post('/articles/{id}/screen', [ArticleWorkflowController::class, 'screen'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-sub-editor', [ArticleWorkflowController::class, 'assignSubEditor'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.approve');
