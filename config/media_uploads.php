@@ -180,6 +180,14 @@ return [
             'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
             'scan_required' => true,
         ],
+        'publication_banner_image' => [
+            'target' => 'reference',
+            'clean_prefix' => 'clean/publications/banners/',
+            'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
+            'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
+            'scan_required' => true,
+        ],
         'issue_cover' => [
             'target' => 'reference',
             'clean_prefix' => 'clean/magazines/issues/',

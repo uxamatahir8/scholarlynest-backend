@@ -89,6 +89,40 @@ class MagazineTest extends TestCase
         Storage::disk('s3')->assertExists($magazine->cover_image);
     }
 
+    public function test_admin_can_create_publication_with_separate_main_and_banner_images(): void
+    {
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $mainUpload = $this->cleanUpload($admin, 'magazine_cover', 'main.webp');
+        $bannerUpload = $this->cleanUpload($admin, 'publication_banner_image', 'banner.webp');
+
+        $response = $this->postJson('/api/admin/journals', [
+            'title' => 'Image Safe Journal',
+            'publication_type' => 'journal',
+            'main_image_upload_id' => $mainUpload->id,
+            'banner_image_upload_id' => $bannerUpload->id,
+        ]);
+
+        $response->assertStatus(211)
+            ->assertJsonPath('magazine.publication_type', 'journal')
+            ->assertJsonPath('magazine.main_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonPath('magazine.banner_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonMissingPath('magazine.cover_image')
+            ->assertJsonMissingPath('magazine.banner_image');
+
+        $journal = Magazine::where('title', 'Image Safe Journal')->firstOrFail();
+        $this->assertSame($mainUpload->s3_clean_key, $journal->cover_image);
+        $this->assertSame($bannerUpload->s3_clean_key, $journal->banner_image);
+
+        $this->getJson('/api/journals/'.$journal->slug)
+            ->assertOk()
+            ->assertJsonPath('main_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonPath('banner_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonMissing(['banner_image' => $bannerUpload->s3_clean_key]);
+    }
+
     /**
      * Test fetching magazine shell with sorted sub-pages.
      */

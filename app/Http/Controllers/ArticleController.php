@@ -1297,7 +1297,7 @@ class ArticleController extends Controller
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
-                'cover_image' => $article->magazine->cover_image,
+                'cover_image' => $article->magazine->cover_image_url,
                 'cover_image_url' => $article->magazine->cover_image_url,
                 'publication_type' => $article->magazine->publication_type,
             ] : null,
@@ -1791,6 +1791,13 @@ class ArticleController extends Controller
 
     private function isAssignedToArticleMagazine($user, Article $article, array $roles): bool
     {
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $article->loadMissing('magazine:id,publication_type');
+            if (!$article->magazine || !in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
+        }
+
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
             ->unique()

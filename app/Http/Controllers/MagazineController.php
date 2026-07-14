@@ -279,7 +279,7 @@ class MagazineController extends Controller
                 'title' => $page->title . ' | ' . $magazine->title . ' | ScholarlyNest',
                 'description' => Str::limit(strip_tags($page->content), 160, ''),
                 'keywords' => $magazine->seo_keywords ?: '',
-                'og_image' => $magazine->cover_image,
+                'og_image' => $magazine->cover_image_url,
             ],
         ]);
     }
@@ -321,6 +321,9 @@ class MagazineController extends Controller
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable', // can be file or string
             'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'main_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'banner_image' => 'nullable',
+            'banner_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -334,9 +337,12 @@ class MagazineController extends Controller
         $coverImagePath = null;
         if ($request->hasFile('cover_image')) {
             return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
-        } elseif (!empty($validated['cover_image_upload_id'])) {
-            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
+        } elseif (!empty($validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'] ?? null)) {
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'], 'magazine_cover');
         }
+        $bannerImagePath = !empty($validated['banner_image_upload_id'])
+            ? app(CleanUploadResolver::class)->cleanKey($user, $validated['banner_image_upload_id'], 'publication_banner_image')
+            : null;
 
         $slug = Str::slug($validated['title']) . '-' . Str::random(5);
 
@@ -344,6 +350,7 @@ class MagazineController extends Controller
             'title' => $validated['title'],
             'slug' => $slug,
             'cover_image' => $coverImagePath,
+            'banner_image' => $bannerImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
             'publication_type' => $this->requestedPublicationType($request),
@@ -488,6 +495,9 @@ class MagazineController extends Controller
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable',
             'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'main_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'banner_image' => 'nullable',
+            'banner_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -498,16 +508,35 @@ class MagazineController extends Controller
         $coverImagePath = $magazine->cover_image;
         if ($request->hasFile('cover_image')) {
             return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
-        } elseif (!empty($validated['cover_image_upload_id'])) {
-            $this->mediaStorage->delete($coverImagePath);
-            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
+        } elseif (!empty($validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'] ?? null)) {
+            $newCoverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'], 'magazine_cover');
+            if ($newCoverImagePath !== $coverImagePath) {
+                $this->mediaStorage->delete($coverImagePath);
+            }
+            $coverImagePath = $newCoverImagePath;
         } elseif ($request->has('cover_image') && !$request->input('cover_image')) {
+            $this->mediaStorage->delete($coverImagePath);
             $coverImagePath = null;
+        }
+
+        $bannerImagePath = $magazine->banner_image;
+        if ($request->hasFile('banner_image')) {
+            return response()->json(['message' => 'Raw browser uploads are disabled for publication banners. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['banner_image_upload_id'])) {
+            $newBannerImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['banner_image_upload_id'], 'publication_banner_image');
+            if ($newBannerImagePath !== $bannerImagePath) {
+                $this->mediaStorage->delete($bannerImagePath);
+            }
+            $bannerImagePath = $newBannerImagePath;
+        } elseif ($request->has('banner_image') && !$request->input('banner_image')) {
+            $this->mediaStorage->delete($bannerImagePath);
+            $bannerImagePath = null;
         }
 
         $updateData = [
             'title' => $validated['title'],
             'cover_image' => $coverImagePath,
+            'banner_image' => $bannerImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
         ];
@@ -656,6 +685,8 @@ class MagazineController extends Controller
             'slug' => $magazine->slug,
             'cover_image' => $magazine->cover_image_url,
             'cover_image_url' => $magazine->cover_image_url,
+            'main_image_url' => $magazine->main_image_url,
+            'banner_image_url' => $magazine->banner_image_url,
             'description' => $magazine->description,
             'publication_type' => $magazine->publication_type,
             'publication_label' => $magazine->publicationTypeLabel(),
