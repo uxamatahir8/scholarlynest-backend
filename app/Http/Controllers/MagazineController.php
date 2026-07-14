@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Models\SharedPublicPage;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\NotificationService;
@@ -263,6 +264,11 @@ class MagazineController extends Controller
             ->where('status', 'active')
             ->first();
 
+        $isShared = false;
+        if (!$page) {
+            $page = SharedPublicPage::query()->visibleFor($magazine)->where('slug', $pageSlug)->first();
+            $isShared = (bool) $page;
+        }
         if (!$page) {
             return response()->json(['message' => 'Page not found.'], 404);
         }
@@ -274,10 +280,11 @@ class MagazineController extends Controller
                 'title' => $page->title,
                 'slug' => $page->slug,
                 'content' => $page->content,
+                'is_shared' => $isShared,
             ],
             'seo' => [
-                'title' => $page->title . ' | ' . $magazine->title . ' | ScholarlyNest',
-                'description' => Str::limit(strip_tags($page->content), 160, ''),
+                'title' => ($isShared && $page->seo_title ? $page->seo_title : $page->title) . ' | ' . $magazine->title . ' | ScholarlyNest',
+                'description' => $isShared && $page->seo_description ? $page->seo_description : Str::limit(strip_tags($page->content), 160, ''),
                 'keywords' => $magazine->seo_keywords ?: '',
                 'og_image' => $magazine->cover_image_url,
             ],
@@ -720,11 +727,20 @@ class MagazineController extends Controller
 
     private function publicShellPayload(Magazine $magazine): array
     {
+        $specificPages = $magazine->pages()
+            ->where('status', 'active')
+            ->get(['id', 'magazine_id', 'title', 'slug', 'sort_order'])
+            ->map(fn ($page) => array_merge($page->toArray(), ['is_shared' => false]));
+        $specificSlugs = $specificPages->pluck('slug');
+        $sharedPages = SharedPublicPage::query()->visibleFor($magazine)
+            ->where('show_in_navigation', true)
+            ->whereNotIn('slug', $specificSlugs)
+            ->get(['id', 'title', 'slug', 'sort_order'])
+            ->map(fn ($page) => array_merge($page->toArray(), ['is_shared' => true]));
+
         return array_merge($this->publicMagazinePayload($magazine), [
-            'pages' => $magazine->pages()
-                ->where('status', 'active')
-                ->orderBy('sort_order')
-                ->get(['id', 'magazine_id', 'title', 'slug', 'sort_order'])
+            'pages' => $specificPages->concat($sharedPages)
+                ->sortBy(fn ($page) => sprintf('%010d-%s', $page['sort_order'], $page['title']))
                 ->values(),
         ]);
     }
