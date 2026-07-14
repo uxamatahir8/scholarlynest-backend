@@ -1111,13 +1111,13 @@ class AuthController extends Controller
             );
         }
 
-        return response()->json([
+        return response()->json(array_merge([
             'message' => '2fa_required',
             'requires_mfa' => true,
             'mfa_challenge_token' => $result['token'],
             'available_methods' => $result['methods'],
             'default_method' => $result['default'],
-        ], 202);
+        ], $this->mfaService->challengeState($result['challenge'])), 202);
     }
 
     private function capabilityPayload(array $permissionNames, User $user): array

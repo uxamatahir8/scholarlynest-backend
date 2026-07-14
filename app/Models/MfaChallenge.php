@@ -14,6 +14,9 @@ class MfaChallenge extends Model
     protected function casts(): array
     {
         return [
+            'required_methods' => 'array',
+            'verified_methods' => 'array',
+            'recovery_code_allowed' => 'boolean',
             'expires_at' => 'datetime',
             'email_code_sent_at' => 'datetime',
             'consumed_at' => 'datetime',

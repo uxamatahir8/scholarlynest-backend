@@ -11,12 +11,17 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use PragmaRX\Google2FA\Google2FA;
 
 class MfaService
 {
-    public const MAX_ATTEMPTS = 5;
+    public const MAX_ATTEMPTS = 15;
+
+    public const MAX_METHOD_ATTEMPTS = 5;
+
+    public const RECOVERY_UNLOCK_ATTEMPTS = 3;
 
     public const CHALLENGE_MINUTES = 10;
 
@@ -64,19 +69,22 @@ class MfaService
             throw new \LogicException('Cannot create an MFA challenge without an enabled method.');
         }
 
-        $default = $this->defaultMethod($user, $methods);
+        $default = $methods[0];
         $token = bin2hex(random_bytes(32));
-        $emailCode = $default === 'email' ? (string) random_int(100000, 999999) : null;
+        $emailCode = in_array('email', $methods, true) ? (string) random_int(100000, 999999) : null;
         $challenge = MfaChallenge::create([
             'user_id' => $user->id,
             'token_hash' => hash('sha256', $token),
             'method_requested' => $default,
+            'required_methods' => $methods,
+            'verified_methods' => [],
             'email_code_hash' => $emailCode ? Hash::make($emailCode) : null,
             'email_code_sent_at' => $emailCode ? now() : null,
             'expires_at' => now()->addMinutes(self::CHALLENGE_MINUTES),
             'ip_address' => $request->ip(),
             'user_agent' => mb_substr((string) $request->userAgent(), 0, 1000),
         ]);
+        $this->logEvent('mfa.challenge.created', $challenge);
 
         return compact('token', 'challenge', 'emailCode', 'methods', 'default') + ['email_code' => $emailCode];
     }
@@ -93,24 +101,40 @@ class MfaService
             throw ValidationException::withMessages(['challenge_token' => ['This MFA challenge is invalid or has already been used.']]);
         }
         if ($challenge->expires_at->isPast()) {
+            $this->logEvent('mfa.challenge.expired', $challenge);
             throw ValidationException::withMessages(['challenge_token' => ['This MFA challenge has expired. Please sign in again.']]);
         }
         if ($challenge->attempts >= self::MAX_ATTEMPTS) {
+            $this->logEvent('mfa.challenge.failed', $challenge);
             throw ValidationException::withMessages(['challenge_token' => ['Too many failed attempts. Please sign in again.']]);
         }
 
         return $challenge;
     }
 
-    public function verifyChallenge(string $token, string $method, string $code): User
+    public function verifyChallenge(string $token, string $method, string $code): array
     {
         $result = DB::transaction(function () use ($token, $method, $code) {
             $challenge = $this->findUsableChallenge($token, true);
             $user = User::findOrFail($challenge->user_id);
-            if ($method !== 'recovery_code' && ! in_array($method, $this->methods($user), true)) {
-                $this->failChallenge($challenge);
+            $required = $challenge->required_methods ?: $this->methods($user);
+            $verified = $challenge->verified_methods ?: [];
+            $satisfiedMethod = $method === 'recovery_code' ? 'totp' : $method;
 
-                return ['error' => 'method'];
+            if (! in_array($satisfiedMethod, $required, true) || in_array($satisfiedMethod, $verified, true)) {
+                return ['complete' => false, 'error' => true, 'message' => 'That MFA method is not required for this challenge.', 'challenge' => $challenge];
+            }
+            if ($method === 'recovery_code' && ! $challenge->recovery_code_allowed) {
+                return ['complete' => false, 'error' => true, 'message' => 'Recovery code verification is not available yet.', 'challenge' => $challenge];
+            }
+            $attemptField = match ($method) {
+                'email' => 'email_attempt_count',
+                'totp' => 'totp_attempt_count',
+                'recovery_code' => 'recovery_code_attempt_count',
+                default => null,
+            };
+            if ($attemptField && $challenge->{$attemptField} >= self::MAX_METHOD_ATTEMPTS) {
+                return ['complete' => false, 'error' => true, 'message' => 'Too many failed attempts for this MFA method. Please sign in again.', 'challenge' => $challenge];
             }
 
             $valid = match ($method) {
@@ -120,32 +144,63 @@ class MfaService
                 default => false,
             };
             if (! $valid) {
-                $this->failChallenge($challenge);
+                $message = match ($method) {
+                    'email' => 'Invalid email verification code.',
+                    'totp' => 'Invalid authenticator code.',
+                    'recovery_code' => 'Invalid recovery code.',
+                    default => 'Invalid MFA code.',
+                };
 
-                return ['error' => 'code'];
+                return $this->failedVerification($challenge, $method, $message);
             }
 
-            $challenge->update(['consumed_at' => now(), 'method_requested' => $method]);
-            UserMfaSetting::updateOrCreate(['user_id' => $user->id], [
-                'is_enabled' => true,
-                'last_verified_at' => now(),
+            $verified[] = $satisfiedMethod;
+            $verified = array_values(array_unique($verified));
+            $remaining = array_values(array_diff($required, $verified));
+            $complete = $remaining === [];
+            $challenge->update([
+                'verified_methods' => $verified,
+                'method_requested' => $remaining[0] ?? $satisfiedMethod,
+                'consumed_at' => $complete ? now() : null,
             ]);
+            $this->logEvent($method === 'recovery_code' ? 'mfa.recovery_code.used' : "mfa.{$method}.verified", $challenge);
 
-            return ['user' => $user];
+            if ($complete) {
+                UserMfaSetting::updateOrCreate(['user_id' => $user->id], [
+                    'is_enabled' => true,
+                    'last_verified_at' => now(),
+                ]);
+                $this->logEvent('mfa.challenge.completed', $challenge);
+            }
+
+            return ['complete' => $complete, 'user' => $user, 'challenge' => $challenge->refresh()];
         });
-        if (isset($result['error'])) {
-            $field = $result['error'];
-            $message = $field === 'method'
-                ? 'That MFA method is not enabled for this account.'
-                : 'The MFA code is invalid.';
-            throw ValidationException::withMessages([$field => [$message]]);
-        }
 
-        return $result['user'];
+        return $result;
+    }
+
+    public function challengeState(MfaChallenge $challenge): array
+    {
+        $required = $challenge->required_methods ?: $this->methods($challenge->user);
+        $verified = $challenge->verified_methods ?: [];
+        $remaining = array_values(array_diff($required, $verified));
+
+        return [
+            'mfa_required' => $remaining !== [],
+            'required_methods' => array_values($required),
+            'verified_methods' => array_values($verified),
+            'remaining_methods' => $remaining,
+            'next_method' => $remaining[0] ?? null,
+            'recovery_code_allowed' => (bool) $challenge->recovery_code_allowed && in_array('totp', $remaining, true),
+            'status' => $remaining === [] ? 'complete' : 'pending',
+        ];
     }
 
     public function issueEmailCode(MfaChallenge $challenge): string
     {
+        if (in_array('email', $challenge->verified_methods ?: [], true)) {
+            throw ValidationException::withMessages(['method' => ['Email MFA is already verified for this challenge.']]);
+        }
         if ($challenge->email_code_sent_at && $challenge->email_code_sent_at->gt(now()->subSeconds(60))) {
             throw ValidationException::withMessages(['challenge_token' => ['Please wait before requesting another email code.']]);
         }
@@ -272,8 +327,41 @@ class MfaService
         return strtoupper(preg_replace('/[^A-Z0-9]/i', '', $code));
     }
 
-    private function failChallenge(MfaChallenge $challenge): void
+    private function failedVerification(MfaChallenge $challenge, string $method, string $message): array
     {
-        $challenge->increment('attempts');
+        $counter = match ($method) {
+            'email' => 'email_attempt_count',
+            'totp' => 'totp_attempt_count',
+            'recovery_code' => 'recovery_code_attempt_count',
+            default => null,
+        };
+        $nextCount = $counter ? ((int) $challenge->{$counter}) + 1 : 0;
+        $updates = ['attempts' => ((int) $challenge->attempts) + 1];
+        if ($counter) {
+            $updates[$counter] = $nextCount;
+        }
+        if ($method === 'totp' && $nextCount >= self::RECOVERY_UNLOCK_ATTEMPTS && ! $challenge->recovery_code_allowed) {
+            $updates['recovery_code_allowed'] = true;
+            $message = 'Invalid authenticator code. You may use a recovery code if you cannot access your authenticator app.';
+        }
+        $challenge->update($updates);
+        $this->logEvent($method === 'totp' ? 'mfa.totp.failed' : 'mfa.challenge.failed', $challenge);
+        if (($updates['recovery_code_allowed'] ?? false) === true) {
+            $this->logEvent('mfa.recovery_code.unlocked', $challenge);
+        }
+        if ($counter && $nextCount >= self::MAX_METHOD_ATTEMPTS) {
+            $message = 'Too many failed attempts for this MFA method. Please sign in again.';
+        }
+
+        return ['complete' => false, 'error' => true, 'message' => $message, 'challenge' => $challenge->refresh()];
+    }
+
+    private function logEvent(string $event, MfaChallenge $challenge): void
+    {
+        Log::notice($event, [
+            'challenge_id' => $challenge->id,
+            'user_id' => $challenge->user_id,
+            'ip_address' => $challenge->ip_address,
+        ]);
     }
 }

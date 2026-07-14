@@ -108,14 +108,30 @@ class MfaController extends Controller
             'method' => ['required', Rule::in(['email', 'totp', 'recovery_code'])],
             'code' => ['required', 'string', 'max:32'],
         ]);
-        $user = $this->mfa->verifyChallenge($validated['challenge_token'], $validated['method'], $validated['code']);
+        $result = $this->mfa->verifyChallenge($validated['challenge_token'], $validated['method'], $validated['code']);
+        $state = $this->mfa->challengeState($result['challenge']);
+        if ($result['error'] ?? false) {
+            return response()->json(array_merge([
+                'message' => $result['message'],
+                'errors' => ['code' => [$result['message']]],
+            ], $state), 422);
+        }
+        if (! $result['complete']) {
+            return response()->json(array_merge([
+                'message' => 'Verification step complete.',
+                'requires_mfa' => true,
+            ], $state), 202);
+        }
+
+        $user = $result['user'];
         $token = $user->createToken('auth_token')->plainTextToken;
 
-        return response()->json([
+        return response()->json(array_merge([
+            'message' => 'Verification complete.',
             'user' => app(AuthController::class)->userPayload($user),
             'access_token' => $token,
             'token_type' => 'Bearer',
-        ]);
+        ], $state));
     }
 
     public function resendEmail(Request $request): JsonResponse
