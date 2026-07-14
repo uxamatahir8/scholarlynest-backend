@@ -56,14 +56,15 @@ class NotificationService
         ?int $userId = null,
     ): void {
         $payload = compact('greeting', 'bodyLines', 'action');
+        $encryptedPayload = Crypt::encryptString(json_encode($payload, JSON_THROW_ON_ERROR));
         $log = NotificationLog::create([
             'user_id' => $userId,
             'recipient_email' => $email,
             'subject' => $subject,
-            'payload' => ['encrypted' => Crypt::encryptString(json_encode($payload, JSON_THROW_ON_ERROR))],
+            'payload' => ['encrypted' => $encryptedPayload],
             'status' => 'pending',
             'retry_count' => 0,
         ]);
-        SendNotificationJob::dispatch($log->id)->onQueue($queue);
+        SendNotificationJob::dispatch($log->id, $encryptedPayload)->onQueue($queue);
     }
 }

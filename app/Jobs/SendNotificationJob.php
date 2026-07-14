@@ -27,12 +27,15 @@ class SendNotificationJob implements ShouldQueue
      */
     public int $logId;
 
+    public ?string $encryptedSensitivePayload;
+
     /**
      * Create a new job instance.
      */
-    public function __construct(int $logId)
+    public function __construct(int $logId, ?string $encryptedSensitivePayload = null)
     {
         $this->logId = $logId;
+        $this->encryptedSensitivePayload = $encryptedSensitivePayload;
     }
 
     /**
@@ -54,9 +57,24 @@ class SendNotificationJob implements ShouldQueue
 
         try {
             $payload = $log->payload;
-            $sensitive = isset($payload['encrypted']);
+            if ($log->status === 'sent' && isset($payload['redacted'])) {
+                return;
+            }
+            if (isset($payload['redacted']) && ! $this->encryptedSensitivePayload) {
+                $this->skipEmptySensitiveNotification($log);
+
+                return;
+            }
+
+            $sensitive = isset($payload['encrypted']) || $this->encryptedSensitivePayload;
             if ($sensitive) {
-                $payload = json_decode(Crypt::decryptString($payload['encrypted']), true, flags: JSON_THROW_ON_ERROR);
+                $encryptedPayload = $this->encryptedSensitivePayload ?? $payload['encrypted'];
+                $payload = json_decode(Crypt::decryptString($encryptedPayload), true, flags: JSON_THROW_ON_ERROR);
+                if (empty($payload['bodyLines']) || ! is_array($payload['bodyLines'])) {
+                    $this->skipEmptySensitiveNotification($log);
+
+                    return;
+                }
             }
             $action = $payload['action'] ?? null;
             $replyToEmail = $payload['reply_to_email'] ?? null;
@@ -89,6 +107,14 @@ class SendNotificationJob implements ShouldQueue
             ]);
             throw $exception;
         }
+    }
+
+    private function skipEmptySensitiveNotification(NotificationLog $log): void
+    {
+        $log->update([
+            'status' => 'failed',
+            'error_message' => 'Sensitive notification payload unavailable; email was not sent.',
+        ]);
     }
 
     /**
