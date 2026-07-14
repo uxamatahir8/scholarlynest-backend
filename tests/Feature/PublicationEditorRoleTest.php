@@ -104,6 +104,62 @@ class PublicationEditorRoleTest extends TestCase
         $this->getJson("/api/articles/{$this->journalArticle->id}/transfer-target-magazines")->assertForbidden();
     }
 
+    public function test_new_publication_editor_roles_can_access_their_sub_editor_desks(): void
+    {
+        foreach ([
+            'super_editor' => [$this->magazine, $this->journal],
+            'magazine_editor' => [$this->magazine],
+            'journal_editor' => [$this->journal],
+        ] as $role => $publications) {
+            $editor = $this->editor($role, $publications);
+            Sanctum::actingAs($editor);
+
+            $this->getJson('/api/admin/editor/sub-editors')->assertOk();
+        }
+    }
+
+    public function test_super_admin_can_assign_sub_editors_to_each_new_editor_role(): void
+    {
+        $admin = User::factory()->create(['role_id' => Role::where('name', 'super_admin')->value('id')]);
+        $subEditorRoleId = Role::where('name', 'sub_editor')->value('id');
+
+        foreach ([
+            'super_editor' => [$this->magazine, $this->journal],
+            'magazine_editor' => [$this->magazine],
+            'journal_editor' => [$this->journal],
+        ] as $role => $publications) {
+            $editor = $this->editor($role, $publications);
+            Sanctum::actingAs($admin);
+
+            $response = $this->postJson('/api/admin/users', [
+                'name' => str($role)->headline().' Sub Editor',
+                'email' => $role.'-sub@example.com',
+                'role_id' => $subEditorRoleId,
+                'status' => 'active',
+                'editor_ids' => [$editor->id],
+            ]);
+
+            $response->assertCreated();
+            $this->assertDatabaseHas('editor_sub_editor', [
+                'editor_id' => $editor->id,
+                'sub_editor_id' => $response->json('data.id'),
+            ]);
+        }
+    }
+
+    public function test_publication_editor_page_access_respects_publication_type(): void
+    {
+        $magazineEditor = $this->editor('magazine_editor', [$this->magazine, $this->journal]);
+        Sanctum::actingAs($magazineEditor);
+        $this->getJson('/api/admin/magazines/'.$this->magazine->slug)->assertOk();
+        $this->getJson('/api/admin/journals/'.$this->journal->slug)->assertForbidden();
+
+        $journalEditor = $this->editor('journal_editor', [$this->magazine, $this->journal]);
+        Sanctum::actingAs($journalEditor);
+        $this->getJson('/api/admin/journals/'.$this->journal->slug)->assertOk();
+        $this->getJson('/api/admin/magazines/'.$this->magazine->slug)->assertForbidden();
+    }
+
     private function editor(string $role, array $publications): User
     {
         $user = User::factory()->create(['role_id' => Role::where('name', $role)->value('id')]);

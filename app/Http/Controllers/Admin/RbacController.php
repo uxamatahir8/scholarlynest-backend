@@ -308,7 +308,7 @@ class RbacController extends Controller
             $roleFilter = $request->query('role');
             $perPage = intval($request->query('per_page', 20));
 
-            $query = User::with('role');
+            $query = User::with(['role', 'assignedEditors.role', 'magazines']);
 
             if ($search !== null && trim($search) !== '') {
                 $terms = explode(' ', trim($search));
@@ -330,8 +330,12 @@ class RbacController extends Controller
             if ($roleFilter !== null && trim($roleFilter) !== '') {
                 $query->whereHas('role', function ($q) use ($roleFilter) {
                     $normalizedRole = str_replace('-', '_', trim($roleFilter));
-                    $q->where('name', $normalizedRole)
-                        ->orWhere('name', str_replace('_', '-', $normalizedRole));
+                    if ($normalizedRole === 'editor') {
+                        $q->whereIn('name', ['editor', 'super_editor', 'magazine_editor', 'journal_editor']);
+                    } else {
+                        $q->where('name', $normalizedRole)
+                            ->orWhere('name', str_replace('_', '-', $normalizedRole));
+                    }
                 });
             }
 
@@ -356,6 +360,8 @@ class RbacController extends Controller
                         'display_name' => $user->role->display_name,
                     ]] : [],
                     'status' => $user->email_verified_at ? 'active' : 'pending',
+                    'assigned_editors' => $this->assignedEditorPayload($user),
+                    'assigned_magazines' => $this->assignedPublicationPayload($user),
                     'created_at' => $user->created_at?->toIso8601String(),
                 ];
             });
@@ -417,7 +423,7 @@ class RbacController extends Controller
             // Ensure every editor_id corresponds to a user with the 'editor' role.
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::with('role')->find($editorId);
-                if (! $editorUser || $editorUser->role?->name !== 'editor') {
+                if (! $editorUser?->isPublicationEditor()) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
                         'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
@@ -597,7 +603,7 @@ class RbacController extends Controller
             // Ensure every editor_id corresponds to a user with the 'editor' role.
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::with('role')->find($editorId);
-                if (! $editorUser || $editorUser->role?->name !== 'editor') {
+                if (! $editorUser?->isPublicationEditor()) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
                         'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
@@ -1391,17 +1397,14 @@ class RbacController extends Controller
                 'display_name' => $user->role->display_name,
             ] : null,
             'assigned_editors' => $user->hasRole('sub_editor') && $user->relationLoaded('assignedEditors')
-                ? $user->assignedEditors->map(fn ($e) => [
-                    'id' => $e->id,
-                    'name' => $e->name,
-                    'email' => $e->email,
-                ])->values()->all()
+                ? $this->assignedEditorPayload($user)
                 : [],
             'magazines' => $user->relationLoaded('magazines')
                 ? $user->magazines->map(fn ($magazine) => [
                     'id' => $magazine->id,
                     'title' => $magazine->title,
                     'slug' => $magazine->slug,
+                    'publication_type' => $magazine->publication_type,
                     'pivot' => [
                         'role' => $magazine->pivot?->role,
                     ],
@@ -1411,14 +1414,45 @@ class RbacController extends Controller
         ];
     }
 
+    private function assignedEditorPayload(User $user): array
+    {
+        if (!$user->relationLoaded('assignedEditors')) {
+            return [];
+        }
+
+        return $user->assignedEditors->map(fn (User $editor) => [
+            'id' => $editor->id,
+            'name' => $editor->name,
+            'email' => $editor->email,
+            'role' => $editor->role?->name,
+        ])->values()->all();
+    }
+
+    private function assignedPublicationPayload(User $user): array
+    {
+        if (!$user->relationLoaded('magazines')) {
+            return [];
+        }
+
+        return $user->magazines->map(fn (Magazine $publication) => [
+            'id' => $publication->id,
+            'title' => $publication->title,
+            'slug' => $publication->slug,
+            'publication_type' => $publication->publication_type,
+        ])->values()->all();
+    }
+
     private function magazineSyncPayload(array $magazineIds, string $roleName, ?int $assignedBy): array
     {
         $normalizedRole = str_replace('-', '_', $roleName);
+        $pivotRole = in_array($normalizedRole, ['editor', 'super_editor', 'magazine_editor', 'journal_editor'], true)
+            ? 'editor'
+            : $normalizedRole;
 
         return collect($magazineIds)
             ->mapWithKeys(fn ($magazineId) => [
                 $magazineId => [
-                    'role' => $normalizedRole,
+                    'role' => $pivotRole,
                     'assigned_by' => $assignedBy,
                 ],
             ])
