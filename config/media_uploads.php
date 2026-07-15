@@ -68,6 +68,17 @@ return [
             'extensions' => ['pdf', 'doc', 'docx'],
             'scan_required' => true,
         ],
+        'additional_manuscript_file' => [
+            'model' => Article::class,
+            'target' => 'article',
+            'allow_detached' => true,
+            'article_file_type' => 'additional_manuscript_file',
+            'clean_prefix' => 'clean/articles/additional-manuscript-files/',
+            'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'extensions' => ['pdf', 'doc', 'docx'],
+            'scan_required' => true,
+        ],
         'article_supplementary' => [
             'model' => Article::class,
             'target' => 'article',

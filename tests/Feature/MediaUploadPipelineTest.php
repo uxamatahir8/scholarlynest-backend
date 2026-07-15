@@ -105,7 +105,7 @@ class MediaUploadPipelineTest extends TestCase
             'declared_mime_type' => 'image/png',
             'file_fingerprint' => 'manuscript.png:1024:1',
         ]))->assertStatus(422)
-            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
+            ->assertJsonPath('message', 'Unsupported file type. Allowed: PDF, DOC, DOCX.');
 
         $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
             'purpose' => 'article_supplementary',
@@ -113,7 +113,7 @@ class MediaUploadPipelineTest extends TestCase
             'declared_mime_type' => 'application/zip',
             'file_fingerprint' => 'dataset.zip:1024:1',
         ]))->assertStatus(422)
-            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
+            ->assertJsonPath('message', 'Unsupported file type. Allowed: PDF, DOC, DOCX, XLS, XLSX, CSV, TXT, PNG, JPG, JPEG, WEBP.');
 
         $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
             'purpose' => 'article_image',
@@ -128,7 +128,7 @@ class MediaUploadPipelineTest extends TestCase
             'declared_mime_type' => 'application/pdf',
             'file_fingerprint' => 'figure.pdf:1024:1',
         ]))->assertStatus(422)
-            ->assertJsonPath('message', 'This file extension is not allowed for the selected upload purpose.');
+            ->assertJsonPath('message', 'Unsupported file type. Allowed: PNG, JPG, JPEG, WEBP.');
     }
 
     public function test_author_can_upload_queued_revision_assets_after_resubmission(): void

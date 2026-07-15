@@ -308,6 +308,22 @@ class ArticleController extends Controller
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $linkedFileIds[] = $manuscriptFile->id;
         }
+        foreach ($validated['additional_manuscript_files'] ?? [] as $additional) {
+            if (empty($additional['upload_id'])) {
+                return response()->json([
+                    'message' => 'Each additional manuscript file must use an upload owned by the submitting author.',
+                    'errors' => ['additional_manuscript_files' => ['The selected file could not be attached to a new submission.']],
+                ], 422);
+            }
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $additional['upload_id'] ?? null, 'additional_manuscript_file');
+            $file = app(ArticleFileController::class)->createCleanDirectUploadFile(
+                $article,
+                $upload,
+                config('media_uploads.purposes.additional_manuscript_file'),
+                ['file_title' => trim($additional['file_title'])]
+            );
+            $linkedFileIds[] = $file->id;
+        }
         if ($requestedStatus === ArticleStatus::SUBMITTED) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
@@ -772,6 +788,42 @@ class ArticleController extends Controller
             }
             $linkedFileIds = $ownedAdditionalFiles->all();
         }
+        foreach ($validated['additional_manuscript_files'] ?? [] as $additional) {
+            if (!empty($additional['article_file_id'])) {
+                $existing = ArticleFile::query()
+                    ->whereKey($additional['article_file_id'])
+                    ->where('article_id', $article->id)
+                    ->where('uploaded_by', $user->id)
+                    ->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+                    ->where('scan_status', 'clean')
+                    ->whereNull('article_version_id')
+                    ->first();
+                if (!$existing) {
+                    return response()->json([
+                        'message' => 'One or more additional manuscript files are not available for this submission round.',
+                        'errors' => ['additional_manuscript_files' => ['Each file must be clean, owned by the author, and belong to the active submission.']],
+                    ], 422);
+                }
+                $existing->update(['file_title' => trim($additional['file_title'])]);
+                $linkedFileIds[] = $existing->id;
+                continue;
+            }
+
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $additional['upload_id'] ?? null, 'additional_manuscript_file');
+            if ($upload) {
+                $file = app(ArticleFileController::class)->createCleanDirectUploadFile(
+                    $article,
+                    $upload,
+                    config('media_uploads.purposes.additional_manuscript_file'),
+                    ['file_title' => trim($additional['file_title'])]
+                );
+                if ($file->article_version_id) {
+                    return response()->json(['message' => 'An additional manuscript file cannot be reused from a previous submission round.'], 422);
+                }
+                $linkedFileIds[] = $file->id;
+            }
+        }
+        $linkedFileIds = array_values(array_unique($linkedFileIds));
         $manuscriptUpload = !empty($validated['pdf_upload_id'])
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision'])
             : null;
@@ -1318,7 +1370,7 @@ class ArticleController extends Controller
 
     private function adminArticleDetailPayload(Article $article, User $viewer): array
     {
-        $article->loadMissing(['articleAuthors', 'assets', 'issue']);
+        $article->loadMissing(['articleAuthors', 'assets', 'issue', 'files.uploader:id,name']);
         $payload = $this->adminArticleSummaryPayload($article, $viewer);
         $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
             || $this->isAssignedToArticleMagazine($viewer, $article, ['editor']);
@@ -1381,6 +1433,10 @@ class ArticleController extends Controller
                     'download_url' => url("/api/articles/assets/{$asset->id}/download"),
                 ])
                 ->values(),
+            'files' => app(ArticleFileController::class)->filterVisibleFiles(
+                $viewer,
+                $article->files->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+            ),
             'resume_step' => $this->draftResumeStep($article),
             'next_step' => $this->draftResumeStep($article),
             'completion_step' => $this->draftResumeStep($article),

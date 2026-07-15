@@ -60,6 +60,7 @@ class ArticleVersionService
                 ArticleFile::MANUSCRIPT,
                 ArticleFile::SUPPLEMENTARY,
                 ArticleFile::REVISION_RESPONSE,
+                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
                 ArticleFile::PUBLICATION_PDF,
             ]);
 
@@ -183,6 +184,7 @@ class ArticleVersionService
         return [
             'id' => $file->id,
             'file_type' => $file->file_type,
+            'file_title' => $file->file_title,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,

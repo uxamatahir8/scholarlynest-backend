@@ -218,6 +218,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         ->middleware(['super-admin-delete', 'permission:articles.manage-assets']);
     Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
+    Route::delete('/articles/{article}/additional-manuscript-files/{file}', [ArticleFileController::class, 'destroyAdditionalManuscriptFile']);
 
     // Support tickets
     Route::get('/support/tickets', [SupportTicketController::class, 'index']);

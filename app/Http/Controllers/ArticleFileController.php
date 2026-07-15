@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
+use App\Models\Magazine;
 use App\Models\MediaUploadSession;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,6 +14,26 @@ use Illuminate\Support\Facades\Storage;
 
 class ArticleFileController extends Controller
 {
+    public function destroyAdditionalManuscriptFile(Request $request, Article $article, ArticleFile $file): JsonResponse
+    {
+        if ((int) $file->article_id !== (int) $article->id
+            || $file->file_type !== ArticleFile::ADDITIONAL_MANUSCRIPT_FILE
+            || $file->article_version_id
+            || !$request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && !$this->isAuthorRecord($request->user(), $article))) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $status = ArticleStatus::normalize($article->status);
+        if ($status !== ArticleStatus::DRAFT && !ArticleStatus::isRevisionRequired($status)) {
+            return response()->json(['message' => 'Historical submission files cannot be removed.'], 422);
+        }
+
+        $file->delete();
+
+        return response()->json(['message' => 'Additional manuscript file removed.']);
+    }
+
     public function store(Request $request, int $articleId): JsonResponse
     {
         return response()->json([
@@ -74,14 +95,18 @@ class ArticleFileController extends Controller
     public function createPendingDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig): ArticleFile
     {
         $metadata = $upload->metadata ?: [];
+        $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
 
-        return ArticleFile::create([
+        return ArticleFile::firstOrCreate(['media_upload_session_id' => $upload->id], [
             'article_id' => $article->id,
-            'article_version_id' => $metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id'),
+            'article_version_id' => $isAdditionalManuscriptFile
+                ? null
+                : ($metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id')),
             'uploaded_by' => $upload->user_id,
             'assignment_type' => $metadata['assignment_type'] ?? null,
             'assignment_id' => $metadata['assignment_id'] ?? null,
             'file_type' => $purposeConfig['article_file_type'],
+            'file_title' => $metadata['file_title'] ?? null,
             'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
             'disk' => $upload->disk,
             'file_path' => $upload->s3_incoming_key,
@@ -101,13 +126,17 @@ class ArticleFileController extends Controller
 
     public function createCleanDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $extra = []): ArticleFile
     {
-        return ArticleFile::create([
+        $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
+        $values = [
             'article_id' => $article->id,
-            'article_version_id' => $extra['article_version_id'] ?? $article->versions()->latest('version_number')->value('id'),
+            'article_version_id' => array_key_exists('article_version_id', $extra)
+                ? $extra['article_version_id']
+                : ($isAdditionalManuscriptFile ? null : $article->versions()->latest('version_number')->value('id')),
             'uploaded_by' => $upload->user_id,
             'assignment_type' => $extra['assignment_type'] ?? ($upload->metadata['assignment_type'] ?? null),
             'assignment_id' => $extra['assignment_id'] ?? ($upload->metadata['assignment_id'] ?? null),
             'file_type' => $purposeConfig['article_file_type'],
+            'file_title' => $extra['file_title'] ?? ($upload->metadata['file_title'] ?? null),
             'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
             'disk' => $upload->disk,
             'file_path' => $upload->s3_clean_key,
@@ -124,7 +153,12 @@ class ArticleFileController extends Controller
                 'upload_session_id' => $upload->id,
                 'direct_s3_upload' => true,
             ], $extra['metadata'] ?? []),
-        ]);
+        ];
+
+        $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
+        $file->fill($values)->save();
+
+        return $file;
     }
 
     public function serializeFile(ArticleFile $file): array
@@ -137,6 +171,7 @@ class ArticleFileController extends Controller
             'article_version_id' => $file->article_version_id,
             'source_asset_id' => $file->source_asset_id,
             'file_type' => $file->file_type,
+            'file_title' => $file->file_title,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,
@@ -190,6 +225,7 @@ class ArticleFileController extends Controller
                 ArticleFile::ANNOTATED_MANUSCRIPT,
                 ArticleFile::REVIEWED_MANUSCRIPT,
                 ArticleFile::REVISION_RESPONSE,
+                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
             ], true);
         }
 
@@ -214,6 +250,7 @@ class ArticleFileController extends Controller
                 ArticleFile::PLAGIARISM_REPORT,
                 ArticleFile::ANNOTATED_MANUSCRIPT,
                 ArticleFile::REVIEWED_MANUSCRIPT,
+                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
             ], true);
         }
 
@@ -265,6 +302,10 @@ class ArticleFileController extends Controller
             if ($fileType === ArticleFile::PUBLICATION_PDF) {
                 return $user && ($user->hasRole(['publisher', 'editor']) || $this->isGlobal($user));
             }
+            if ($fileType === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE) {
+                return $user && ($user->hasPermission('articles.create') || $user->hasRole(['author', 'editor']));
+            }
+
             return false;
         }
 
@@ -280,6 +321,14 @@ class ArticleFileController extends Controller
             }
 
             return $user && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article));
+        }
+
+        if ($fileType === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE) {
+            $status = ArticleStatus::normalize($article->status);
+
+            return $user
+                && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                && ($status === ArticleStatus::DRAFT || ArticleStatus::isRevisionRequired($status));
         }
 
         if (
@@ -307,7 +356,7 @@ class ArticleFileController extends Controller
     private function defaultVisibility(string $fileType): string
     {
         return match ($fileType) {
-            ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
+            ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::ADDITIONAL_MANUSCRIPT_FILE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
             ArticleFile::REVIEWED_MANUSCRIPT => 'reviewer_editor',
             default => 'workflow',
         };
@@ -333,6 +382,13 @@ class ArticleFileController extends Controller
     {
         if (!$user) {
             return false;
+        }
+
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $publicationType = Magazine::query()->whereKey($magazineId)->value('publication_type');
+            if (!$publicationType || !in_array($publicationType, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
         }
 
         $normalizedRoles = collect($roles)
