@@ -98,7 +98,7 @@ class MagazineController extends Controller
 
     /**
      * GET /api/admin/magazines/{slug}
-     * Authenticated management detail scoped to assigned magazines and page ownership.
+     * Authenticated management detail scoped to assigned magazines.
      */
     public function adminShow(Request $request, string $slug): JsonResponse
     {
@@ -122,11 +122,7 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
-        if ($this->isEditorOnly($user)) {
-            $magazine->setRelation('pages', $magazine->pages
-                ->filter(fn (MagazinePage $page) => (int) $page->created_by === (int) $user->id && (bool) $page->is_editor_created)
-                ->values());
-        } elseif (!$this->hasGlobalMagazineAccess($user) && $user->hasRole('publisher')) {
+        if (!$this->hasGlobalMagazineAccess($user) && $user->hasRole('publisher')) {
             $magazine->setRelation('pages', collect());
         }
 
@@ -314,13 +310,13 @@ class MagazineController extends Controller
 
     /**
      * POST /api/admin/magazines
-     * Create a new magazine (Admin only).
+     * Create a new magazine (Super Admin only).
      */
     public function store(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Super Admin privileges required.'], 403);
         }
 
         $validated = $request->validate([
@@ -433,22 +429,18 @@ class MagazineController extends Controller
 
     /**
      * POST /api/admin/magazines/{id}/pages
-     * Create or update custom sub-pages for a magazine (Admin only).
+     * Create custom sub-pages for a magazine (Admin or Super Admin only).
      */
     public function storePage(Request $request, int $magazineId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
-            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
-        }
-
-        if ($user->hasRole('editor') && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])) {
-            return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
         $validated = $request->validate([
@@ -480,13 +472,13 @@ class MagazineController extends Controller
 
     /**
      * PUT /api/admin/magazines/{id}
-     * Update an existing magazine (Admin only).
+     * Update an existing magazine (Super Admin only).
      */
     public function update(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Super Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($id);
@@ -576,7 +568,7 @@ class MagazineController extends Controller
 
     /**
      * DELETE /api/admin/magazines/{id}
-     * Delete an existing magazine (Admin only).
+     * Delete an existing magazine (Super Admin only).
      */
     public function destroy(Request $request, int $id): JsonResponse
     {
@@ -602,13 +594,13 @@ class MagazineController extends Controller
 
     /**
      * PUT /api/admin/magazines/{magazineId}/pages/{pageId}
-     * Update an existing sub-page (Admin only).
+     * Update an existing sub-page (Admin or Super Admin only).
      */
     public function updatePage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
-            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
@@ -619,14 +611,6 @@ class MagazineController extends Controller
         $page = $magazine->pages()->find($pageId);
         if (!$page) {
             return response()->json(['message' => 'Page not found.'], 404);
-        }
-
-        if ($user->hasRole('editor') && (
-            !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])
-            || (int) $page->created_by !== (int) $user->id
-            || !$page->is_editor_created
-        )) {
-            return response()->json(['message' => 'Forbidden. Editors can edit only their own pages for assigned magazines.'], 403);
         }
 
         $validated = $request->validate([
@@ -653,7 +637,7 @@ class MagazineController extends Controller
 
     /**
      * DELETE /api/admin/magazines/{magazineId}/pages/{pageId}
-     * Delete an existing sub-page (Admin only).
+     * Delete an existing sub-page (Super Admin only).
      */
     public function destroyPage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
@@ -854,13 +838,6 @@ class MagazineController extends Controller
         return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
     }
 
-    private function isEditorOnly($user): bool
-    {
-        return $user
-            && !$this->hasGlobalMagazineAccess($user)
-            && $user->hasRole('editor');
-    }
-
     private function assignedMagazineIds($user, array $roles): array
     {
         if (!$user) {
@@ -924,8 +901,8 @@ class MagazineController extends Controller
     public function updateSeo(Request $request, string $slug): JsonResponse
     {
         $user = $request->user();
-        if (!$user || !$user->hasPermission('seo.magazines')) {
-            return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
+        if (!$user || !$user->hasRole('super_admin') || !$user->hasPermission('seo.magazines')) {
+            return response()->json(['message' => 'Unauthorized. Super Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::where('slug', $slug)->firstOrFail();

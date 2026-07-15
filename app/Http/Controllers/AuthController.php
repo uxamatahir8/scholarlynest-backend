@@ -1137,6 +1137,7 @@ class AuthController extends Controller
             'magazines.create',
             'magazines.edit',
             'magazines.delete',
+            'magazines.pages.manage',
             'seo.articles',
             'seo.magazines',
             'seo.cms-pages',

@@ -299,24 +299,24 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::put('/footer/pages/{id}', [FooterPageController::class, 'update'])->middleware('permission:footer.manage');
         Route::delete('/footer/pages/{id}', [FooterPageController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:footer.manage']);
 
-        // Magazines & Custom Pages (Restricted to Admin / Super Admin)
+        // Magazine and Journal records are Super Admin-only; assigned editors have read-only access.
         Route::get('/magazines', [MagazineController::class, 'adminIndex'])->middleware('permission:magazines.view-own');
         Route::get('/magazines/{slug}', [MagazineController::class, 'adminShow'])->middleware('permission:magazines.view-own');
-        Route::post('/magazines', [MagazineController::class, 'store'])->middleware('permission:magazines.create');
-        Route::put('/magazines/{id}', [MagazineController::class, 'update'])->middleware('permission:magazines.edit');
+        Route::post('/magazines', [MagazineController::class, 'store'])->middleware(['super-admin', 'permission:magazines.create']);
+        Route::put('/magazines/{id}', [MagazineController::class, 'update'])->middleware(['super-admin', 'permission:magazines.edit']);
         Route::delete('/magazines/{id}', [MagazineController::class, 'destroy'])->middleware(['super-admin-delete', 'permission:magazines.delete']);
-        Route::post('/magazines/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.edit');
-        Route::put('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.edit');
-        Route::delete('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.edit']);
+        Route::post('/magazines/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.pages.manage');
+        Route::put('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.pages.manage');
+        Route::delete('/magazines/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.pages.manage']);
         Route::prefix('journals')->group(function () {
             Route::get('/', [MagazineController::class, 'adminIndex'])->defaults('publication_type', 'journal')->middleware('permission:magazines.view-own');
             Route::get('/{slug}', [MagazineController::class, 'adminShow'])->defaults('publication_type', 'journal')->middleware('permission:magazines.view-own');
-            Route::post('/', [MagazineController::class, 'store'])->defaults('publication_type', 'journal')->middleware('permission:magazines.create');
-            Route::put('/{id}', [MagazineController::class, 'update'])->defaults('publication_type', 'journal')->middleware('permission:magazines.edit');
+            Route::post('/', [MagazineController::class, 'store'])->defaults('publication_type', 'journal')->middleware(['super-admin', 'permission:magazines.create']);
+            Route::put('/{id}', [MagazineController::class, 'update'])->defaults('publication_type', 'journal')->middleware(['super-admin', 'permission:magazines.edit']);
             Route::delete('/{id}', [MagazineController::class, 'destroy'])->defaults('publication_type', 'journal')->middleware(['super-admin-delete', 'permission:magazines.delete']);
-            Route::post('/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.edit');
-            Route::put('/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.edit');
-            Route::delete('/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.edit']);
+            Route::post('/{id}/pages', [MagazineController::class, 'storePage'])->middleware('permission:magazines.pages.manage');
+            Route::put('/{magazineId}/pages/{pageId}', [MagazineController::class, 'updatePage'])->middleware('permission:magazines.pages.manage');
+            Route::delete('/{magazineId}/pages/{pageId}', [MagazineController::class, 'destroyPage'])->middleware(['super-admin-delete', 'permission:magazines.pages.manage']);
         });
 
         // Tags Management
@@ -382,7 +382,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/articles/{id}/publish', [ArticleWorkflowController::class, 'publish'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/post-publication-actions', [ArticleWorkflowController::class, 'postPublication'])->middleware('permission:articles.approve');
         Route::get('/articles/{id}/audit-logs', [ArticleWorkflowController::class, 'auditLogs'])->middleware('permission:articles.view-own');
-        Route::patch('/magazines/{slug}/seo', [MagazineController::class, 'updateSeo']);
+        Route::patch('/magazines/{slug}/seo', [MagazineController::class, 'updateSeo'])->middleware('super-admin');
         Route::patch('/cms/{slug}/seo', [CmsPageController::class, 'updateSeo']);
 
         // Dynamic RBAC Management
