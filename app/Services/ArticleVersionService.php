@@ -140,6 +140,8 @@ class ArticleVersionService
             'revision_tracking_code' => $version->revision_tracking_code,
             'label' => $version->label,
             'status_snapshot' => $version->status_snapshot,
+            'accepted_at' => $version->accepted_at,
+            'accepted_by' => $version->accepted_by,
             'metadata_snapshot' => $this->safeMetadataSnapshot($version->metadata_snapshot ?? [], $viewer),
             'file_snapshot' => $this->visibleFileSnapshot($version->file_snapshot ?? [], $visibleFiles),
             'files' => $visibleFiles,

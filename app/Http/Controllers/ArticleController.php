@@ -16,6 +16,7 @@ use App\Models\ArticleFile;
 use App\Services\PdfGeneratorService;
 use App\Services\NotificationService;
 use App\Services\ArticleVersionService;
+use App\Services\AcceptedFileSetService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\Security\HtmlSanitizer;
@@ -28,14 +29,16 @@ class ArticleController extends Controller
     protected PdfGeneratorService $pdfService;
     protected NotificationService $notificationService;
     protected ArticleVersionService $versionService;
+    protected AcceptedFileSetService $acceptedFileSetService;
     protected MediaStorageService $mediaStorage;
 
-    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage)
+    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage, AcceptedFileSetService $acceptedFileSetService)
     {
         $this->pdfService = $pdfService;
         $this->notificationService = $notificationService;
         $this->versionService = $versionService;
         $this->mediaStorage = $mediaStorage;
+        $this->acceptedFileSetService = $acceptedFileSetService;
     }
 
     public function show(string $idOrSlug): JsonResponse
@@ -516,8 +519,8 @@ class ArticleController extends Controller
             }
         }
 
-        // If approved/published and pdf_path is empty, compile and generate a clean dynamic PDF download
-        if (ArticleStatus::isAcceptedOrPublished($normalizedStatus) && empty($article->pdf_path)) {
+        // Public output is generated only at publication; accepted author source files remain separate.
+        if ($normalizedStatus === ArticleStatus::PUBLISHED && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -528,18 +531,16 @@ class ArticleController extends Controller
             }
         }
 
-        $article->save();
+        \DB::transaction(function () use ($article, $normalizedStatus, $user) {
+            if ($normalizedStatus === ArticleStatus::ACCEPTED) {
+                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
+                $article->accepted_at = $article->accepted_at ?: now()->toDateString();
+            }
+            $article->save();
+        });
 
         if (ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $article->status);
-            if (ArticleStatus::normalize($article->status) === ArticleStatus::ACCEPTED) {
-                $this->versionService->createSnapshot(
-                    $article->fresh(['articleAuthors', 'tags', 'files']),
-                    $user,
-                    'Accepted Manuscript',
-                    $article->rejection_reason
-                );
-            }
         }
 
         // Send newsletter announcement when advanced to published
@@ -831,7 +832,12 @@ class ArticleController extends Controller
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
             : null;
 
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user) {
+        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus) {
+            if (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED
+                && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
+                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
+                $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
+            }
             $article->update($updateData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
@@ -864,13 +870,6 @@ class ArticleController extends Controller
                 null,
                 $linkedFileIds
             );
-        } elseif (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Accepted Manuscript',
-                $request->input('change_summary')
-            );
         } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
@@ -883,7 +882,7 @@ class ArticleController extends Controller
         }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
-        if (ArticleStatus::isAcceptedOrPublished($article->status) && empty($article->pdf_path)) {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;

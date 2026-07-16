@@ -229,28 +229,21 @@ class ArticleFileController extends Controller
             ], true);
         }
 
-        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['editor'])) {
+        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['editor'])
+            || ($user->hasRole('sub_editor') && $this->hasSubEditorAssignment($user, $article))) {
             return true;
         }
 
         if ($this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])) {
+            if ($this->isActiveAcceptedFile($file)) {
+                return true;
+            }
             return in_array($file->file_type, [
                 ArticleFile::COPY_EDITED_FILE,
                 ArticleFile::PROOF_FILE,
                 ArticleFile::PUBLICATION_PDF,
                 ArticleFile::SUPPLEMENTARY,
                 ArticleFile::MANUSCRIPT,
-            ], true);
-        }
-
-        if ($this->hasSubEditorAssignment($user, $article)) {
-            return in_array($file->file_type, [
-                ArticleFile::MANUSCRIPT,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::PLAGIARISM_REPORT,
-                ArticleFile::ANNOTATED_MANUSCRIPT,
-                ArticleFile::REVIEWED_MANUSCRIPT,
-                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
             ], true);
         }
 
@@ -267,17 +260,20 @@ class ArticleFileController extends Controller
                 return true;
             }
 
-            $latestSubmissionVersionId = $article->versions()
-                ->whereIn('status_snapshot', [ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED])
-                ->orderByDesc('version_number')
-                ->value('id');
-
-            return $latestSubmissionVersionId
-                && (int) $file->article_version_id === (int) $latestSubmissionVersionId
-                && in_array($file->file_type, [ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY], true);
+            return $this->isActiveAcceptedFile($file);
         }
 
         return false;
+    }
+
+    private function isActiveAcceptedFile(ArticleFile $file): bool
+    {
+        return DB::table('article_accepted_file_set_items as accepted_items')
+            ->join('article_accepted_file_sets as accepted_sets', 'accepted_sets.id', '=', 'accepted_items.accepted_file_set_id')
+            ->where('accepted_items.article_file_id', $file->id)
+            ->where('accepted_sets.article_id', $file->article_id)
+            ->whereNull('accepted_sets.superseded_at')
+            ->exists();
     }
 
     public function canUploadForDirectSession($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool

@@ -6,6 +6,7 @@ use App\Constants\ArticleStatus;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Models\ArticleAuditLog;
 use App\Models\Magazine;
+use App\Models\ProductionAssignment;
 use App\Models\User;
 use App\Services\NotificationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -119,8 +120,19 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ])->merge($this->superAdmins()))),
 
             'production.completed',
+            'author.final_review_approved',
+            'author.final_review_auto_approved',
             'article.ready_for_publication',
             'post_publication.recorded' => $this->authorRecipients($article)
+                ->merge($this->editorialRecipients($article))
+                ->merge($this->publisherRecipients($article))
+                ->merge($this->superAdmins())
+                ->pipe(fn ($items) => $this->dedupe($items)),
+
+            'author.final_review_requested' => $this->authorRecipients($article),
+
+            'author.final_review_denied' => $this->authorRecipients($article)
+                ->merge($this->copyEditorRecipients($article))
                 ->merge($this->editorialRecipients($article))
                 ->merge($this->publisherRecipients($article))
                 ->merge($this->superAdmins())
@@ -226,7 +238,32 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ],
             'production.completed' => [
                 'subject' => 'Production Task Completed: ' . $title,
-                'body' => ['A production task has been completed.', 'Next Action: Review the completed production output and continue the publication workflow.'],
+                'body' => ['Copyediting has been completed.', 'Next Action: The corresponding author must approve or deny publication within 14 days.'],
+            ],
+            'author.final_review_requested' => [
+                'subject' => 'Publication Approval Required: ' . $title,
+                'body' => [
+                    'Copyediting has been completed and the article is ready for your review.',
+                    'You have 14 days to approve publication or return the article to copyediting with a reason.',
+                    'If no response is received within 14 days, publication approval will be recorded automatically.',
+                    'Next Action: Open the article workflow and review the copyedited manuscript.',
+                ],
+            ],
+            'author.final_review_denied' => [
+                'subject' => 'Publication Returned to Copyediting: ' . $title,
+                'body' => [
+                    'The author has denied publication of the current copyedited version.',
+                    'Requested Changes: ' . strip_tags((string) ($event->payload['reason'] ?? 'No reason supplied.')),
+                    'Next Action: Update the copyedited manuscript and complete the copyediting task again.',
+                ],
+            ],
+            'author.final_review_approved' => [
+                'subject' => 'Publication Approved by Author: ' . $title,
+                'body' => ['The author approved the copyedited article for publication.', 'Next Action: Complete publication preparation.'],
+            ],
+            'author.final_review_auto_approved' => [
+                'subject' => 'Publication Automatically Approved: ' . $title,
+                'body' => ['The 14-day author response window expired without a response.', 'The article has been automatically approved and is ready for publication.'],
             ],
             'article.ready_for_publication' => [
                 'subject' => 'Article Ready for Publication: ' . $title,
@@ -430,6 +467,17 @@ class SendArticleWorkflowNotifications implements ShouldQueue
             ->get()
             ->map(fn (User $user) => $this->userRecipient($user, 'publisher'))
             ->all());
+    }
+
+    private function copyEditorRecipients($article): Collection
+    {
+        return ProductionAssignment::query()
+            ->with('user')
+            ->where('article_id', $article->id)
+            ->where('role', 'copy_editor')
+            ->get()
+            ->map(fn (ProductionAssignment $assignment) => $this->userRecipient($assignment->user, 'copy_editor'))
+            ->pipe(fn ($items) => $this->dedupe($items));
     }
 
     private function superAdmins(): Collection

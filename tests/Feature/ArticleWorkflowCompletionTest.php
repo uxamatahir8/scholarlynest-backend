@@ -16,6 +16,7 @@ use App\Models\ReviewQuestion;
 use App\Models\ReviewQuestionnaireVersion;
 use App\Models\ReviewQuestionResponse;
 use App\Models\Role;
+use App\Models\SubEditorAssignment;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
@@ -220,7 +221,6 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [],
@@ -228,7 +228,6 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [[
@@ -274,7 +273,6 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'questionnaire_responses' => [],
         ])->assertUnprocessable()
@@ -293,7 +291,6 @@ class ArticleWorkflowCompletionTest extends TestCase
         })->values()->all();
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'questionnaire_responses' => $responses,
         ])->assertUnprocessable();
@@ -318,7 +315,6 @@ class ArticleWorkflowCompletionTest extends TestCase
         })->values()->all();
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Please address the methodological detail.',
             'confidential_comments' => 'Confidential editorial note.',
@@ -333,6 +329,34 @@ class ArticleWorkflowCompletionTest extends TestCase
             'review_question_id' => $evaluationQuestion->id,
             'comment' => 'Describe the sampling and statistical analysis in more detail.',
         ]);
+
+        $subEditorRole = Role::firstOrCreate(
+            ['name' => 'sub_editor'],
+            ['display_name' => 'Sub Editor', 'is_system' => true]
+        );
+        $subEditorRole->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
+        $subEditor = User::factory()->create([
+            'role_id' => $subEditorRole->id,
+            'email_verified_at' => now(),
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $this->article->id,
+            'sub_editor_id' => $subEditor->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($subEditor);
+        $subEditorPayload = $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonFragment(['confidential_comments' => 'Confidential editorial note.'])
+            ->json('article.reviewer_assignments.0.questionnaire_instance.questions');
+        $this->assertCount($questions->count(), $subEditorPayload);
 
         Sanctum::actingAs($this->editor);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")

@@ -336,6 +336,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/accepted-files', [ArticleWorkflowController::class, 'acceptedFiles'])->middleware('permission:articles.view-own');
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');
@@ -360,7 +361,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         });
         Route::post('/articles/{id}/screen', [ArticleWorkflowController::class, 'screen'])->middleware('permission:articles.approve');
         Route::post('/articles/{id}/assign-sub-editor', [ArticleWorkflowController::class, 'assignSubEditor'])->middleware('permission:articles.approve');
-        Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.approve');
+        Route::post('/articles/{id}/assign-reviewer', [ArticleWorkflowController::class, 'assignReviewer'])->middleware('permission:articles.view-own');
         Route::post('/sub-editor-assignments/{id}/submit-recommendation', [ArticleWorkflowController::class, 'submitSubEditorRecommendation']);
         Route::post('/reviewer-assignments/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerAssignment']);
         Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);

@@ -6,6 +6,8 @@ use App\Models\Magazine;
 use App\Models\MagazinePage;
 use App\Models\MagazineIssue;
 use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\ArticleVersion;
 use App\Models\Permission;
 use App\Models\MediaUploadSession;
 use App\Models\User;
@@ -208,7 +210,7 @@ class MagazineTest extends TestCase
     /**
      * Test admin article review process.
      */
-    public function test_admin_can_approve_article_and_trigger_pdf(): void
+    public function test_admin_can_approve_article_and_create_accepted_file_set(): void
     {
         Storage::fake('public');
 
@@ -226,6 +228,7 @@ class MagazineTest extends TestCase
             'full_text' => 'Full text info',
             'status' => 'pending'
         ]);
+        $version = $this->attachSubmittedManuscript($article, $author);
 
         Sanctum::actingAs($admin);
 
@@ -236,10 +239,12 @@ class MagazineTest extends TestCase
         $response->assertStatus(200)
                  ->assertJsonPath('article.status', 'accepted');
 
-        // Check if a PDF path was generated on the database record
         $article->refresh();
-        $this->assertNotNull($article->pdf_path);
-        $this->assertStringContainsString('articles/scholarlynest_article_', $article->pdf_path);
+        $this->assertNull($article->pdf_path);
+        $this->assertDatabaseHas('article_accepted_file_sets', [
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+        ]);
     }
 
     /**
@@ -466,6 +471,7 @@ class MagazineTest extends TestCase
             'full_text' => 'Full text info',
             'status' => 'pending'
         ]);
+        $version = $this->attachSubmittedManuscript($article, $author);
 
         Sanctum::actingAs($user);
 
@@ -477,7 +483,11 @@ class MagazineTest extends TestCase
                  ->assertJsonPath('article.status', 'accepted');
 
         $article->refresh();
-        $this->assertNotNull($article->pdf_path);
+        $this->assertNull($article->pdf_path);
+        $this->assertDatabaseHas('article_accepted_file_sets', [
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+        ]);
     }
 
     /**
@@ -845,6 +855,34 @@ class MagazineTest extends TestCase
             'scanned_at' => now(),
             'expires_at' => now()->addHour(),
         ]);
+    }
+
+    private function attachSubmittedManuscript(Article $article, User $author): ArticleVersion
+    {
+        $version = ArticleVersion::create([
+            'article_id' => $article->id,
+            'created_by' => $author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+
+        ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'disk' => 's3',
+            'file_path' => 'clean/initial-manuscript.pdf',
+            'storage_key' => 'clean/initial-manuscript.pdf',
+            'original_name' => 'initial-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
+
+        return $version;
     }
 
 }

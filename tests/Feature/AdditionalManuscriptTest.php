@@ -133,8 +133,32 @@ class AdditionalManuscriptTest extends TestCase
 
         $this->assertSame($initialVersion->id, $initialFile->fresh()->article_version_id);
         $this->assertSame($r1VersionId, $r1File->fresh()->article_version_id);
-        $this->assertNotSame($r1VersionId, ArticleFile::where('file_title', 'R2 Ethics Approval')->value('article_version_id'));
-        $this->assertSame(3, $article->versions()->count());
+        $r2File = ArticleFile::where('file_title', 'R2 Ethics Approval')->firstOrFail();
+        $r2VersionId = $r2File->article_version_id;
+        $this->assertNotSame($r1VersionId, $r2VersionId);
+
+        $article->refresh()->update(['status' => ArticleStatus::REVISION_REQUIRED]);
+        $this->put('/api/admin/articles/'.$article->id, [
+            'magazine_id' => $article->magazine_id,
+            'title' => $article->title,
+            'abstract' => $article->abstract,
+            'pdf_upload_id' => $this->cleanUpload('article_revision', 'revised-r3.pdf', $article)->id,
+            'revision_response_upload_id' => $this->cleanUpload('article_revision_response', 'response-r3.pdf', $article)->id,
+            'additional_manuscript_files' => [[
+                'file_title' => 'R3 Source Declaration',
+                'upload_id' => $this->cleanUpload('additional_manuscript_file', 'r3.pdf', $article, 'R3 Source Declaration')->id,
+            ]],
+        ])->assertOk();
+
+        $r3File = ArticleFile::where('file_title', 'R3 Source Declaration')->firstOrFail();
+        $r3VersionId = $r3File->article_version_id;
+        $this->assertSame($initialVersion->id, $initialFile->fresh()->article_version_id);
+        $this->assertSame($r1VersionId, $r1File->fresh()->article_version_id);
+        $this->assertSame($r2VersionId, $r2File->fresh()->article_version_id);
+        $this->assertNotContains($r3VersionId, [$initialVersion->id, $r1VersionId, $r2VersionId]);
+        $this->assertSame($r3VersionId, ArticleFile::where('original_name', 'revised-r3.pdf')->value('article_version_id'));
+        $this->assertSame($r3VersionId, ArticleFile::where('original_name', 'response-r3.pdf')->value('article_version_id'));
+        $this->assertSame(4, $article->versions()->count());
     }
 
     public function test_repeated_attachment_for_one_upload_session_is_idempotent(): void

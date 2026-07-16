@@ -965,7 +965,6 @@ class AcademicWorkflowDemoSeeder extends Seeder
                             'due_date' => $createdAt->copy()->addDays(21),
                             'accepted_at' => $revAcceptedAt,
                             'completed_at' => $revCompletedAt,
-                            'scorecard' => json_encode(['originality' => 4, 'methodology' => 4, 'writing' => 3]),
                             'recommendation' => $revRec,
                             'comments_for_author' => $revComments,
                             'confidential_comments' => 'Solid paper.',
@@ -1547,7 +1546,6 @@ class AcademicWorkflowDemoSeeder extends Seeder
             'due_date' => $dueDate,
             'accepted_at' => $acceptedAt,
             'completed_at' => $completedAt,
-            'scorecard' => null,
             'recommendation' => null,
             'comments_for_author' => null,
             'confidential_comments' => null,
@@ -1596,7 +1594,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
     {
         $sections = [
             'introduction' => '<h2>Introduction</h2><p>This article introduces a reproducible academic workflow for evaluating interdisciplinary submissions.</p>',
-            'materials_and_methods' => '<h2>Materials and methods</h2><p>The study uses simulated manuscript metadata, reviewer scorecards, and publication records.</p>',
+            'materials_and_methods' => '<h2>Materials and methods</h2><p>The study uses simulated manuscript metadata, reviewer assessments, and publication records.</p>',
             'discussion' => '<h2>Discussion</h2><p>The seeded results demonstrate how editorial state, review activity, and publication metadata connect.</p>',
             'supporting_information' => '<h2>Supporting information</h2><p>Supplementary PDF and image assets are provided as clean demo records.</p>',
             'acknowledgements' => '<h2>Acknowledgements</h2><p>The authors thank the demo editorial team for workflow validation.</p>',
