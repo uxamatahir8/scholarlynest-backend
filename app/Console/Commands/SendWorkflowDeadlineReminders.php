@@ -87,7 +87,7 @@ class SendWorkflowDeadlineReminders extends Command
                 '• <strong>Manuscript:</strong> ' . e($article->title),
                 '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
                 '• <strong>Assignment:</strong> ' . e($label),
-                '• <strong>Due Date:</strong> ' . $assignment->due_date->toFormattedDateString(),
+                '• <strong>Due Date:</strong> ' . $assignment->due_date->format('d-M-Y H:i'),
                 'Next Action: Open the workflow and complete the outstanding assignment as soon as possible.',
             ];
 

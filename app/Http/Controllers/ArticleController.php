@@ -1622,7 +1622,10 @@ class ArticleController extends Controller
 
         $article = Article::findOrFail($id);
 
-        if (!ArticleStatus::isEditableStatus($article->status)) {
+        // Publication SEO is managed through this dedicated endpoint and remains
+        // available at the ready stage even though manuscript editing is locked.
+        if (!ArticleStatus::isEditableStatus($article->status)
+            && ArticleStatus::normalize($article->status) !== ArticleStatus::READY_FOR_PUBLICATION) {
             return response()->json([
                 'message' => 'This manuscript cannot be edited at its current workflow stage.',
             ], 422);

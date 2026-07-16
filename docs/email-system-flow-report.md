@@ -17,6 +17,37 @@ The application has email flows implemented through `NotificationService`, three
 
 `NotificationService::send` is the normal delivery gateway. Workflow listeners deduplicate recipients by lower-cased email and suppress a repeated workflow event using `article_audit_logs` (`notification.sent`, matching event/from/to status). This prevents repeated transition notifications, but is not a general idempotency key for all controller-driven emails. Email delivery depends on configured mail/queue workers; queued listeners are not immediate.
 
+### Recipient-specific workflow contract (updated 16-Jul-2026)
+
+`SendArticleWorkflowNotifications` now builds a new subject/body/action payload inside the recipient loop. Recipient context is carried as `sub_editor`, `assigner`, `article_owner`, `corresponding_author`, `reviewer`, `production_assignee`, `editor`, `publisher`, or `super_admin`. The most action-specific context is ordered first before normalized-email deduplication. `GenericSystemMail` renders both `emails.generic` HTML and `emails.generic-text` plain text from the independently persisted `NotificationLog` payload.
+
+| Event | Recipient context | Content intent | CTA | Privacy/test coverage |
+|---|---|---|---|---|
+| `article.submitted` | owner/co-author | submission confirmation | dashboard/status | actual recipient name; deduped against staff copies |
+| `article.submitted` | editor/admin | new-submission oversight/action | article board | staff-only author/abstract context |
+| `sub_editor.assigned` | assigned Sub Editor | “You have been assigned”; actual assignee and actor | Open Sub Editor Workflow | focused rendered-content test |
+| `sub_editor.assigned` | assigning editor | actual Sub Editor assigned; monitor progress | Open Article Workflow | never says editor was assigned |
+| `sub_editor.assigned` | author/corresponding author | editorial progress; no action | View Submission Status | no internal notes |
+| `sub_editor.assigned` | super admin | oversight copy; no action unless intervention | Open Article Workflow | recipient-specific subject/body |
+| reviewer invitation | invited reviewer | accept/decline action | secure invitation URL | separate direct invitation; author identity withheld |
+| `reviewer.assigned` | author | peer-review progress only | View Submission Status | reviewer identity/email withheld |
+| `reviewer.assigned` | assigner/admin | invitation monitoring | Open Article Workflow | named reviewer permitted editorially |
+| `review.accepted` / `review.declined` | editor/sub-editor/admin | response and next editorial action | Open Article Workflow | reviewer identity remains editorial-only |
+| `review.submitted` | editor/admin | recommendation available | Open Article Workflow | confidential comments not copied to authors |
+| `revision.requested` | author/corresponding author | author action required | View Submission Status | only author-visible revision notes |
+| `article.resubmitted` | author | receipt confirmation | View Submission Status | Rn tracking context |
+| `article.resubmitted` | editorial/sub-editor/admin | revision review required | Open Article Workflow | sanitized change summary |
+| `article.accepted` / `article.rejected` | author | direct decision wording | View Submission Status | author-visible decision information only |
+| `article.accepted` / `article.rejected` | editorial/admin | informational outcome | Open Article Workflow | does not call it “your article” |
+| `production.assigned` | Copy Editor | copy-editing action required | Open Copy-Editing Workspace | Accepted Files are the source |
+| `production.assigned` | author/editor/admin | production progress/oversight | status or workflow | no assignee wording addressed to observers |
+| copyediting/final-review events | action owner or oversight roles | recipient-appropriate next step | role-scoped workflow | no private file URLs |
+| `article.published` | author | publication confirmation | View Submission Status | public record only |
+| transfer requested/accepted/rejected | author/editor/admin as routed | transfer decision or oversight | role-scoped workflow | no reviewer data |
+| deadline reminders | assigned user | due-date action | workflow | `d-M-Y H:i`; dedupe log per window |
+
+All workflow timestamps use `d-M-Y H:i`. Generic role greetings are used only when a recipient name is unavailable. Workflow actions now link to the article-specific authorized workflow route; secure reviewer invitations retain their tokenized public invitation route.
+
 ## 4. Complete Email Inventory
 
 | ID | Email Flow | Trigger | Sender | Template | Recipients | Delivery | Subject | Status |

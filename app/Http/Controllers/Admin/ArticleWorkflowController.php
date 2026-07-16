@@ -1765,13 +1765,10 @@ class ArticleWorkflowController extends Controller
     {
         $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
         $article = $assignment->article()->with(['magazine:id,title', 'articleAuthors'])->first();
-        $author = $article?->articleAuthors?->firstWhere('is_corresponding', true)?->co_author_name
-            ?? $article?->user?->name
-            ?? 'the submitting author';
         app(\App\Services\NotificationService::class)->send(
             $assignment->invitee_email,
             'Review Invitation: ' . ($article?->title ?? 'Article Review') . ' — ' . ($article?->magazine?->title ?? 'ScholarlyNest'),
-            $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
+            'Dear ' . ($assignment->invitee_name ?: 'Reviewer') . ',',
             [
                 'You have been invited to provide an independent review of a manuscript submitted to <strong>' . e($article?->magazine?->title ?? 'ScholarlyNest') . '</strong>.',
                 '<br><strong>Manuscript Details:</strong>',
@@ -1780,7 +1777,8 @@ class ArticleWorkflowController extends Controller
                 '• <strong>Tracking Code:</strong> ' . e($article?->tracking_code ?? 'Not assigned'),
                 '• <strong>Article Type:</strong> ' . e($article?->article_type ?: 'Not specified'),
                 '• <strong>Category:</strong> ' . e($article?->article_category ?: 'Not specified'),
-                '• <strong>Corresponding Author:</strong> ' . e($author),
+                '• <strong>Author Identity:</strong> Withheld under the review policy',
+                '• <strong>Invited At:</strong> ' . now()->format('d-M-Y H:i'),
                 '<br><strong>Abstract:</strong>',
                 '<div>' . nl2br(e(strip_tags((string) ($article?->abstract ?? 'Not provided.')))) . '</div>',
                 'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
@@ -1798,13 +1796,10 @@ class ArticleWorkflowController extends Controller
     {
         $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/');
         $article = $assignment->article()->with(['magazine:id,title', 'articleAuthors'])->first();
-        $author = $article?->articleAuthors?->firstWhere('is_corresponding', true)?->co_author_name
-            ?? $article?->user?->name
-            ?? 'the submitting author';
         app(\App\Services\NotificationService::class)->send(
             $assignment->invitee_email,
             'Reminder: Review Invitation: ' . ($article?->title ?? 'Article Review') . ' — ' . ($article?->magazine?->title ?? 'ScholarlyNest'),
-            $assignment->invitee_name ? 'Dear ' . $assignment->invitee_name . ',' : 'Hello,',
+            'Dear ' . ($assignment->invitee_name ?: 'Reviewer') . ',',
             [
                 'You have been invited to provide an independent review of a manuscript submitted to <strong>' . e($article?->magazine?->title ?? 'ScholarlyNest') . '</strong>.',
                 '<br><strong>Manuscript Details:</strong>',
@@ -1813,7 +1808,8 @@ class ArticleWorkflowController extends Controller
                 '• <strong>Tracking Code:</strong> ' . e($article?->tracking_code ?? 'Not assigned'),
                 '• <strong>Article Type:</strong> ' . e($article?->article_type ?: 'Not specified'),
                 '• <strong>Category:</strong> ' . e($article?->article_category ?: 'Not specified'),
-                '• <strong>Corresponding Author:</strong> ' . e($author),
+                '• <strong>Author Identity:</strong> Withheld under the review policy',
+                '• <strong>Reminder Sent At:</strong> ' . now()->format('d-M-Y H:i'),
                 '<br><strong>Abstract:</strong>',
                 '<div>' . nl2br(e(strip_tags((string) ($article?->abstract ?? 'Not provided.')))) . '</div>',
                 'Next Action: Please accept or decline this review invitation using the secure link below. If accepted, permitted manuscript files become available in your reviewer dashboard; if declined, the editorial team is notified.',
