@@ -107,7 +107,6 @@ class ArticleFileWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/submit-review", [
-            'scorecard' => ['originality' => 4],
             'recommendation' => 'minor_revision',
             'comments_for_author' => 'Please revise.',
             'reviewed_manuscript_upload_id' => $this->cleanUpload($this->reviewer, 'article_reviewed_manuscript', 'reviewed.docx')->id,

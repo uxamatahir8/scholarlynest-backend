@@ -59,6 +59,7 @@ class FinalWorkflowHardeningTest extends TestCase
             'magazines.view-own',
             'magazines.edit',
             'magazines.delete',
+            'magazines.pages.manage',
             'roles.manage',
             'roles.view-any',
             'settings.manage',
@@ -73,7 +74,7 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->roles['super_admin']->permissions()->sync(Permission::pluck('id'));
         $this->roles['admin']->permissions()->sync(Permission::pluck('id'));
         $this->roles['author']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.create', 'articles.edit-own', 'articles.manage-assets'])->pluck('id'));
-        $this->roles['editor']->permissions()->sync(Permission::whereIn('name', ['magazines.view-any', 'magazines.edit', 'articles.view-own', 'articles.approve', 'articles.manage-assets'])->pluck('id'));
+        $this->roles['editor']->permissions()->sync(Permission::whereIn('name', ['magazines.view-any', 'articles.view-own', 'articles.approve', 'articles.manage-assets'])->pluck('id'));
         $this->roles['sub_editor']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.manage-assets'])->pluck('id'));
         $this->roles['reviewer']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.manage-assets'])->pluck('id'));
         $this->roles['publisher']->permissions()->sync(Permission::whereIn('name', ['magazines.view-own', 'articles.view-own', 'articles.approve'])->pluck('id'));
@@ -123,28 +124,17 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->assertDatabaseHas('magazines', ['id' => $magazine->id]);
     }
 
-    public function test_editor_can_create_page_only_for_assigned_magazine_with_ownership_metadata(): void
+    public function test_editor_cannot_create_pages_even_for_assigned_magazines(): void
     {
         $editor = $this->user('editor');
         $editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
         Sanctum::actingAs($editor);
 
-        $pageId = $this->postJson("/api/admin/magazines/{$this->magazine->id}/pages", [
+        $this->postJson("/api/admin/magazines/{$this->magazine->id}/pages", [
             'title' => 'Editorial Policy',
             'content' => 'Policy body',
             'sort_order' => 3,
-        ])->assertStatus(211)
-            ->assertJsonPath('page.created_by', $editor->id)
-            ->assertJsonPath('page.created_by_role', 'editor')
-            ->assertJsonPath('page.is_editor_created', true)
-            ->json('page.id');
-
-        $this->assertDatabaseHas('magazine_pages', [
-            'id' => $pageId,
-            'created_by' => $editor->id,
-            'created_by_role' => 'editor',
-            'is_editor_created' => true,
-        ]);
+        ])->assertForbidden();
 
         $this->postJson("/api/admin/magazines/{$this->otherMagazine->id}/pages", [
             'title' => 'Should Fail',
@@ -152,7 +142,7 @@ class FinalWorkflowHardeningTest extends TestCase
         ])->assertForbidden();
     }
 
-    public function test_editor_can_edit_only_own_editor_created_pages_and_cannot_delete_pages(): void
+    public function test_editor_cannot_edit_or_delete_any_pages(): void
     {
         $editor = $this->user('editor');
         $otherEditor = $this->user('editor');
@@ -193,7 +183,7 @@ class FinalWorkflowHardeningTest extends TestCase
             'title' => 'Own Page Updated',
             'content' => 'Updated',
             'sort_order' => 2,
-        ])->assertOk();
+        ])->assertForbidden();
 
         $this->putJson("/api/admin/magazines/{$this->magazine->id}/pages/{$otherPage->id}", [
             'title' => 'Other Updated',
@@ -411,7 +401,7 @@ class FinalWorkflowHardeningTest extends TestCase
         $this->getJson("/api/articles/files/{$confidentialFile->id}/download")->assertForbidden();
     }
 
-    public function test_editor_admin_magazine_reads_are_assigned_and_page_owner_scoped(): void
+    public function test_editor_admin_magazine_reads_are_assigned_and_include_all_public_pages(): void
     {
         $editor = $this->user('editor');
         $otherEditor = $this->user('editor');
@@ -461,8 +451,8 @@ class FinalWorkflowHardeningTest extends TestCase
 
         $pageIds = collect($response['pages'])->pluck('id')->all();
         $this->assertContains($ownPage->id, $pageIds);
-        $this->assertNotContains($otherPage->id, $pageIds);
-        $this->assertNotContains($superPage->id, $pageIds);
+        $this->assertContains($otherPage->id, $pageIds);
+        $this->assertContains($superPage->id, $pageIds);
     }
 
     public function test_publisher_article_issue_and_query_access_is_publication_scoped(): void

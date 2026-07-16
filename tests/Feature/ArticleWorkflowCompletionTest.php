@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAsset;
+use App\Models\ArticleFile;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
 use App\Models\Magazine;
@@ -16,6 +17,7 @@ use App\Models\ReviewQuestion;
 use App\Models\ReviewQuestionnaireVersion;
 use App\Models\ReviewQuestionResponse;
 use App\Models\Role;
+use App\Models\SubEditorAssignment;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
@@ -220,7 +222,6 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [],
@@ -228,7 +229,6 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Useful contribution.',
             'questionnaire_responses' => [[
@@ -274,7 +274,6 @@ class ArticleWorkflowCompletionTest extends TestCase
 
         Sanctum::actingAs($reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'questionnaire_responses' => [],
         ])->assertUnprocessable()
@@ -293,7 +292,6 @@ class ArticleWorkflowCompletionTest extends TestCase
         })->values()->all();
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'questionnaire_responses' => $responses,
         ])->assertUnprocessable();
@@ -318,7 +316,6 @@ class ArticleWorkflowCompletionTest extends TestCase
         })->values()->all();
 
         $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 4, 'citation_accuracy' => 4],
             'recommendation' => 'accept',
             'comments_for_author' => 'Please address the methodological detail.',
             'confidential_comments' => 'Confidential editorial note.',
@@ -333,6 +330,34 @@ class ArticleWorkflowCompletionTest extends TestCase
             'review_question_id' => $evaluationQuestion->id,
             'comment' => 'Describe the sampling and statistical analysis in more detail.',
         ]);
+
+        $subEditorRole = Role::firstOrCreate(
+            ['name' => 'sub_editor'],
+            ['display_name' => 'Sub Editor', 'is_system' => true]
+        );
+        $subEditorRole->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
+        $subEditor = User::factory()->create([
+            'role_id' => $subEditorRole->id,
+            'email_verified_at' => now(),
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $this->article->id,
+            'sub_editor_id' => $subEditor->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($subEditor);
+        $subEditorPayload = $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonFragment(['confidential_comments' => 'Confidential editorial note.'])
+            ->json('article.reviewer_assignments.0.questionnaire_instance.questions');
+        $this->assertCount($questions->count(), $subEditorPayload);
 
         Sanctum::actingAs($this->editor);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
@@ -476,6 +501,54 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonMissing(['reviewer_preferences'])
             ->assertJsonMissing(['private.reviewer@example.test'])
             ->assertJsonMissing(['invite_token_hash']);
+    }
+
+    public function test_publication_uses_one_clean_production_pdf_and_persists_public_visibility(): void
+    {
+        Storage::fake('s3');
+        $this->article->update(['status' => ArticleStatus::READY_FOR_PUBLICATION]);
+        $copyedited = ArticleFile::create([
+            'article_id' => $this->article->id,
+            'uploaded_by' => $this->admin->id,
+            'file_type' => ArticleFile::COPY_EDITED_FILE,
+            'visibility' => 'workflow',
+            'disk' => 's3',
+            'file_path' => 'clean/articles/production/final.pdf',
+            'storage_key' => 'clean/articles/production/final.pdf',
+            'original_name' => 'copyedited-final.pdf',
+            'safe_original_name' => 'copyedited-final.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 1024,
+            'scan_status' => 'clean',
+        ]);
+        Storage::disk('s3')->put($copyedited->storage_key, '%PDF production file');
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+        ])->assertForbidden();
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+            'publication_file_settings' => [[
+                'file_id' => $copyedited->id,
+                'show_on_article' => true,
+                'show_in_downloads' => true,
+                'include_in_package' => true,
+            ]],
+        ])->assertOk();
+
+        $this->assertSame($copyedited->storage_key, $this->article->fresh()->pdf_path);
+        $this->assertTrue((bool) data_get($copyedited->fresh()->metadata, 'publication_visibility.include_in_package'));
+        $this->getJson('/api/articles/workflow-completion-article')
+            ->assertOk()
+            ->assertJsonPath('article.publication_files.0.id', $copyedited->id)
+            ->assertJsonPath('article.publication_files.0.show_in_downloads', true);
     }
 
     private function pendingInvitation(string $email, string $token): ReviewerAssignment

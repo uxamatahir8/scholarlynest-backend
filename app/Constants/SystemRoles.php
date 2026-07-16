@@ -17,9 +17,23 @@ final class SystemRoles
             'display_name' => 'Author',
             'description' => 'Creates, submits, revises, and tracks owned manuscripts.',
         ],
+        'super_editor' => [
+            'display_name' => 'Super Editor',
+            'description' => 'Manages editorial workflows for assigned magazines and journals.',
+        ],
+        'magazine_editor' => [
+            'display_name' => 'Magazine Editor',
+            'description' => 'Manages editorial workflows for assigned magazines only.',
+        ],
+        'journal_editor' => [
+            'display_name' => 'Journal Editor',
+            'description' => 'Manages editorial workflows for assigned journals only.',
+        ],
+        // Compatibility alias for tests/integrations that still build the former role directly.
+        // SystemRoleSeeder intentionally does not create this role.
         'editor' => [
-            'display_name' => 'Editor',
-            'description' => 'Screens manuscripts and manages peer review for assigned magazines.',
+            'display_name' => 'Super Editor',
+            'description' => 'Legacy alias for the Super Editor role.',
         ],
         'sub_editor' => [
             'display_name' => 'Sub Editor',
@@ -27,7 +41,7 @@ final class SystemRoles
         ],
         'reviewer' => [
             'display_name' => 'Reviewer',
-            'description' => 'Completes assigned peer review scorecards and recommendations.',
+            'description' => 'Completes assigned peer reviews and recommendations.',
         ],
         'publisher' => [
             'display_name' => 'Publisher',
@@ -42,5 +56,10 @@ final class SystemRoles
     public static function names(): array
     {
         return array_keys(self::DEFINITIONS);
+    }
+
+    public static function seededNames(): array
+    {
+        return array_values(array_filter(self::names(), fn ($name) => $name !== 'editor'));
     }
 }

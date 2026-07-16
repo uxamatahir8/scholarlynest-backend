@@ -121,9 +121,30 @@ class ArticleVersionWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_acceptance_creates_accepted_snapshot_and_versions_endpoint_returns_files(): void
+    public function test_acceptance_marks_submitted_version_and_creates_accepted_file_set(): void
     {
         $article = $this->articleWithStatus(ArticleStatus::REVIEW_IN_PROGRESS);
+        $version = ArticleVersion::create([
+            'article_id' => $article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+        $file = ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'disk' => 's3',
+            'file_path' => 'clean/accepted-manuscript.pdf',
+            'storage_key' => 'clean/accepted-manuscript.pdf',
+            'original_name' => 'accepted-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
 
         Sanctum::actingAs($this->editor);
 
@@ -133,15 +154,22 @@ class ArticleVersionWorkflowTest extends TestCase
             'comments_for_author' => 'Accepted after revisions.',
         ])->assertCreated();
 
-        $this->assertDatabaseHas('article_versions', [
+        $this->assertDatabaseHas('article_accepted_file_sets', [
             'article_id' => $article->id,
-            'label' => 'Accepted Manuscript',
-            'status_snapshot' => ArticleStatus::ACCEPTED,
+            'article_version_id' => $version->id,
+            'accepted_by' => $this->editor->id,
         ]);
+        $this->assertDatabaseHas('article_accepted_file_set_items', [
+            'article_file_id' => $file->id,
+            'source_version_id' => $version->id,
+            'accepted_role' => 'manuscript',
+        ]);
+        $this->assertNotNull($version->fresh()->accepted_at);
 
         $this->getJson("/api/admin/articles/{$article->id}/versions")
             ->assertOk()
-            ->assertJsonPath('data.0.label', 'Accepted Manuscript');
+            ->assertJsonPath('data.0.label', 'Initial Submission')
+            ->assertJsonPath('data.0.accepted_by', $this->editor->id);
     }
 
     private function articleWithStatus(string $status): Article

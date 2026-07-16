@@ -16,6 +16,8 @@ class ArticleVersion extends Model
         'revision_tracking_code',
         'label',
         'status_snapshot',
+        'accepted_at',
+        'accepted_by',
         'metadata_snapshot',
         'file_snapshot',
         'change_summary',
@@ -23,6 +25,7 @@ class ArticleVersion extends Model
     ];
 
     protected $casts = [
+        'accepted_at' => 'datetime',
         'metadata_snapshot' => 'array',
         'file_snapshot' => 'array',
     ];
@@ -40,5 +43,10 @@ class ArticleVersion extends Model
     public function files(): HasMany
     {
         return $this->hasMany(ArticleFile::class);
+    }
+
+    public function accepter(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'accepted_by');
     }
 }

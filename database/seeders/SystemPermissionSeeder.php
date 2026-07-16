@@ -14,6 +14,7 @@ class SystemPermissionSeeder extends Seeder
         ['name' => 'magazines.create', 'module' => 'magazines', 'description' => 'Create magazines'],
         ['name' => 'magazines.edit', 'module' => 'magazines', 'description' => 'Edit magazines'],
         ['name' => 'magazines.delete', 'module' => 'magazines', 'description' => 'Delete magazines'],
+        ['name' => 'magazines.pages.manage', 'module' => 'magazines', 'description' => 'Manage magazine and journal public pages'],
         ['name' => 'articles.view-any', 'module' => 'articles', 'description' => 'View any article'],
         ['name' => 'articles.view-own', 'module' => 'articles', 'description' => 'View own articles'],
         ['name' => 'articles.create', 'module' => 'articles', 'description' => 'Create articles'],
@@ -40,6 +41,8 @@ class SystemPermissionSeeder extends Seeder
         ['name' => 'seo.magazines', 'module' => 'seo', 'description' => 'Manage SEO fields for magazines'],
         ['name' => 'seo.cms-pages', 'module' => 'seo', 'description' => 'Manage SEO fields for CMS pages'],
         ['name' => 'support_ticket_management', 'module' => 'support', 'description' => 'Manage support tickets'],
+        ['name' => 'advertisements.manage', 'module' => 'advertisements', 'description' => 'Manage advertising placements and targeting'],
+        ['name' => 'shared_pages.manage', 'module' => 'shared_pages', 'description' => 'Manage shared Magazine and Journal public pages'],
     ];
 
     public function run(): void
@@ -55,8 +58,18 @@ class SystemPermissionSeeder extends Seeder
         }
 
         $allPermissionIds = Permission::pluck('id');
-        Role::whereIn('name', ['super_admin', 'admin'])->get()
+        Role::where('name', 'super_admin')->get()
             ->each(fn (Role $role) => $role->permissions()->sync($allPermissionIds));
+
+        $superAdminOnlyPermissions = [
+            'magazines.create',
+            'magazines.edit',
+            'magazines.delete',
+            'seo.magazines',
+        ];
+        $adminPermissionIds = Permission::whereNotIn('name', $superAdminOnlyPermissions)->pluck('id');
+        Role::where('name', 'admin')->get()
+            ->each(fn (Role $role) => $role->permissions()->sync($adminPermissionIds));
 
         $this->syncRole('author', [
             'magazines.view-any',
@@ -66,14 +79,15 @@ class SystemPermissionSeeder extends Seeder
             'articles.manage-assets',
             'seo.articles',
         ]);
-        $this->syncRole('editor', [
-            'magazines.view-any',
-            'magazines.edit',
+        foreach (['editor', 'super_editor', 'magazine_editor', 'journal_editor'] as $editorRole) {
+            $this->syncRole($editorRole, [
+            'magazines.view-own',
             'articles.view-own',
             'articles.approve',
             'articles.manage-assets',
             'seo.articles',
-        ]);
+            ]);
+        }
         $this->syncRole('sub_editor', [
             'magazines.view-own',
             'articles.view-own',

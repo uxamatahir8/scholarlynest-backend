@@ -13,7 +13,7 @@ class SubmitReviewRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
-        foreach (['scorecard', 'questionnaire_responses'] as $key) {
+        foreach (['questionnaire_responses'] as $key) {
             if (!is_string($this->input($key))) {
                 continue;
             }
@@ -28,7 +28,6 @@ class SubmitReviewRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'scorecard' => 'nullable|array',
             'recommendation' => 'required|in:accept,minor_revision,major_revision,reject',
             'comments_for_author' => 'nullable|string',
             'confidential_comments' => 'nullable|string',

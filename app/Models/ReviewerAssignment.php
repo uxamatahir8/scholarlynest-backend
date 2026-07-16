@@ -25,7 +25,6 @@ class ReviewerAssignment extends Model
         'account_created_at',
         'questionnaire_instance_id',
         'completed_at',
-        'scorecard',
         'recommendation',
         'comments_for_author',
         'confidential_comments',
@@ -39,7 +38,6 @@ class ReviewerAssignment extends Model
         'declined_at' => 'datetime',
         'account_created_at' => 'datetime',
         'completed_at' => 'datetime',
-        'scorecard' => 'array',
     ];
 
     public function article(): BelongsTo

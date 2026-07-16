@@ -4,24 +4,29 @@ namespace App\Http\Controllers\Admin;
 
 use App\Constants\SystemRoles;
 use App\Http\Controllers\Controller;
+use App\Models\Magazine;
 use App\Models\Permission;
 use App\Models\Role;
-use App\Models\User;
 use App\Models\Setting;
-use App\Models\Magazine;
-use App\Services\NotificationService;
+use App\Models\User;
 use App\Services\Media\MediaStorageService;
+use App\Services\MfaService;
+use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 
 class RbacController extends Controller
 {
     protected NotificationService $notificationService;
+
     protected PasswordSetupService $passwordSetupService;
 
     private const PROTECTED_ASSIGNMENT_PERMISSIONS = [
@@ -39,6 +44,9 @@ class RbacController extends Controller
 
     private const MAGAZINE_ASSIGNMENT_ROLE_NAMES = [
         'editor',
+        'super_editor',
+        'magazine_editor',
+        'journal_editor',
         'publisher',
     ];
 
@@ -124,7 +132,7 @@ class RbacController extends Controller
 
         if ($role->is_system) {
             return response()->json([
-                'message' => 'System roles cannot be renamed or edited.'
+                'message' => 'System roles cannot be renamed or edited.',
             ], 400);
         }
 
@@ -138,6 +146,7 @@ class RbacController extends Controller
                     $name = $this->normalizeRoleName((string) $value);
                     if ($name === '' || in_array($name, SystemRoles::names(), true) || $name === 'admin') {
                         $fail('This role identifier is reserved.');
+
                         return;
                     }
 
@@ -173,7 +182,7 @@ class RbacController extends Controller
 
         if ($role->is_system) {
             return response()->json([
-                'message' => 'System roles cannot be deleted.'
+                'message' => 'System roles cannot be deleted.',
             ], 400);
         }
 
@@ -181,7 +190,7 @@ class RbacController extends Controller
         $assignedUsersCount = User::where('role_id', $role->id)->count();
         if ($assignedUsersCount > 0) {
             return response()->json([
-                'message' => 'This role is assigned to active users. Reassign users before deleting.'
+                'message' => 'This role is assigned to active users. Reassign users before deleting.',
             ], 400);
         }
 
@@ -190,7 +199,7 @@ class RbacController extends Controller
         $role->delete();
 
         return response()->json([
-            'message' => 'Role deleted successfully.'
+            'message' => 'Role deleted successfully.',
         ]);
     }
 
@@ -204,7 +213,7 @@ class RbacController extends Controller
             'permissions.*' => [
                 'required',
                 function (string $attribute, mixed $value, \Closure $fail) {
-                    if (!is_int($value) && !is_string($value)) {
+                    if (! is_int($value) && ! is_string($value)) {
                         $fail('Each permission must be a valid permission identifier.');
                     }
                 },
@@ -213,7 +222,7 @@ class RbacController extends Controller
 
         $validator->after(function ($validator) use ($request) {
             $normalized = collect($request->input('permissions', []))
-                ->map(fn ($permission) => is_numeric($permission) ? 'id:' . (int) $permission : 'name:' . (string) $permission);
+                ->map(fn ($permission) => is_numeric($permission) ? 'id:'.(int) $permission : 'name:'.(string) $permission);
 
             if ($normalized->duplicates()->isNotEmpty()) {
                 $validator->errors()->add('permissions', 'Duplicate permission assignments are not allowed.');
@@ -226,7 +235,7 @@ class RbacController extends Controller
 
         if ($role->is_system) {
             return response()->json([
-                'message' => 'System role permissions cannot be changed.'
+                'message' => 'System role permissions cannot be changed.',
             ], 400);
         }
 
@@ -276,7 +285,7 @@ class RbacController extends Controller
     public function index(Request $request): JsonResponse
     {
         // Only super_admin is allowed
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
@@ -287,10 +296,10 @@ class RbacController extends Controller
                 'page' => 'nullable|integer|min:1',
                 'per_page' => 'nullable|integer|min:10|max:100',
             ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Validation failed.',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         }
 
@@ -299,19 +308,21 @@ class RbacController extends Controller
             $roleFilter = $request->query('role');
             $perPage = intval($request->query('per_page', 20));
 
-            $query = User::with('role');
+            $query = User::with(['role', 'assignedEditors.role', 'magazines']);
 
             if ($search !== null && trim($search) !== '') {
                 $terms = explode(' ', trim($search));
                 foreach ($terms as $term) {
-                    if (trim($term) === '') continue;
+                    if (trim($term) === '') {
+                        continue;
+                    }
                     $query->where(function ($q) use ($term) {
                         $q->where('name', 'like', "%{$term}%")
-                          ->orWhere('email', 'like', "%{$term}%")
-                          ->orWhereHas('role', function ($qr) use ($term) {
-                              $qr->where('name', 'like', "%{$term}%")
-                                ->orWhere('display_name', 'like', "%{$term}%");
-                          });
+                            ->orWhere('email', 'like', "%{$term}%")
+                            ->orWhereHas('role', function ($qr) use ($term) {
+                                $qr->where('name', 'like', "%{$term}%")
+                                    ->orWhere('display_name', 'like', "%{$term}%");
+                            });
                     });
                 }
             }
@@ -319,8 +330,12 @@ class RbacController extends Controller
             if ($roleFilter !== null && trim($roleFilter) !== '') {
                 $query->whereHas('role', function ($q) use ($roleFilter) {
                     $normalizedRole = str_replace('-', '_', trim($roleFilter));
-                    $q->where('name', $normalizedRole)
-                        ->orWhere('name', str_replace('_', '-', $normalizedRole));
+                    if ($normalizedRole === 'editor') {
+                        $q->whereIn('name', ['editor', 'super_editor', 'magazine_editor', 'journal_editor']);
+                    } else {
+                        $q->where('name', $normalizedRole)
+                            ->orWhere('name', str_replace('_', '-', $normalizedRole));
+                    }
                 });
             }
 
@@ -345,6 +360,8 @@ class RbacController extends Controller
                         'display_name' => $user->role->display_name,
                     ]] : [],
                     'status' => $user->email_verified_at ? 'active' : 'pending',
+                    'assigned_editors' => $this->assignedEditorPayload($user),
+                    'assigned_magazines' => $this->assignedPublicationPayload($user),
                     'created_at' => $user->created_at?->toIso8601String(),
                 ];
             });
@@ -361,7 +378,7 @@ class RbacController extends Controller
     public function store(Request $request): JsonResponse
     {
         // Only super_admin is allowed
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
@@ -373,10 +390,10 @@ class RbacController extends Controller
                 'university_name' => 'nullable|string|max:255',
                 'status' => 'nullable|string|in:active,pending',
             ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Validation failed.',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         }
 
@@ -396,20 +413,20 @@ class RbacController extends Controller
                     'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
                     'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
                 ]);
-            } catch (\Illuminate\Validation\ValidationException $e) {
+            } catch (ValidationException $e) {
                 return response()->json([
                     'message' => 'Validation failed.',
-                    'errors' => $e->errors()
+                    'errors' => $e->errors(),
                 ], 422);
             }
 
             // Ensure every editor_id corresponds to a user with the 'editor' role.
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::with('role')->find($editorId);
-                if (!$editorUser || $editorUser->role?->name !== 'editor') {
+                if (! $editorUser?->isPublicationEditor()) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
-                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
                     ], 422);
                 }
             }
@@ -421,7 +438,7 @@ class RbacController extends Controller
                 throw new \Exception('Simulated database failure during transaction');
             }
 
-            $user = DB::transaction(function() use ($request, $isSubEditor, $assignedRole, $magazineIds) {
+            $user = DB::transaction(function () use ($request, $isSubEditor, $assignedRole, $magazineIds) {
                 $user = User::create([
                     'name' => $request->name,
                     'email' => strtolower($request->email),
@@ -465,7 +482,7 @@ class RbacController extends Controller
                     ]] : [],
                     'status' => $user->email_verified_at ? 'active' : 'pending',
                     'created_at' => $user->created_at?->toIso8601String(),
-                ]
+                ],
             ], 201);
 
         } catch (\Throwable $e) {
@@ -479,7 +496,7 @@ class RbacController extends Controller
     public function show(Request $request, int $id): JsonResponse
     {
         // Only super_admin is allowed
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
@@ -503,12 +520,12 @@ class RbacController extends Controller
                 'assigned_editors' => $user->assignedEditors->map(fn ($e) => [
                     'id' => $e->id,
                     'name' => $e->name,
-                    'email' => $e->email
+                    'email' => $e->email,
                 ])->values()->all(),
                 'assigned_magazines' => $this->safeAssignedMagazinesForEdit($user),
                 'created_at' => $user->created_at?->toIso8601String(),
             ]);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        } catch (ModelNotFoundException $e) {
             return response()->json(['message' => 'User not found.'], 404);
         } catch (\Throwable $e) {
             return response()->json(['message' => 'An error occurred while retrieving user details.'], 500);
@@ -521,41 +538,41 @@ class RbacController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         // Only super_admin is allowed
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
         try {
             $user = User::findOrFail($id);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        } catch (ModelNotFoundException $e) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
         // Prevent de-roling self if logged in user
         if ($user->id === $request->user()->id && $user->role?->name === 'super_admin' && intval($request->role_id) !== $user->role_id) {
             return response()->json([
-                'message' => 'You cannot remove your own super_admin role.'
+                'message' => 'You cannot remove your own super_admin role.',
             ], 400);
         }
 
         $passwordRules = ['nullable', 'string', 'min:8', 'confirmed'];
         if ($request->filled('password')) {
-            $passwordRules[] = \Illuminate\Validation\Rules\Password::min(8)->letters()->mixedCase()->numbers()->symbols();
+            $passwordRules[] = Password::min(8)->letters()->mixedCase()->numbers()->symbols();
         }
 
         try {
             $request->validate([
                 'name' => 'required|string|max:255',
-                'email' => 'required|string|email|max:255|unique:users,email,' . $id,
+                'email' => 'required|string|email|max:255|unique:users,email,'.$id,
                 'password' => $passwordRules,
                 'role_id' => 'required|exists:roles,id',
                 'university_name' => 'nullable|string|max:255',
                 'status' => 'required|string|in:active,pending',
             ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return response()->json([
                 'message' => 'Validation failed.',
-                'errors' => $e->errors()
+                'errors' => $e->errors(),
             ], 422);
         }
 
@@ -576,20 +593,20 @@ class RbacController extends Controller
                     'editor_ids.required' => 'At least one Editor must be assigned to a Sub Editor.',
                     'editor_ids.min' => 'At least one Editor must be assigned to a Sub Editor.',
                 ]);
-            } catch (\Illuminate\Validation\ValidationException $e) {
+            } catch (ValidationException $e) {
                 return response()->json([
                     'message' => 'Validation failed.',
-                    'errors' => $e->errors()
+                    'errors' => $e->errors(),
                 ], 422);
             }
 
             // Ensure every editor_id corresponds to a user with the 'editor' role.
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::with('role')->find($editorId);
-                if (!$editorUser || $editorUser->role?->name !== 'editor') {
+                if (! $editorUser?->isPublicationEditor()) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
-                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
                     ], 422);
                 }
             }
@@ -601,7 +618,7 @@ class RbacController extends Controller
                 throw new \Exception('Simulated database failure during update transaction');
             }
 
-            $updatedUser = DB::transaction(function() use ($request, $user, $isSubEditor, $previousRole, $assignedRole, $magazineIds) {
+            $updatedUser = DB::transaction(function () use ($request, $user, $isSubEditor, $previousRole, $assignedRole, $magazineIds) {
                 $updateData = [
                     'name' => $request->name,
                     'email' => $request->email,
@@ -649,7 +666,7 @@ class RbacController extends Controller
                     ]] : [],
                     'status' => $updatedUser->email_verified_at ? 'active' : 'pending',
                     'created_at' => $updatedUser->created_at?->toIso8601String(),
-                ]
+                ],
             ]);
 
         } catch (\Throwable $e) {
@@ -661,7 +678,7 @@ class RbacController extends Controller
     {
         // If path is /api/admin/users (no /rbac/), it must be Super Admin-only!
         if (str_contains($request->getPathInfo(), '/rbac/') === false) {
-            if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+            if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
                 return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
             }
         }
@@ -670,7 +687,7 @@ class RbacController extends Controller
         if (
             str_contains($request->getPathInfo(), '/rbac/') === false
             && (
-                !$request->has('role')
+                ! $request->has('role')
                 || $request->has('page')
                 || $request->has('per_page')
                 || $request->has('search')
@@ -687,8 +704,12 @@ class RbacController extends Controller
             })
             ->when($roleFilter, function ($query) use ($roleFilter) {
                 return $query->whereHas('role', function ($q) use ($roleFilter) {
-                    $q->where('name', $roleFilter)
-                      ->orWhere('name', str_replace('_', '-', $roleFilter));
+                    if ($roleFilter === 'editor') {
+                        $q->whereIn('name', ['editor', 'super_editor', 'magazine_editor', 'journal_editor']);
+                    } else {
+                        $q->where('name', $roleFilter)
+                            ->orWhere('name', str_replace('_', '-', $roleFilter));
+                    }
                 });
             })
             ->get();
@@ -706,12 +727,12 @@ class RbacController extends Controller
 
     public function magazineAssignmentOptions(Request $request): JsonResponse
     {
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
         $magazines = Magazine::query()
-            ->select(['id', 'title', 'slug'])
+            ->select(['id', 'title', 'slug', 'publication_type'])
             ->with(['editors' => function ($query) {
                 $query->select(['users.id', 'users.name', 'users.role_id'])
                     ->with('role:id,name')
@@ -744,6 +765,7 @@ class RbacController extends Controller
                     'id' => $magazine->id,
                     'title' => $magazine->title,
                     'slug' => $magazine->slug,
+                    'publication_type' => $magazine->publication_type,
                     'assignment_summary' => collect($summary)
                         ->map(fn (array $users) => collect($users)->unique('id')->values()->all())
                         ->all(),
@@ -764,11 +786,11 @@ class RbacController extends Controller
         ]);
 
         $user = User::findOrFail($id);
-        
+
         // Prevent users from de-roling themselves from super_admin
         if ($user->id === $request->user()->id && $user->role?->name === 'super_admin' && intval($request->role_id) !== $user->role_id) {
             return response()->json([
-                'message' => 'You cannot remove your own super_admin role.'
+                'message' => 'You cannot remove your own super_admin role.',
             ], 400);
         }
 
@@ -789,10 +811,10 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
+                if (! $editorUser || ! $editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
-                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
                     ], 422);
                 }
             }
@@ -848,16 +870,16 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
+                if (! $editorUser || ! $editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
-                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
                     ], 422);
                 }
             }
         }
 
-        $user = DB::transaction(function() use ($request, $isSubEditor) {
+        $user = DB::transaction(function () use ($request, $isSubEditor) {
             $user = User::create([
                 'name' => $request->name,
                 'email' => strtolower($request->email),
@@ -900,7 +922,7 @@ class RbacController extends Controller
     {
         $request->validate([
             'name' => 'sometimes|required|string|max:255',
-            'email' => 'sometimes|required|string|email|max:255|unique:users,email,' . $id,
+            'email' => 'sometimes|required|string|email|max:255|unique:users,email,'.$id,
             'role_id' => 'sometimes|required|exists:roles,id',
             'university_name' => 'sometimes|required|string|max:255',
             'magazine_ids' => 'nullable|array',
@@ -908,11 +930,11 @@ class RbacController extends Controller
         ]);
 
         $user = User::findOrFail($id);
-        
+
         // Prevent users from de-roling themselves from super_admin
         if ($request->has('role_id') && $user->id === $request->user()->id && $user->role?->name === 'super_admin' && intval($request->role_id) !== $user->role_id) {
             return response()->json([
-                'message' => 'You cannot remove your own super_admin role.'
+                'message' => 'You cannot remove your own super_admin role.',
             ], 400);
         }
 
@@ -931,10 +953,10 @@ class RbacController extends Controller
 
             foreach ($request->editor_ids as $editorId) {
                 $editorUser = User::find($editorId);
-                if (!$editorUser || !$editorUser->hasRole(['editor'])) {
+                if (! $editorUser || ! $editorUser->hasRole(['editor'])) {
                     return response()->json([
                         'message' => 'At least one Editor must be assigned to a Sub Editor.',
-                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']]
+                        'errors' => ['editor_ids' => ['At least one Editor must be assigned to a Sub Editor.']],
                     ], 422);
                 }
             }
@@ -1003,7 +1025,7 @@ class RbacController extends Controller
         ]);
 
         $role = Role::where('name', $request->default_registration_role)->first();
-        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+        if (! $role || ! $this->isRegistrationEligibleRole($role)) {
             return response()->json([
                 'message' => 'Validation failed.',
                 'errors' => ['default_registration_role' => ['This role cannot be used for public registration.']],
@@ -1016,7 +1038,7 @@ class RbacController extends Controller
         );
 
         return response()->json([
-            'message' => 'Default registration role updated successfully.'
+            'message' => 'Default registration role updated successfully.',
         ]);
     }
 
@@ -1049,7 +1071,7 @@ class RbacController extends Controller
         ]);
 
         $role = Role::find($validated['default_role_id']);
-        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+        if (! $role || ! $this->isRegistrationEligibleRole($role)) {
             return response()->json([
                 'message' => 'Validation failed.',
                 'errors' => ['default_role_id' => ['This role cannot be used for public registration.']],
@@ -1082,18 +1104,18 @@ class RbacController extends Controller
      */
     private function sendWelcomeHtmlEmail(string $email, string $name, ?string $createPasswordLink): void
     {
-        $subject = "Welcome to ScholarlyNest!";
-        $title = "Welcome to ScholarlyNest, " . htmlspecialchars($name) . "!";
-        
+        $subject = 'Welcome to ScholarlyNest!';
+        $title = 'Welcome to ScholarlyNest, '.htmlspecialchars($name).'!';
+
         $action = null;
         if ($createPasswordLink) {
             $action = [
                 'text' => 'Create Your Password',
                 'url' => $createPasswordLink,
             ];
-            $description = "An administrator has created your ScholarlyNest account. To complete your setup and begin collaborating, please click the button below to establish your password.";
+            $description = 'An administrator has created your ScholarlyNest account. To complete your setup and begin collaborating, please click the button below to establish your password.';
         } else {
-            $description = "Thank you for verifying your email address! Your registration is complete, and your ScholarlyNest account is now active. We are thrilled to welcome you to our scientific research community.";
+            $description = 'Thank you for verifying your email address! Your registration is complete, and your ScholarlyNest account is now active. We are thrilled to welcome you to our scientific research community.';
         }
 
         $user = User::where('email', $email)->first();
@@ -1114,6 +1136,9 @@ class RbacController extends Controller
     {
         return in_array(str_replace('-', '_', $roleName), [
             'editor',
+            'super_editor',
+            'magazine_editor',
+            'journal_editor',
             'publisher',
         ], true);
     }
@@ -1145,19 +1170,33 @@ class RbacController extends Controller
                 'magazine_ids.*.distinct' => 'Each selected magazine may only be assigned once.',
                 'magazine_ids.*.exists' => 'One or more selected magazines are no longer available.',
             ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             throw $e;
         }
 
-        if (!$requiresMagazineAssignment) {
+        if (! $requiresMagazineAssignment) {
             return [];
         }
 
-        return collect($validated['magazine_ids'] ?? [])
+        $ids = collect($validated['magazine_ids'] ?? [])
             ->map(fn ($magazineId) => (int) $magazineId)
             ->unique()
             ->values()
             ->all();
+
+        $roleName = str_replace('-', '_', (string) $role?->name);
+        $requiredType = match ($roleName) {
+            'magazine_editor' => Magazine::TYPE_MAGAZINE,
+            'journal_editor' => Magazine::TYPE_JOURNAL,
+            default => null,
+        };
+        if ($requiredType && Magazine::whereIn('id', $ids)->where('publication_type', '!=', $requiredType)->exists()) {
+            throw ValidationException::withMessages([
+                'magazine_ids' => ["Selected assignments must be {$requiredType} publications for this role."],
+            ]);
+        }
+
+        return $ids;
     }
 
     private function syncRoleMagazineAssignments(User $user, ?Role $previousRole, ?Role $selectedRole, array $magazineIds, ?int $assignedBy): void
@@ -1182,7 +1221,7 @@ class RbacController extends Controller
             })
             ->delete();
 
-        if (!$selectedRole || !$this->roleUsesMagazineAssignments($selectedRole->name)) {
+        if (! $selectedRole || ! $this->roleUsesMagazineAssignments($selectedRole->name)) {
             return;
         }
 
@@ -1216,7 +1255,7 @@ class RbacController extends Controller
         $normalizedRole = str_replace('-', '_', $roleName);
 
         return match ($normalizedRole) {
-            'editor' => 'editor',
+            'editor', 'super_editor', 'magazine_editor', 'journal_editor' => 'editor',
             'publisher' => 'publisher',
             default => null,
         };
@@ -1225,7 +1264,7 @@ class RbacController extends Controller
     private function safeAssignedMagazinesForEdit(User $user): array
     {
         $selectedRole = $user->role;
-        if (!$selectedRole || !$this->roleUsesMagazineAssignments($selectedRole->name)) {
+        if (! $selectedRole || ! $this->roleUsesMagazineAssignments($selectedRole->name)) {
             return [];
         }
 
@@ -1265,7 +1304,7 @@ class RbacController extends Controller
     {
         $roleName = Setting::where('key', 'default_registration_role')->value('value') ?? 'author';
         $role = Role::where('name', $roleName)->first();
-        if (!$role || !$this->isRegistrationEligibleRole($role)) {
+        if (! $role || ! $this->isRegistrationEligibleRole($role)) {
             $role = Role::where('name', 'author')->first();
         }
 
@@ -1336,6 +1375,8 @@ class RbacController extends Controller
 
     private function userPayload(User $user): array
     {
+        $mfa = app(MfaService::class)->settings($user);
+
         return [
             'id' => $user->id,
             'name' => $user->name,
@@ -1346,23 +1387,24 @@ class RbacController extends Controller
             'profile_image_url' => app(MediaStorageService::class)->applicationUrl($user->profile_image),
             'email_verified_at' => $user->email_verified_at,
             'needs_password_reset' => (bool) $user->needs_password_reset,
+            'mfa_enabled' => $mfa['is_enabled'],
+            'mfa_methods' => $mfa['enabled_methods'],
+            'mfa_default_method' => $mfa['default_method'],
+            'last_mfa_verified_at' => $mfa['last_verified_at'],
             'role' => $user->role ? [
                 'id' => $user->role->id,
                 'name' => $user->role->name,
                 'display_name' => $user->role->display_name,
             ] : null,
             'assigned_editors' => $user->hasRole('sub_editor') && $user->relationLoaded('assignedEditors')
-                ? $user->assignedEditors->map(fn ($e) => [
-                    'id' => $e->id,
-                    'name' => $e->name,
-                    'email' => $e->email
-                ])->values()->all()
+                ? $this->assignedEditorPayload($user)
                 : [],
             'magazines' => $user->relationLoaded('magazines')
                 ? $user->magazines->map(fn ($magazine) => [
                     'id' => $magazine->id,
                     'title' => $magazine->title,
                     'slug' => $magazine->slug,
+                    'publication_type' => $magazine->publication_type,
                     'pivot' => [
                         'role' => $magazine->pivot?->role,
                     ],
@@ -1372,15 +1414,45 @@ class RbacController extends Controller
         ];
     }
 
+    private function assignedEditorPayload(User $user): array
+    {
+        if (!$user->relationLoaded('assignedEditors')) {
+            return [];
+        }
+
+        return $user->assignedEditors->map(fn (User $editor) => [
+            'id' => $editor->id,
+            'name' => $editor->name,
+            'email' => $editor->email,
+            'role' => $editor->role?->name,
+        ])->values()->all();
+    }
+
+    private function assignedPublicationPayload(User $user): array
+    {
+        if (!$user->relationLoaded('magazines')) {
+            return [];
+        }
+
+        return $user->magazines->map(fn (Magazine $publication) => [
+            'id' => $publication->id,
+            'title' => $publication->title,
+            'slug' => $publication->slug,
+            'publication_type' => $publication->publication_type,
+        ])->values()->all();
+    }
+
     private function magazineSyncPayload(array $magazineIds, string $roleName, ?int $assignedBy): array
     {
         $normalizedRole = str_replace('-', '_', $roleName);
-
+        $pivotRole = in_array($normalizedRole, ['editor', 'super_editor', 'magazine_editor', 'journal_editor'], true)
+            ? 'editor'
+            : $normalizedRole;
 
         return collect($magazineIds)
             ->mapWithKeys(fn ($magazineId) => [
                 $magazineId => [
-                    'role' => $normalizedRole,
+                    'role' => $pivotRole,
                     'assigned_by' => $assignedBy,
                 ],
             ])

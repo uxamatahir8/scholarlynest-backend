@@ -81,6 +81,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $demoEmails = [
                 'author1@example.com', 'author2@example.com', 'author3@example.com',
                 'editor1@example.com', 'editor2@example.com', 'editor3@example.com',
+                'super.editor@scholarlynest.com', 'magazine.editor@scholarlynest.com', 'journal.editor@scholarlynest.com',
                 'subeditor1@example.com', 'subeditor2@example.com', 'subeditor3@example.com',
                 'reviewer1@example.com', 'reviewer2@example.com', 'reviewer3@example.com',
                 'publisher1@example.com', 'publisher2@example.com', 'publisher3@example.com',
@@ -104,6 +105,9 @@ class AcademicWorkflowDemoSeeder extends Seeder
             // 4. Ensure roles exist and fetch their IDs
             $roles = Role::pluck('id', 'name')->toArray();
             foreach (SystemRoles::DEFINITIONS as $name => $definition) {
+                if ($name === 'editor') {
+                    continue;
+                }
                 if (!isset($roles[$name])) {
                     $role = Role::create([
                         'name' => $name,
@@ -126,10 +130,14 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     ['name' => 'Author Two', 'email' => 'author2@example.com'],
                     ['name' => 'Author Three', 'email' => 'author3@example.com']
                 ],
-                'editor' => [
-                    ['name' => 'Editor One', 'email' => 'editor1@example.com'],
-                    ['name' => 'Editor Two', 'email' => 'editor2@example.com'],
-                    ['name' => 'Editor Three', 'email' => 'editor3@example.com']
+                'super_editor' => [
+                    ['name' => 'Demo Super Editor', 'email' => 'super.editor@scholarlynest.com'],
+                ],
+                'magazine_editor' => [
+                    ['name' => 'Demo Magazine Editor', 'email' => 'magazine.editor@scholarlynest.com'],
+                ],
+                'journal_editor' => [
+                    ['name' => 'Demo Journal Editor', 'email' => 'journal.editor@scholarlynest.com'],
                 ],
                 'sub_editor' => [
                     ['name' => 'Sub Editor One', 'email' => 'subeditor1@example.com'],
@@ -188,7 +196,11 @@ class AcademicWorkflowDemoSeeder extends Seeder
             $questionnaireSeed = $this->seedReviewerQuestionnaire($superAdmin->id);
 
             // Seed Editor-Sub Editor relationships
-            $editors = $usersByRole['editor'] ?? [];
+            $editors = array_merge(
+                $usersByRole['super_editor'] ?? [],
+                $usersByRole['magazine_editor'] ?? [],
+                $usersByRole['journal_editor'] ?? [],
+            );
             $subEditors = $usersByRole['sub_editor'] ?? [];
 
             if (count($editors) >= 3 && count($subEditors) >= 3) {
@@ -313,10 +325,11 @@ class AcademicWorkflowDemoSeeder extends Seeder
 
             $magazineData = array_slice($magazineData, 0, count($magazineData) / 2);
             foreach ($magazineData as $idx => $m) {
+                $publicationType = $idx < 4 ? Magazine::TYPE_MAGAZINE : Magazine::TYPE_JOURNAL;
                 $editorIndex = (int)($idx / 2);
                 $publisherIndex = (int)($idx / 2);
 
-                $assignedEditor = $usersByRole['editor'][$editorIndex];
+                $assignedEditor = $editors[$editorIndex];
                 $assignedPublisher = $usersByRole['publisher'][$publisherIndex];
 
                 $mag = Magazine::create([
@@ -328,6 +341,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
                     'seo_title' => $m['title'] . ' | ScholarlyNest',
                     'seo_description' => Str::limit($m['description'], 150),
                     'seo_keywords' => 'research, magazine, ' . str_replace(' ', '', strtolower($m['title'])),
+                    'publication_type' => $publicationType,
                 ]);
 
                 $magToEditor[$mag->id] = $assignedEditor;
@@ -375,6 +389,17 @@ class AcademicWorkflowDemoSeeder extends Seeder
                         'updated_at' => now(),
                     ],
                 ]);
+
+                if ($idx === 4) {
+                    DB::table('magazine_user')->insert([
+                        'user_id' => $usersByRole['super_editor'][0]->id,
+                        'magazine_id' => $mag->id,
+                        'role' => 'editor',
+                        'assigned_by' => $superAdmin->id,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
 
                 // 3 Issues per magazine (2 published, 1 draft)
                 $issue1Id = DB::table('magazine_issues')->insertGetId([
@@ -839,9 +864,9 @@ class AcademicWorkflowDemoSeeder extends Seeder
 
                     if ($hasSubEditor) {
                         $validSubEditors = [];
-                        if ($editorUser->email === 'editor1@example.com') {
+                        if ($editorUser->email === 'super.editor@scholarlynest.com') {
                             $validSubEditors = [$subEditors[0], $subEditors[1]];
-                        } elseif ($editorUser->email === 'editor2@example.com') {
+                        } elseif ($editorUser->email === 'magazine.editor@scholarlynest.com') {
                             $validSubEditors = [$subEditors[1], $subEditors[2]];
                         } else {
                             $validSubEditors = [$subEditors[2]];
@@ -940,7 +965,6 @@ class AcademicWorkflowDemoSeeder extends Seeder
                             'due_date' => $createdAt->copy()->addDays(21),
                             'accepted_at' => $revAcceptedAt,
                             'completed_at' => $revCompletedAt,
-                            'scorecard' => json_encode(['originality' => 4, 'methodology' => 4, 'writing' => 3]),
                             'recommendation' => $revRec,
                             'comments_for_author' => $revComments,
                             'confidential_comments' => 'Solid paper.',
@@ -1522,7 +1546,6 @@ class AcademicWorkflowDemoSeeder extends Seeder
             'due_date' => $dueDate,
             'accepted_at' => $acceptedAt,
             'completed_at' => $completedAt,
-            'scorecard' => null,
             'recommendation' => null,
             'comments_for_author' => null,
             'confidential_comments' => null,
@@ -1571,7 +1594,7 @@ class AcademicWorkflowDemoSeeder extends Seeder
     {
         $sections = [
             'introduction' => '<h2>Introduction</h2><p>This article introduces a reproducible academic workflow for evaluating interdisciplinary submissions.</p>',
-            'materials_and_methods' => '<h2>Materials and methods</h2><p>The study uses simulated manuscript metadata, reviewer scorecards, and publication records.</p>',
+            'materials_and_methods' => '<h2>Materials and methods</h2><p>The study uses simulated manuscript metadata, reviewer assessments, and publication records.</p>',
             'discussion' => '<h2>Discussion</h2><p>The seeded results demonstrate how editorial state, review activity, and publication metadata connect.</p>',
             'supporting_information' => '<h2>Supporting information</h2><p>Supplementary PDF and image assets are provided as clean demo records.</p>',
             'acknowledgements' => '<h2>Acknowledgements</h2><p>The authors thank the demo editorial team for workflow validation.</p>',

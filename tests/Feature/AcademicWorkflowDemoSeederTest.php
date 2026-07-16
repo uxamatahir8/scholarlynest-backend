@@ -36,7 +36,7 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         // 3. Verify users created per role
         $demoEmails = [
             'author1@example.com', 'author2@example.com', 'author3@example.com',
-            'editor1@example.com', 'editor2@example.com', 'editor3@example.com',
+            'super.editor@scholarlynest.com', 'magazine.editor@scholarlynest.com', 'journal.editor@scholarlynest.com',
             'subeditor1@example.com', 'subeditor2@example.com', 'subeditor3@example.com',
             'reviewer1@example.com', 'reviewer2@example.com', 'reviewer3@example.com',
             'publisher1@example.com', 'publisher2@example.com', 'publisher3@example.com',
@@ -61,7 +61,7 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         }
 
         // 5. Verify magazine-user assignments (Editors & Publishers)
-        $this->assertEquals(12, DB::table('magazine_user')->count()); // 6 magazines * 2 users (1 editor, 1 publisher) = 12
+        $this->assertEquals(13, DB::table('magazine_user')->count()); // Base editor/publisher assignments plus one cross-type Super Editor assignment.
 
         // 6. Sub Editor assignments exist
         $this->assertGreaterThan(0, DB::table('sub_editor_assignments')->count());
@@ -91,9 +91,13 @@ class AcademicWorkflowDemoSeederTest extends TestCase
         $this->assertGreaterThan(0, DB::table('article_versions')->count());
 
         // 11. Test that Editors can see their assigned magazines/articles
-        $editor = User::where('email', 'editor1@example.com')->first();
+        $editor = User::where('email', 'super.editor@scholarlynest.com')->first();
         $editorMagazines = $editor->magazines;
-        $this->assertCount(2, $editorMagazines); // 2 magazines assigned to Editor 1 (out of 6 total magazines divided by 3 editors)
+        $this->assertGreaterThanOrEqual(2, $editorMagazines->count());
+        $this->assertTrue($editorMagazines->contains('publication_type', Magazine::TYPE_MAGAZINE));
+        $this->assertTrue($editorMagazines->contains('publication_type', Magazine::TYPE_JOURNAL));
+        $this->assertTrue(User::where('email', 'magazine.editor@scholarlynest.com')->firstOrFail()->magazines->every->isMagazine());
+        $this->assertTrue(User::where('email', 'journal.editor@scholarlynest.com')->firstOrFail()->magazines->every->isJournal());
 
         // 12. Test date range constraint
         $articles = Article::orderBy('created_at')->get();
