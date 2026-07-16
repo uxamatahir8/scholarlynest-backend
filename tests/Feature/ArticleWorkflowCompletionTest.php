@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAsset;
+use App\Models\ArticleFile;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
 use App\Models\Magazine;
@@ -500,6 +501,54 @@ class ArticleWorkflowCompletionTest extends TestCase
             ->assertJsonMissing(['reviewer_preferences'])
             ->assertJsonMissing(['private.reviewer@example.test'])
             ->assertJsonMissing(['invite_token_hash']);
+    }
+
+    public function test_publication_uses_one_clean_production_pdf_and_persists_public_visibility(): void
+    {
+        Storage::fake('s3');
+        $this->article->update(['status' => ArticleStatus::READY_FOR_PUBLICATION]);
+        $copyedited = ArticleFile::create([
+            'article_id' => $this->article->id,
+            'uploaded_by' => $this->admin->id,
+            'file_type' => ArticleFile::COPY_EDITED_FILE,
+            'visibility' => 'workflow',
+            'disk' => 's3',
+            'file_path' => 'clean/articles/production/final.pdf',
+            'storage_key' => 'clean/articles/production/final.pdf',
+            'original_name' => 'copyedited-final.pdf',
+            'safe_original_name' => 'copyedited-final.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 1024,
+            'scan_status' => 'clean',
+        ]);
+        Storage::disk('s3')->put($copyedited->storage_key, '%PDF production file');
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+        ])->assertForbidden();
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+            'publication_file_settings' => [[
+                'file_id' => $copyedited->id,
+                'show_on_article' => true,
+                'show_in_downloads' => true,
+                'include_in_package' => true,
+            ]],
+        ])->assertOk();
+
+        $this->assertSame($copyedited->storage_key, $this->article->fresh()->pdf_path);
+        $this->assertTrue((bool) data_get($copyedited->fresh()->metadata, 'publication_visibility.include_in_package'));
+        $this->getJson('/api/articles/workflow-completion-article')
+            ->assertOk()
+            ->assertJsonPath('article.publication_files.0.id', $copyedited->id)
+            ->assertJsonPath('article.publication_files.0.show_in_downloads', true);
     }
 
     private function pendingInvitation(string $email, string $token): ReviewerAssignment

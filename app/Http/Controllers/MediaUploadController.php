@@ -337,6 +337,21 @@ class MediaUploadController extends Controller
         ];
     }
 
+    public function preview(Request $request, MediaUploadSession $upload)
+    {
+        $this->authorizeSession($request, $upload);
+        if ($upload->status !== MediaUploadSession::STATUS_CLEAN || !$upload->s3_clean_key) {
+            return response()->json(['message' => 'The scanned upload preview is not available.'], 404);
+        }
+
+        return app(MediaStorageService::class)->downloadResponse(
+            $upload->s3_clean_key,
+            $upload->safe_display_filename ?: 'upload-preview',
+            $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'inline'
+        );
+    }
+
     private function authorizeSession(Request $request, MediaUploadSession $upload): void
     {
         if ($upload->user_id !== $request->user()->id) {

@@ -186,6 +186,11 @@ class ArticleFileController extends Controller
             'download_url' => ($file->scan_status ?? 'clean') === 'clean' ? "/api/articles/files/{$file->id}/download" : null,
             'assignment_type' => $file->assignment_type,
             'assignment_id' => $file->assignment_id,
+            'publication_visibility' => $file->metadata['publication_visibility'] ?? [
+                'show_on_article' => false,
+                'show_in_downloads' => false,
+                'include_in_package' => false,
+            ],
         ];
     }
 
@@ -211,8 +216,13 @@ class ArticleFileController extends Controller
         }
 
         if (!$user) {
-            return in_array($file->file_type, [ArticleFile::SUPPLEMENTARY, ArticleFile::PUBLICATION_PDF], true)
-                && ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED;
+            $isPublicationVisible = (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
+                || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads');
+            $isActivePublicationPdf = $file->file_type === ArticleFile::PUBLICATION_PDF
+                && ($file->storage_key ?: $file->file_path) === $article->pdf_path;
+
+            return ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED
+                && ($isPublicationVisible || $isActivePublicationPdf || $file->file_type === ArticleFile::SUPPLEMENTARY);
         }
 
         if ($article->user_id === $user->id || $this->isAuthorRecord($user, $article)) {

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Article;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Services\Media\MediaStorageService;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class PdfGeneratorService
@@ -32,12 +33,33 @@ class PdfGeneratorService
      */
     private function compileHtml(Article $article): string
     {
+        $article->loadMissing(['user', 'publicationSections']);
         $authorName = e($article->user->name);
         $authorEmail = e($article->user->email);
         $title = e($article->title);
-        $abstract = $article->abstract; // Managed via ProseMirror/Quill, already contains HTML
-        $fullText = $article->full_text; // Managed via ProseMirror/Quill, already contains HTML
-        $date = $article->created_at->format('F d, Y');
+        $date = ($article->published_at ?: $article->created_at)->format('F d, Y');
+        $sections = $article->publicationSections->sortBy('sort_order');
+        if ($sections->isEmpty()) {
+            $sections = collect([
+                (object) ['title' => 'Abstract', 'content_html' => $article->abstract, 'media_upload_session_id' => null],
+                (object) ['title' => 'Article', 'content_html' => $article->full_text, 'media_upload_session_id' => null],
+            ]);
+        }
+        $sectionHtml = $sections->map(function ($section) {
+            $imageHtml = '';
+            if (!empty($section->media_upload_session_id)) {
+                $upload = \App\Models\MediaUploadSession::find($section->media_upload_session_id);
+                $disk = $upload?->disk ?: config('media_uploads.disk', 's3');
+                if ($upload?->s3_clean_key && Storage::disk($disk)->exists($upload->s3_clean_key)) {
+                    $mime = $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'image/jpeg';
+                    $imageHtml = '<img class="section-image" src="data:' . e($mime) . ';base64,'
+                        . base64_encode(Storage::disk($disk)->get($upload->s3_clean_key)) . '" alt="' . e($section->title) . '">';
+                }
+            }
+
+            return '<section class="content-section"><h1>' . e($section->title) . '</h1>'
+                . $imageHtml . ($section->content_html ?: '') . '</section>';
+        })->implode('');
         
         return "
         <!DOCTYPE html>
@@ -125,6 +147,7 @@ class PdfGeneratorService
                 h1 { font-size: 14pt; margin-top: 30px; border-bottom: 1px solid #E2E8F0; padding-bottom: 5px; }
                 h2 { font-size: 12pt; margin-top: 25px; }
                 p { margin-bottom: 15px; text-align: justify; }
+                .section-image { display: block; max-width: 100%; max-height: 420px; margin: 14px auto 20px; object-fit: contain; }
             </style>
         </head>
         <body>
@@ -138,14 +161,7 @@ class PdfGeneratorService
                 <div class=\"date\">Published: {$date}</div>
             </div>
 
-            <div class=\"abstract-container\">
-                <div class=\"abstract-title\">Abstract</div>
-                <div>{$abstract}</div>
-            </div>
-
-            <div class=\"content-section\">
-                {$fullText}
-            </div>
+            {$sectionHtml}
 
             <div class=\"footer\">
                 ScholarlyNest Dynamic Publishing System • dev.scholarlynest.com

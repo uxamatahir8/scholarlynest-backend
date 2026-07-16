@@ -32,6 +32,7 @@ class PublishArticleRequest extends FormRequest
             'page_start' => 'nullable|integer|min:1',
             'page_end' => 'nullable|integer|min:1|gte:page_start',
             'publication_pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'final_source_file_id' => 'nullable|integer|exists:article_files,id',
             'article_type' => 'nullable|string|max:120',
             'article_category' => 'nullable|string|max:120',
             'open_access_label' => 'nullable|string|max:120',
@@ -52,6 +53,11 @@ class PublishArticleRequest extends FormRequest
             'publication_sections.*.content_html' => 'nullable|string',
             'publication_sections.*.sort_order' => 'nullable|integer|min:1|max:1000',
             'publication_sections.*.media_upload_session_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'publication_file_settings' => 'nullable|array',
+            'publication_file_settings.*.file_id' => 'required|integer|exists:article_files,id',
+            'publication_file_settings.*.show_on_article' => 'nullable|boolean',
+            'publication_file_settings.*.show_in_downloads' => 'nullable|boolean',
+            'publication_file_settings.*.include_in_package' => 'nullable|boolean',
         ];
     }
 }

@@ -1186,7 +1186,7 @@ class ArticleController extends Controller
 
     private function publicArticlePayload(Article $article, bool $includeBody = false): array
     {
-        $article->loadMissing(['assets', 'publicationSections', 'tags', 'magazine']);
+        $article->loadMissing(['assets', 'publicationSections', 'tags', 'magazine', 'files']);
 
         $payload = [
             'id' => $article->id,
@@ -1304,6 +1304,20 @@ class ArticleController extends Controller
                 ])
                 ->sortBy('sort_order')
                 ->values(),
+            'publication_files' => $article->files
+                ->filter(fn ($file) => ($file->scan_status ?? 'clean') === 'clean')
+                ->filter(fn ($file) => (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
+                    || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'))
+                ->map(fn ($file) => [
+                    'id' => $file->id,
+                    'title' => $file->file_title ?: $file->original_name,
+                    'original_name' => $file->original_name,
+                    'mime_type' => $file->mime_type,
+                    'size' => $file->size,
+                    'show_on_article' => (bool) data_get($file->metadata, 'publication_visibility.show_on_article'),
+                    'show_in_downloads' => (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'),
+                    'download_url' => url("/api/articles/files/{$file->id}/download"),
+                ])->values(),
         ];
 
         if ($includeBody) {

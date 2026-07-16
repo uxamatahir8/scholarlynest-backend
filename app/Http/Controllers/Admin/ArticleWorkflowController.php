@@ -1385,6 +1385,43 @@ class ArticleWorkflowController extends Controller
                 $upload = app(CleanUploadResolver::class)->resolveOwned($request->user(), $request->publication_pdf_upload_id, 'article_published_pdf');
                 $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_published_pdf'));
                 $article->pdf_path = $storedFile->file_path;
+            } elseif ($request->filled('final_source_file_id')) {
+                $sourceFile = ArticleFile::with('article')->findOrFail($request->integer('final_source_file_id'));
+                $isAcceptedFile = $article->activeAcceptedFileSet()
+                    ->whereHas('items', fn ($query) => $query->where('article_file_id', $sourceFile->id))
+                    ->exists();
+                $isProductionFile = in_array($sourceFile->file_type, [
+                    ArticleFile::COPY_EDITED_FILE,
+                    ArticleFile::PROOF_FILE,
+                    ArticleFile::PUBLICATION_PDF,
+                ], true);
+
+                if ((int) $sourceFile->article_id !== (int) $article->id
+                    || (!$isAcceptedFile && !$isProductionFile)
+                    || ($sourceFile->scan_status ?? 'clean') !== 'clean'
+                    || $sourceFile->mime_type !== 'application/pdf') {
+                    throw new HttpResponseException(response()->json([
+                        'message' => 'The selected final publication source must be a clean PDF from the accepted or production file sets.',
+                    ], 422));
+                }
+
+                $article->pdf_path = $sourceFile->storage_key ?: $sourceFile->file_path;
+            }
+
+            foreach ($request->input('publication_file_settings', []) as $setting) {
+                $file = ArticleFile::where('article_id', $article->id)->find($setting['file_id']);
+                if (!$file) {
+                    throw new HttpResponseException(response()->json([
+                        'message' => 'A publication file selection does not belong to this article.',
+                    ], 422));
+                }
+                $metadata = $file->metadata ?: [];
+                $metadata['publication_visibility'] = [
+                    'show_on_article' => (bool) ($setting['show_on_article'] ?? false),
+                    'show_in_downloads' => (bool) ($setting['show_in_downloads'] ?? false),
+                    'include_in_package' => (bool) ($setting['include_in_package'] ?? false),
+                ];
+                $file->update(['metadata' => $metadata]);
             }
 
             $article->update([
@@ -1414,6 +1451,7 @@ class ArticleWorkflowController extends Controller
             $this->persistPublicationSections($article, $request->input('publication_sections', []), $request->user());
 
             if (empty($article->pdf_path)) {
+                $article->unsetRelation('publicationSections');
                 $article->pdf_path = $this->pdfService->generate($article);
                 $article->save();
             }
@@ -2077,6 +2115,7 @@ class ArticleWorkflowController extends Controller
             'competing_interests_statement' => $article->competing_interests_statement,
             'abbreviations' => $article->abbreviations,
             'citation_text' => $article->citation_text,
+            'citation_text' => $article->citation_text,
             'status' => $article->status,
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
@@ -2429,6 +2468,15 @@ class ArticleWorkflowController extends Controller
             'status' => $article->status,
             'author_status' => ArticleStatus::AUTHOR_VISIBLE[ArticleStatus::normalize($article->status)] ?? $article->status,
             'doi' => $article->doi,
+            'open_access_label' => $article->open_access_label,
+            'is_peer_reviewed' => $article->is_peer_reviewed,
+            'academic_editor' => $article->academic_editor,
+            'received_at' => $article->received_at,
+            'accepted_at' => $article->accepted_at,
+            'license_statement' => $article->license_statement,
+            'competing_interests_statement' => $article->competing_interests_statement,
+            'abbreviations' => $article->abbreviations,
+            'citation_text' => $article->citation_text,
             'published_at' => $article->published_at,
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,

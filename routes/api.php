@@ -209,6 +209,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/{upload}/complete', [MediaUploadController::class, 'complete'])->middleware('throttle:media-upload-complete');
         Route::delete('/{upload}/abort', [MediaUploadController::class, 'abort'])->middleware('throttle:media-upload-read');
         Route::get('/{upload}/status', [MediaUploadController::class, 'status'])->middleware('throttle:media-upload-read');
+        Route::get('/{upload}/preview', [MediaUploadController::class, 'preview'])->middleware('throttle:media-upload-read');
     });
 
     // Article assets

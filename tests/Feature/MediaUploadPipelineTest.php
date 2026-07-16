@@ -69,6 +69,27 @@ class MediaUploadPipelineTest extends TestCase
         $this->postJson('/api/media/uploads/initiate', [])->assertUnauthorized();
     }
 
+    public function test_clean_upload_preview_is_available_only_to_its_owner(): void
+    {
+        $key = 'dev/clean/articles/publication-sections/preview.webp';
+        $upload = $this->uploadSession([
+            'purpose' => 'publication_section_image',
+            'original_filename' => 'preview.webp',
+            'safe_display_filename' => 'preview.webp',
+            'declared_mime_type' => 'image/webp',
+            'detected_mime_type' => 'image/webp',
+            's3_clean_key' => $key,
+            'status' => MediaUploadSession::STATUS_CLEAN,
+        ]);
+        Storage::disk('s3')->put($key, 'preview-bytes');
+
+        Sanctum::actingAs($this->otherUser);
+        $this->get("/api/media/uploads/{$upload->id}/preview?stream=1")->assertForbidden();
+
+        Sanctum::actingAs($this->author);
+        $this->get("/api/media/uploads/{$upload->id}/preview?stream=1")->assertOk();
+    }
+
     public function test_client_cannot_use_unknown_purpose_or_oversized_file(): void
     {
         Sanctum::actingAs($this->author);
