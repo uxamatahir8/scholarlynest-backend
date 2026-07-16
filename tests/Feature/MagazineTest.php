@@ -6,6 +6,8 @@ use App\Models\Magazine;
 use App\Models\MagazinePage;
 use App\Models\MagazineIssue;
 use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\ArticleVersion;
 use App\Models\Permission;
 use App\Models\MediaUploadSession;
 use App\Models\User;
@@ -87,6 +89,40 @@ class MagazineTest extends TestCase
         $magazine = Magazine::where('title', 'Cover Upload Magazine')->firstOrFail();
         $this->assertStringStartsWith('dev/clean/test/magazine_cover/', $magazine->cover_image);
         Storage::disk('s3')->assertExists($magazine->cover_image);
+    }
+
+    public function test_admin_can_create_publication_with_separate_main_and_banner_images(): void
+    {
+        $admin = User::factory()->create();
+        $admin->assignRole('super_admin');
+        Sanctum::actingAs($admin);
+
+        $mainUpload = $this->cleanUpload($admin, 'magazine_cover', 'main.webp');
+        $bannerUpload = $this->cleanUpload($admin, 'publication_banner_image', 'banner.webp');
+
+        $response = $this->postJson('/api/admin/journals', [
+            'title' => 'Image Safe Journal',
+            'publication_type' => 'journal',
+            'main_image_upload_id' => $mainUpload->id,
+            'banner_image_upload_id' => $bannerUpload->id,
+        ]);
+
+        $response->assertStatus(211)
+            ->assertJsonPath('magazine.publication_type', 'journal')
+            ->assertJsonPath('magazine.main_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonPath('magazine.banner_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonMissingPath('magazine.cover_image')
+            ->assertJsonMissingPath('magazine.banner_image');
+
+        $journal = Magazine::where('title', 'Image Safe Journal')->firstOrFail();
+        $this->assertSame($mainUpload->s3_clean_key, $journal->cover_image);
+        $this->assertSame($bannerUpload->s3_clean_key, $journal->banner_image);
+
+        $this->getJson('/api/journals/'.$journal->slug)
+            ->assertOk()
+            ->assertJsonPath('main_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonPath('banner_image_url', fn ($url) => is_string($url) && str_contains($url, '/api/media/objects/'))
+            ->assertJsonMissing(['banner_image' => $bannerUpload->s3_clean_key]);
     }
 
     /**
@@ -174,7 +210,7 @@ class MagazineTest extends TestCase
     /**
      * Test admin article review process.
      */
-    public function test_admin_can_approve_article_and_trigger_pdf(): void
+    public function test_admin_can_approve_article_and_create_accepted_file_set(): void
     {
         Storage::fake('public');
 
@@ -192,6 +228,7 @@ class MagazineTest extends TestCase
             'full_text' => 'Full text info',
             'status' => 'pending'
         ]);
+        $version = $this->attachSubmittedManuscript($article, $author);
 
         Sanctum::actingAs($admin);
 
@@ -202,10 +239,12 @@ class MagazineTest extends TestCase
         $response->assertStatus(200)
                  ->assertJsonPath('article.status', 'accepted');
 
-        // Check if a PDF path was generated on the database record
         $article->refresh();
-        $this->assertNotNull($article->pdf_path);
-        $this->assertStringContainsString('articles/scholarlynest_article_', $article->pdf_path);
+        $this->assertNull($article->pdf_path);
+        $this->assertDatabaseHas('article_accepted_file_sets', [
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+        ]);
     }
 
     /**
@@ -432,6 +471,7 @@ class MagazineTest extends TestCase
             'full_text' => 'Full text info',
             'status' => 'pending'
         ]);
+        $version = $this->attachSubmittedManuscript($article, $author);
 
         Sanctum::actingAs($user);
 
@@ -443,7 +483,11 @@ class MagazineTest extends TestCase
                  ->assertJsonPath('article.status', 'accepted');
 
         $article->refresh();
-        $this->assertNotNull($article->pdf_path);
+        $this->assertNull($article->pdf_path);
+        $this->assertDatabaseHas('article_accepted_file_sets', [
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+        ]);
     }
 
     /**
@@ -811,6 +855,34 @@ class MagazineTest extends TestCase
             'scanned_at' => now(),
             'expires_at' => now()->addHour(),
         ]);
+    }
+
+    private function attachSubmittedManuscript(Article $article, User $author): ArticleVersion
+    {
+        $version = ArticleVersion::create([
+            'article_id' => $article->id,
+            'created_by' => $author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+
+        ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'disk' => 's3',
+            'file_path' => 'clean/initial-manuscript.pdf',
+            'storage_key' => 'clean/initial-manuscript.pdf',
+            'original_name' => 'initial-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
+
+        return $version;
     }
 
 }

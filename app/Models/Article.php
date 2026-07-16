@@ -67,6 +67,11 @@ class Article extends Model
         'published_at',
         'author_final_approved_at',
         'author_final_approved_by',
+        'author_final_review_requested_at',
+        'author_final_review_due_at',
+        'author_final_rejected_at',
+        'author_final_rejection_reason',
+        'author_final_auto_approved_at',
         'published_year',
         'published_month',
         'page_start',
@@ -83,6 +88,10 @@ class Article extends Model
         'published_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
         'author_final_approved_at' => 'datetime',
+        'author_final_review_requested_at' => 'datetime',
+        'author_final_review_due_at' => 'datetime',
+        'author_final_rejected_at' => 'datetime',
+        'author_final_auto_approved_at' => 'datetime',
         'received_at' => 'date',
         'accepted_at' => 'date',
         'is_peer_reviewed' => 'boolean',
@@ -223,6 +232,18 @@ class Article extends Model
     public function latestVersion(): HasOne
     {
         return $this->hasOne(ArticleVersion::class)->ofMany('version_number', 'max');
+    }
+
+    public function acceptedFileSets(): HasMany
+    {
+        return $this->hasMany(ArticleAcceptedFileSet::class);
+    }
+
+    public function activeAcceptedFileSet(): HasOne
+    {
+        return $this->hasOne(ArticleAcceptedFileSet::class)
+            ->whereNull('superseded_at')
+            ->latestOfMany();
     }
 
     public function auditLogs(): HasMany

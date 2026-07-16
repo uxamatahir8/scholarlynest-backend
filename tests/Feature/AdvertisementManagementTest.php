@@ -78,6 +78,20 @@ class AdvertisementManagementTest extends TestCase
         }
     }
 
+    public function test_admin_list_exposes_display_metadata_without_storage_keys(): void
+    {
+        $publication = Magazine::create(['title' => 'Display Magazine', 'slug' => 'display-magazine', 'publication_type' => 'magazine']);
+        $article = $this->article($publication, 'display-article', 'published');
+        $this->postJson('/api/admin/advertisements', $this->payload($publication, $article))->assertCreated();
+
+        $this->getJson('/api/admin/advertisements')->assertOk()
+            ->assertJsonPath('data.0.image_url', fn ($value) => is_string($value) && $value !== '')
+            ->assertJsonPath('data.0.created_by.name', $this->admin->name)
+            ->assertJsonPath('data.0.targets.0.publication_name', 'Display Magazine')
+            ->assertJsonPath('data.0.targets.0.article_title', 'Display-article')
+            ->assertJsonMissingPath('data.0.image.storage_key');
+    }
+
     private function payload(Magazine $publication, Article $article): array
     {
         return ['title' => 'Published article ad', 'image_media_id' => $this->media->id, 'placement' => 'sidebar_sticky', 'status' => 'active', 'targets' => [[

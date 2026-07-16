@@ -61,7 +61,7 @@ class MediaUploadPolicy
             return;
         }
 
-        if (in_array($purpose, ['magazine_cover', 'issue_cover'], true)) {
+        if (in_array($purpose, ['magazine_cover', 'publication_banner_image', 'issue_cover'], true)) {
             if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
                 abort(403, 'This action is unauthorized.');
             }

@@ -41,7 +41,7 @@ final class SystemRoles
         ],
         'reviewer' => [
             'display_name' => 'Reviewer',
-            'description' => 'Completes assigned peer review scorecards and recommendations.',
+            'description' => 'Completes assigned peer reviews and recommendations.',
         ],
         'publisher' => [
             'display_name' => 'Publisher',

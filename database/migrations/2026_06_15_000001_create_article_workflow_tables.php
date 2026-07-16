@@ -33,7 +33,6 @@ return new class extends Migration
             $table->timestamp('due_date')->nullable();
             $table->timestamp('accepted_at')->nullable();
             $table->timestamp('completed_at')->nullable();
-            $table->json('scorecard')->nullable();
             $table->string('recommendation')->nullable();
             $table->text('comments_for_author')->nullable();
             $table->text('confidential_comments')->nullable();

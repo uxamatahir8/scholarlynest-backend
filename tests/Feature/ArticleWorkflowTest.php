@@ -5,11 +5,17 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleAuthor;
+use App\Models\ArticleFile;
+use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\Permission;
+use App\Models\ProductionAssignment;
+use App\Models\ReviewerAssignment;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\AcceptedFileSetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -44,7 +50,7 @@ class ArticleWorkflowTest extends TestCase
         }
 
         $editorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
-        $subEditorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
+        $subEditorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own'])->pluck('id'));
         $reviewerRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.edit-own'])->pluck('id'));
         $authorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.edit-own'])->pluck('id'));
 
@@ -98,6 +104,45 @@ class ArticleWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_assigned_sub_editor_can_invite_suggested_and_manual_reviewers_without_approval_permission(): void
+    {
+        $suggestedReviewer = ArticleReviewerPreference::create([
+            'article_id' => $this->article->id,
+            'created_by_author_id' => $this->author->id,
+            'type' => ArticleReviewerPreference::SUGGESTED,
+            'name' => 'Suggested Reviewer',
+            'email' => 'suggested.reviewer@example.test',
+            'affiliation' => 'Suggested University',
+        ]);
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-sub-editor", [
+            'sub_editor_id' => $this->subEditor->id,
+        ])->assertCreated();
+
+        Sanctum::actingAs($this->subEditor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'suggested_preference_id' => $suggestedReviewer->id,
+        ])->assertCreated();
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'name' => 'Manual Reviewer',
+            'email' => 'manual.reviewer@example.test',
+            'affiliation' => 'Manual University',
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'article_id' => $this->article->id,
+            'invitee_email' => 'suggested.reviewer@example.test',
+            'assigned_by' => $this->subEditor->id,
+        ]);
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'article_id' => $this->article->id,
+            'invitee_email' => 'manual.reviewer@example.test',
+            'assigned_by' => $this->subEditor->id,
+        ]);
+    }
+
     public function test_article_registry_supports_column_filters_and_scoped_author_options(): void
     {
         $issue = MagazineIssue::create([
@@ -139,6 +184,26 @@ class ArticleWorkflowTest extends TestCase
         $copyEditor = User::factory()->create(['role_id' => $copyEditorRole->id]);
         $publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
         $this->article->update(['status' => ArticleStatus::ACCEPTED]);
+        $version = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+        ArticleFile::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'file_path' => 'clean/production-source.pdf',
+            'original_name' => 'production-source.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
+        app(AcceptedFileSetService::class)->createForCurrentSubmission($this->article, $this->editor);
 
         Sanctum::actingAs($this->editor);
         $this->postJson("/api/admin/articles/{$this->article->id}/production-assignments", [
@@ -162,10 +227,29 @@ class ArticleWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 5],
             'recommendation' => 'accept',
             'comments_for_author' => 'Strong paper.',
         ])->assertStatus(200);
+
+        $version = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+        ArticleFile::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'file_path' => 'clean/workflow-manuscript.pdf',
+            'original_name' => 'workflow-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
 
         Sanctum::actingAs($this->editor);
         $this->postJson("/api/admin/articles/{$this->article->id}/final-decision", [
@@ -195,7 +279,7 @@ class ArticleWorkflowTest extends TestCase
 
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Author final approval is available only during proofreading.');
+            ->assertJsonPath('message', 'Author publication review is available only after copyediting is completed.');
     }
 
     public function test_author_final_review_blocks_wrong_state_wrong_user_and_duplicates(): void
@@ -215,7 +299,7 @@ class ArticleWorkflowTest extends TestCase
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Author final approval is available only during proofreading.');
+            ->assertJsonPath('message', 'Author publication review is available only after copyediting is completed.');
 
         $this->article->update(['status' => ArticleStatus::PROOFREADING]);
 
@@ -230,6 +314,81 @@ class ArticleWorkflowTest extends TestCase
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
             ->assertStatus(422)
             ->assertJsonPath('message', 'This manuscript has already been approved for final review.');
+    }
+
+    public function test_author_can_deny_publication_with_reason_and_reopen_copyediting(): void
+    {
+        $assignment = ProductionAssignment::create([
+            'article_id' => $this->article->id,
+            'user_id' => $this->editor->id,
+            'role' => 'copy_editor',
+            'assigned_by' => $this->admin->id,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+        $this->article->update([
+            'status' => ArticleStatus::PROOFREADING,
+            'author_final_review_requested_at' => now(),
+            'author_final_review_due_at' => now()->addDays(14),
+        ]);
+
+        Sanctum::actingAs($this->author);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review", ['decision' => 'denied'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('reason');
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review", [
+            'decision' => 'denied',
+            'reason' => 'Please correct the author affiliation in the copyedited file.',
+        ])->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::COPY_EDITING);
+
+        $this->assertDatabaseHas('production_assignments', [
+            'id' => $assignment->id,
+            'status' => 'pending',
+            'completed_at' => null,
+        ]);
+        $this->assertDatabaseHas('articles', [
+            'id' => $this->article->id,
+            'status' => ArticleStatus::COPY_EDITING,
+            'author_final_rejection_reason' => 'Please correct the author affiliation in the copyedited file.',
+            'author_final_review_due_at' => null,
+        ]);
+    }
+
+    public function test_expired_author_review_is_automatically_approved_but_future_review_is_not(): void
+    {
+        $this->article->update([
+            'status' => ArticleStatus::PROOFREADING,
+            'author_final_review_requested_at' => now()->subDays(14)->subMinute(),
+            'author_final_review_due_at' => now()->subMinute(),
+        ]);
+        $future = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->author->id,
+            'title' => 'Future Author Review',
+            'slug' => 'future-author-review',
+            'abstract' => 'Abstract',
+            'full_text' => 'Text',
+            'status' => ArticleStatus::PROOFREADING,
+            'author_final_review_requested_at' => now(),
+            'author_final_review_due_at' => now()->addMinute(),
+        ]);
+
+        $this->artisan('workflow:auto-approve-author-final-reviews')
+            ->expectsOutput('Author final reviews automatically approved: 1')
+            ->assertSuccessful();
+
+        $approved = $this->article->fresh();
+        $this->assertSame(ArticleStatus::READY_FOR_PUBLICATION, $approved->status);
+        $this->assertNotNull($approved->author_final_approved_at);
+        $this->assertNotNull($approved->author_final_auto_approved_at);
+        $this->assertNull($approved->author_final_approved_by);
+        $this->assertSame(ArticleStatus::PROOFREADING, $future->fresh()->status);
+        $this->assertDatabaseHas('article_audit_logs', [
+            'article_id' => $this->article->id,
+            'event' => 'author.final_review_auto_approved',
+        ]);
     }
 
     public function test_sub_editor_recommendation_and_reviewer_acceptance(): void
@@ -286,6 +445,36 @@ class ArticleWorkflowTest extends TestCase
             ->assertJsonPath('article.reviewer_assignments.0.invitation_state', 'accepted');
     }
 
+    public function test_declined_reviewer_can_be_invited_again(): void
+    {
+        Sanctum::actingAs($this->editor);
+        $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->assertCreated()->json('assignment.id');
+
+        $assignment = ReviewerAssignment::findOrFail($assignmentId);
+        $originalTokenHash = $assignment->invite_token_hash;
+        $assignment->update([
+            'status' => 'declined',
+            'declined_at' => now(),
+            'invite_token_hash' => null,
+        ]);
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'reviewer_id' => $this->reviewer->id,
+        ])->assertCreated()
+            ->assertJsonPath('assignment.id', $assignmentId)
+            ->assertJsonPath('assignment.invitation_state', 'invited');
+
+        $this->assertDatabaseCount('reviewer_assignments', 1);
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'id' => $assignmentId,
+            'status' => 'pending',
+            'declined_at' => null,
+        ]);
+        $this->assertNotSame($originalTokenHash, ReviewerAssignment::findOrFail($assignmentId)->invite_token_hash);
+    }
+
     public function test_workflow_context_hides_confidential_notes_and_audit_logs_from_author(): void
     {
         Sanctum::actingAs($this->editor);
@@ -295,7 +484,6 @@ class ArticleWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->reviewer);
         $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/submit-review", [
-            'scorecard' => ['originality' => 4, 'methodology' => 5],
             'recommendation' => 'minor_revision',
             'comments_for_author' => 'Please clarify the methods.',
             'confidential_comments' => 'Confidential editor-only concern.',

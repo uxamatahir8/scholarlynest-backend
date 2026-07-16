@@ -99,7 +99,6 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
             'recommendation' => 'accept',
             'comments_for_author' => 'Author-facing review',
             'confidential_comments' => 'Reviewer confidential comments',
-            'scorecard' => ['quality' => 5],
         ]);
 
         ProductionAssignment::create([
@@ -271,18 +270,31 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
         $this->assertSame('Reviewer confidential comments', $payload['article']['reviewer_assignments'][0]['confidential_comments'] ?? null);
     }
 
-    public function test_sub_editor_workflow_context_excludes_reviewer_confidential_comments_and_audit_logs(): void
+    public function test_assigned_sub_editor_receives_editor_visibility_only_for_assigned_articles(): void
     {
         Sanctum::actingAs($this->subEditor);
 
         $payload = $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
-            ->assertJsonMissing(['confidential_comments' => 'Reviewer confidential comments'])
-            ->assertJsonMissing(['internal_note' => 'hidden'])
+            ->assertJsonFragment(['confidential_comments' => 'Reviewer confidential comments'])
+            ->assertJsonFragment(['internal_notes' => 'Editor-only decision notes'])
+            ->assertJsonFragment(['event' => 'review.internal'])
             ->json();
 
         $this->assertPayloadHasNoStoragePaths($payload);
-        $this->assertSame([], $payload['article']['audit_logs']);
+        $this->assertNotEmpty($payload['article']['audit_logs']);
+
+        $unassignedArticle = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->author->id,
+            'title' => 'Unassigned Manuscript',
+            'slug' => 'unassigned-manuscript',
+            'abstract' => 'Abstract',
+            'full_text' => 'Manuscript body',
+            'status' => ArticleStatus::REVIEW_IN_PROGRESS,
+        ]);
+
+        $this->getJson("/api/admin/articles/{$unassignedArticle->id}/workflow")->assertForbidden();
     }
 
     public function test_editor_assignee_response_is_scoped_and_excludes_email(): void

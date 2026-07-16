@@ -143,6 +143,7 @@ trait ValidatesArticleSubmission
             'suggested_reviewers' => $this->normalizedReviewerPreferences['suggested'],
             'opposed_reviewers' => $this->normalizedReviewerPreferences['opposed'],
             'keywords' => $this->decodeArrayInput($this->input('keywords', [])),
+            'additional_manuscript_files' => $this->decodeArrayInput($this->input('additional_manuscript_files', [])),
             'status' => ArticleStatus::normalize($this->input('status')),
             'publication_type' => $this->input('publication_type', Magazine::TYPE_MAGAZINE),
         ]);
@@ -166,6 +167,10 @@ trait ValidatesArticleSubmission
             'revision_response_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'additional_file_ids' => 'nullable|array',
             'additional_file_ids.*' => 'integer|exists:article_files,id',
+            'additional_manuscript_files' => 'nullable|array',
+            'additional_manuscript_files.*.file_title' => 'required|string|max:255',
+            'additional_manuscript_files.*.upload_id' => 'nullable|string|exists:media_upload_sessions,id|required_without:additional_manuscript_files.*.article_file_id',
+            'additional_manuscript_files.*.article_file_id' => 'nullable|integer|exists:article_files,id|required_without:additional_manuscript_files.*.upload_id',
             'revision_response' => 'prohibited',
             'tags' => 'nullable',
             'keywords' => 'nullable|array',

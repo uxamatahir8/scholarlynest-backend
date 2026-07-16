@@ -13,6 +13,7 @@ class ArticleFile extends Model
     public const ANNOTATED_MANUSCRIPT = 'annotated_manuscript';
     public const REVIEWED_MANUSCRIPT = 'reviewed_manuscript';
     public const REVISION_RESPONSE = 'revision_response';
+    public const ADDITIONAL_MANUSCRIPT_FILE = 'additional_manuscript_file';
     public const COPY_EDITED_FILE = 'copy_edited_file';
     public const PROOF_FILE = 'proof_file';
     public const PUBLICATION_PDF = 'publication_pdf';
@@ -24,6 +25,7 @@ class ArticleFile extends Model
         self::ANNOTATED_MANUSCRIPT,
         self::REVIEWED_MANUSCRIPT,
         self::REVISION_RESPONSE,
+        self::ADDITIONAL_MANUSCRIPT_FILE,
         self::COPY_EDITED_FILE,
         self::PROOF_FILE,
         self::PUBLICATION_PDF,
@@ -32,11 +34,13 @@ class ArticleFile extends Model
     protected $fillable = [
         'article_id',
         'article_version_id',
+        'media_upload_session_id',
         'source_asset_id',
         'uploaded_by',
         'assignment_type',
         'assignment_id',
         'file_type',
+        'file_title',
         'visibility',
         'disk',
         'file_path',

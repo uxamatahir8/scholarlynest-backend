@@ -12,6 +12,7 @@ use App\Models\Permission;
 use App\Models\ProductionAssignment;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\AcceptedFileSetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Str;
@@ -143,6 +144,7 @@ class ProductionDashboardTest extends TestCase
             'file_type' => ArticleFile::MANUSCRIPT, 'visibility' => 'author_visible', 'file_path' => 'latest.pdf',
             'original_name' => 'latest.pdf', 'mime_type' => 'application/pdf', 'size' => 10, 'scan_status' => 'clean',
         ]);
+        app(AcceptedFileSetService::class)->createForCurrentSubmission($article, $this->admin);
         ProductionAssignment::create([
             'article_id' => $article->id, 'user_id' => $this->copyEditor->id, 'role' => 'copy_editor',
             'assigned_by' => $this->publisher->id, 'status' => 'pending',
@@ -357,12 +359,17 @@ class ProductionDashboardTest extends TestCase
 
         $this->postJson("/api/admin/production-assignments/{$own->id}/complete")
             ->assertOk()
-            ->assertJsonPath('assignment.status', 'completed');
+            ->assertJsonPath('assignment.status', 'completed')
+            ->assertJsonPath('article.status', ArticleStatus::PROOFREADING);
 
         $this->assertDatabaseHas('production_assignments', [
             'id' => $own->id,
             'status' => 'completed',
         ]);
+        $reviewArticle = $own->article->fresh();
+        $this->assertNotNull($reviewArticle->author_final_review_requested_at);
+        $this->assertNotNull($reviewArticle->author_final_review_due_at);
+        $this->assertEquals(14, $reviewArticle->author_final_review_requested_at->diffInDays($reviewArticle->author_final_review_due_at));
     }
 
     public function test_observer_mode_can_list_copy_editor_tasks_but_cannot_complete_them(): void

@@ -60,6 +60,7 @@ class ArticleVersionService
                 ArticleFile::MANUSCRIPT,
                 ArticleFile::SUPPLEMENTARY,
                 ArticleFile::REVISION_RESPONSE,
+                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
                 ArticleFile::PUBLICATION_PDF,
             ]);
 
@@ -139,6 +140,8 @@ class ArticleVersionService
             'revision_tracking_code' => $version->revision_tracking_code,
             'label' => $version->label,
             'status_snapshot' => $version->status_snapshot,
+            'accepted_at' => $version->accepted_at,
+            'accepted_by' => $version->accepted_by,
             'metadata_snapshot' => $this->safeMetadataSnapshot($version->metadata_snapshot ?? [], $viewer),
             'file_snapshot' => $this->visibleFileSnapshot($version->file_snapshot ?? [], $visibleFiles),
             'files' => $visibleFiles,
@@ -183,6 +186,7 @@ class ArticleVersionService
         return [
             'id' => $file->id,
             'file_type' => $file->file_type,
+            'file_title' => $file->file_title,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,

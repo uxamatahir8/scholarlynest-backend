@@ -19,10 +19,12 @@ class AdvertisementController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Advertisement::with(['targets', 'image:id,storage_key,scan_status', 'creator:id,name']);
+        $query = Advertisement::with(['targets.publication:id,title,slug,publication_type', 'targets.article:id,title,slug,magazine_id', 'image:id,storage_key,scan_status', 'creator:id,name']);
         foreach (['status', 'placement'] as $field) if ($request->filled($field)) $query->where($field, $request->input($field));
         if ($request->filled('search')) $query->where('title', 'like', '%'.$request->input('search').'%');
-        return response()->json($query->orderByDesc('created_at')->paginate(min($request->integer('per_page', 20), 100)));
+        $paginator = $query->orderByDesc('created_at')->paginate(min($request->integer('per_page', 20), 100));
+        $paginator->through(fn (Advertisement $advertisement) => $this->adminPayload($advertisement));
+        return response()->json($paginator);
     }
 
     public function store(AdvertisementRequest $request): JsonResponse
@@ -83,8 +85,50 @@ class AdvertisementController extends Controller
             ->orderBy('title')->get(['id', 'title', 'slug', 'magazine_id'])]);
     }
 
-    private function adminPayload(Advertisement $advertisement): Advertisement
+    private function adminPayload(Advertisement $advertisement): array
     {
-        return $advertisement->fresh()->load(['targets', 'image:id,storage_key,scan_status', 'creator:id,name']);
+        $advertisement->loadMissing(['targets.publication:id,title,slug,publication_type', 'targets.article:id,title,slug,magazine_id', 'image:id,storage_key,scan_status', 'creator:id,name']);
+        $public = $advertisement->publicPayload();
+        return [
+            'id' => $advertisement->id,
+            'title' => $advertisement->title,
+            'alt_text' => $advertisement->alt_text,
+            'image_media_id' => $advertisement->image_media_id,
+            'image_url' => $public['image_url'],
+            'redirect_url' => $advertisement->redirect_url,
+            'open_in_new_tab' => $advertisement->open_in_new_tab,
+            'placement' => $advertisement->placement,
+            'status' => $advertisement->status,
+            'priority' => $advertisement->priority,
+            'starts_at' => $advertisement->starts_at?->toISOString(),
+            'ends_at' => $advertisement->ends_at?->toISOString(),
+            'created_at' => $advertisement->created_at?->toISOString(),
+            'updated_at' => $advertisement->updated_at?->toISOString(),
+            'created_by' => $advertisement->creator ? ['id' => $advertisement->creator->id, 'name' => $advertisement->creator->name] : null,
+            'targets' => $advertisement->targets->map(fn ($target) => [
+                'id' => $target->id,
+                'target_area' => $target->target_area,
+                'target_mode' => $target->target_mode,
+                'publication_type' => $target->publication_type,
+                'publication_id' => $target->publication_id,
+                'publication_label' => $target->publication_type ? ucfirst($target->publication_type) : null,
+                'publication_name' => $target->publication?->title,
+                'publication_slug' => $target->publication?->slug,
+                'page_key' => $target->page_key,
+                'page_label' => $target->page_key ? $this->pageLabel($target->page_key) : null,
+                'article_id' => $target->article_id,
+                'article_title' => $target->article?->title,
+                'article_slug' => $target->article?->slug,
+            ])->values()->all(),
+        ];
+    }
+
+    private function pageLabel(string $key): string
+    {
+        return match ($key) {
+            'home' => 'Home', 'about' => 'About', 'contact' => 'Contact', 'faq' => 'FAQs',
+            'about-and-overview' => 'About and Overview', 'table-of-contents' => 'Table of Contents',
+            default => str($key)->replace(['-', '_'], ' ')->title()->toString(),
+        };
     }
 }

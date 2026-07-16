@@ -69,7 +69,7 @@ final class ArticleStatus
         self::MAJOR_REVISION_REQUIRED => [self::RESUBMITTED, self::WITHDRAWN],
         self::RESUBMITTED => [self::UNDER_REVIEW, self::REVIEWER_ASSIGNED, self::ACCEPTED, self::REJECTED],
         self::ACCEPTED => [self::COPY_EDITING, self::READY_FOR_PUBLICATION, self::PUBLISHED],
-        self::COPY_EDITING => [self::READY_FOR_PUBLICATION],
+        self::COPY_EDITING => [self::PROOFREADING, self::READY_FOR_PUBLICATION],
         self::PROOFREADING => [self::READY_FOR_PUBLICATION, self::COPY_EDITING],
         self::READY_FOR_PUBLICATION => [self::PUBLISHED],
         self::PUBLISHED => [self::ARCHIVED, self::WITHDRAWN],
@@ -103,7 +103,6 @@ final class ArticleStatus
         self::REVISION_REQUIRED,
         self::MINOR_REVISION_REQUIRED,
         self::MAJOR_REVISION_REQUIRED,
-        self::READY_FOR_PUBLICATION,
     ];
 
     public static function normalize(?string $status): ?string

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Magazine;
 use App\Models\MagazinePage;
+use App\Models\SharedPublicPage;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\NotificationService;
@@ -97,7 +98,7 @@ class MagazineController extends Controller
 
     /**
      * GET /api/admin/magazines/{slug}
-     * Authenticated management detail scoped to assigned magazines and page ownership.
+     * Authenticated management detail scoped to assigned magazines.
      */
     public function adminShow(Request $request, string $slug): JsonResponse
     {
@@ -121,11 +122,7 @@ class MagazineController extends Controller
             return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
-        if ($this->isEditorOnly($user)) {
-            $magazine->setRelation('pages', $magazine->pages
-                ->filter(fn (MagazinePage $page) => (int) $page->created_by === (int) $user->id && (bool) $page->is_editor_created)
-                ->values());
-        } elseif (!$this->hasGlobalMagazineAccess($user) && $user->hasRole('publisher')) {
+        if (!$this->hasGlobalMagazineAccess($user) && $user->hasRole('publisher')) {
             $magazine->setRelation('pages', collect());
         }
 
@@ -263,6 +260,11 @@ class MagazineController extends Controller
             ->where('status', 'active')
             ->first();
 
+        $isShared = false;
+        if (!$page) {
+            $page = SharedPublicPage::query()->visibleFor($magazine)->where('slug', $pageSlug)->first();
+            $isShared = (bool) $page;
+        }
         if (!$page) {
             return response()->json(['message' => 'Page not found.'], 404);
         }
@@ -274,12 +276,13 @@ class MagazineController extends Controller
                 'title' => $page->title,
                 'slug' => $page->slug,
                 'content' => $page->content,
+                'is_shared' => $isShared,
             ],
             'seo' => [
-                'title' => $page->title . ' | ' . $magazine->title . ' | ScholarlyNest',
-                'description' => Str::limit(strip_tags($page->content), 160, ''),
+                'title' => ($isShared && $page->seo_title ? $page->seo_title : $page->title) . ' | ' . $magazine->title . ' | ScholarlyNest',
+                'description' => $isShared && $page->seo_description ? $page->seo_description : Str::limit(strip_tags($page->content), 160, ''),
                 'keywords' => $magazine->seo_keywords ?: '',
-                'og_image' => $magazine->cover_image,
+                'og_image' => $magazine->cover_image_url,
             ],
         ]);
     }
@@ -307,13 +310,13 @@ class MagazineController extends Controller
 
     /**
      * POST /api/admin/magazines
-     * Create a new magazine (Admin only).
+     * Create a new magazine (Super Admin only).
      */
     public function store(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Super Admin privileges required.'], 403);
         }
 
         $validated = $request->validate([
@@ -321,6 +324,9 @@ class MagazineController extends Controller
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable', // can be file or string
             'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'main_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'banner_image' => 'nullable',
+            'banner_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -334,9 +340,12 @@ class MagazineController extends Controller
         $coverImagePath = null;
         if ($request->hasFile('cover_image')) {
             return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
-        } elseif (!empty($validated['cover_image_upload_id'])) {
-            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
+        } elseif (!empty($validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'] ?? null)) {
+            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'], 'magazine_cover');
         }
+        $bannerImagePath = !empty($validated['banner_image_upload_id'])
+            ? app(CleanUploadResolver::class)->cleanKey($user, $validated['banner_image_upload_id'], 'publication_banner_image')
+            : null;
 
         $slug = Str::slug($validated['title']) . '-' . Str::random(5);
 
@@ -344,6 +353,7 @@ class MagazineController extends Controller
             'title' => $validated['title'],
             'slug' => $slug,
             'cover_image' => $coverImagePath,
+            'banner_image' => $bannerImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
             'publication_type' => $this->requestedPublicationType($request),
@@ -419,22 +429,18 @@ class MagazineController extends Controller
 
     /**
      * POST /api/admin/magazines/{id}/pages
-     * Create or update custom sub-pages for a magazine (Admin only).
+     * Create custom sub-pages for a magazine (Admin or Super Admin only).
      */
     public function storePage(Request $request, int $magazineId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
-            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
         if (!$magazine) {
             return response()->json(['message' => 'Magazine not found.'], 404);
-        }
-
-        if ($user->hasRole('editor') && !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])) {
-            return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
         }
 
         $validated = $request->validate([
@@ -466,13 +472,13 @@ class MagazineController extends Controller
 
     /**
      * PUT /api/admin/magazines/{id}
-     * Update an existing magazine (Admin only).
+     * Update an existing magazine (Super Admin only).
      */
     public function update(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
-            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
+        if (!$user || !$user->hasRole('super_admin')) {
+            return response()->json(['message' => 'Forbidden. Super Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($id);
@@ -488,6 +494,9 @@ class MagazineController extends Controller
             'title' => 'required|string|max:255',
             'cover_image' => 'nullable',
             'cover_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'main_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
+            'banner_image' => 'nullable',
+            'banner_image_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'description' => 'nullable|string',
             'about_text' => 'nullable|string',
             'seo_title' => 'nullable|string|max:255',
@@ -498,16 +507,35 @@ class MagazineController extends Controller
         $coverImagePath = $magazine->cover_image;
         if ($request->hasFile('cover_image')) {
             return response()->json(['message' => 'Raw browser uploads are disabled for magazine covers. Use the direct S3 upload-session flow.'], 410);
-        } elseif (!empty($validated['cover_image_upload_id'])) {
-            $this->mediaStorage->delete($coverImagePath);
-            $coverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['cover_image_upload_id'], 'magazine_cover');
+        } elseif (!empty($validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'] ?? null)) {
+            $newCoverImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['main_image_upload_id'] ?? $validated['cover_image_upload_id'], 'magazine_cover');
+            if ($newCoverImagePath !== $coverImagePath) {
+                $this->mediaStorage->delete($coverImagePath);
+            }
+            $coverImagePath = $newCoverImagePath;
         } elseif ($request->has('cover_image') && !$request->input('cover_image')) {
+            $this->mediaStorage->delete($coverImagePath);
             $coverImagePath = null;
+        }
+
+        $bannerImagePath = $magazine->banner_image;
+        if ($request->hasFile('banner_image')) {
+            return response()->json(['message' => 'Raw browser uploads are disabled for publication banners. Use the direct S3 upload-session flow.'], 410);
+        } elseif (!empty($validated['banner_image_upload_id'])) {
+            $newBannerImagePath = app(CleanUploadResolver::class)->cleanKey($user, $validated['banner_image_upload_id'], 'publication_banner_image');
+            if ($newBannerImagePath !== $bannerImagePath) {
+                $this->mediaStorage->delete($bannerImagePath);
+            }
+            $bannerImagePath = $newBannerImagePath;
+        } elseif ($request->has('banner_image') && !$request->input('banner_image')) {
+            $this->mediaStorage->delete($bannerImagePath);
+            $bannerImagePath = null;
         }
 
         $updateData = [
             'title' => $validated['title'],
             'cover_image' => $coverImagePath,
+            'banner_image' => $bannerImagePath,
             'description' => $validated['description'] ?? null,
             'about_text' => $validated['about_text'] ?? null,
         ];
@@ -540,7 +568,7 @@ class MagazineController extends Controller
 
     /**
      * DELETE /api/admin/magazines/{id}
-     * Delete an existing magazine (Admin only).
+     * Delete an existing magazine (Super Admin only).
      */
     public function destroy(Request $request, int $id): JsonResponse
     {
@@ -566,13 +594,13 @@ class MagazineController extends Controller
 
     /**
      * PUT /api/admin/magazines/{magazineId}/pages/{pageId}
-     * Update an existing sub-page (Admin only).
+     * Update an existing sub-page (Admin or Super Admin only).
      */
     public function updatePage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
         $user = $request->user();
-        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin') && !$user->hasRole('editor'))) {
-            return response()->json(['message' => 'Forbidden. Admin or assigned editor privileges required.'], 403);
+        if (!$user || (!$user->hasRole('super_admin') && !$user->hasRole('admin'))) {
+            return response()->json(['message' => 'Forbidden. Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::find($magazineId);
@@ -583,14 +611,6 @@ class MagazineController extends Controller
         $page = $magazine->pages()->find($pageId);
         if (!$page) {
             return response()->json(['message' => 'Page not found.'], 404);
-        }
-
-        if ($user->hasRole('editor') && (
-            !$this->isAssignedMagazineRole($user, $magazine->id, ['editor'])
-            || (int) $page->created_by !== (int) $user->id
-            || !$page->is_editor_created
-        )) {
-            return response()->json(['message' => 'Forbidden. Editors can edit only their own pages for assigned magazines.'], 403);
         }
 
         $validated = $request->validate([
@@ -617,7 +637,7 @@ class MagazineController extends Controller
 
     /**
      * DELETE /api/admin/magazines/{magazineId}/pages/{pageId}
-     * Delete an existing sub-page (Admin only).
+     * Delete an existing sub-page (Super Admin only).
      */
     public function destroyPage(Request $request, int $magazineId, int $pageId): JsonResponse
     {
@@ -656,6 +676,8 @@ class MagazineController extends Controller
             'slug' => $magazine->slug,
             'cover_image' => $magazine->cover_image_url,
             'cover_image_url' => $magazine->cover_image_url,
+            'main_image_url' => $magazine->main_image_url,
+            'banner_image_url' => $magazine->banner_image_url,
             'description' => $magazine->description,
             'publication_type' => $magazine->publication_type,
             'publication_label' => $magazine->publicationTypeLabel(),
@@ -689,11 +711,20 @@ class MagazineController extends Controller
 
     private function publicShellPayload(Magazine $magazine): array
     {
+        $specificPages = $magazine->pages()
+            ->where('status', 'active')
+            ->get(['id', 'magazine_id', 'title', 'slug', 'sort_order'])
+            ->map(fn ($page) => array_merge($page->toArray(), ['is_shared' => false]));
+        $specificSlugs = $specificPages->pluck('slug');
+        $sharedPages = SharedPublicPage::query()->visibleFor($magazine)
+            ->where('show_in_navigation', true)
+            ->whereNotIn('slug', $specificSlugs)
+            ->get(['id', 'title', 'slug', 'sort_order'])
+            ->map(fn ($page) => array_merge($page->toArray(), ['is_shared' => true]));
+
         return array_merge($this->publicMagazinePayload($magazine), [
-            'pages' => $magazine->pages()
-                ->where('status', 'active')
-                ->orderBy('sort_order')
-                ->get(['id', 'magazine_id', 'title', 'slug', 'sort_order'])
+            'pages' => $specificPages->concat($sharedPages)
+                ->sortBy(fn ($page) => sprintf('%010d-%s', $page['sort_order'], $page['title']))
                 ->values(),
         ]);
     }
@@ -807,13 +838,6 @@ class MagazineController extends Controller
         return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
     }
 
-    private function isEditorOnly($user): bool
-    {
-        return $user
-            && !$this->hasGlobalMagazineAccess($user)
-            && $user->hasRole('editor');
-    }
-
     private function assignedMagazineIds($user, array $roles): array
     {
         if (!$user) {
@@ -877,8 +901,8 @@ class MagazineController extends Controller
     public function updateSeo(Request $request, string $slug): JsonResponse
     {
         $user = $request->user();
-        if (!$user || !$user->hasPermission('seo.magazines')) {
-            return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
+        if (!$user || !$user->hasRole('super_admin') || !$user->hasPermission('seo.magazines')) {
+            return response()->json(['message' => 'Unauthorized. Super Admin privileges required.'], 403);
         }
 
         $magazine = Magazine::where('slug', $slug)->firstOrFail();

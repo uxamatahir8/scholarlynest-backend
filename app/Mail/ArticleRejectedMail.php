@@ -62,7 +62,7 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
             '• <strong>Tracking Code:</strong> ' . e($this->article->tracking_code ?? 'Not assigned'),
             '<br><strong>Decision:</strong>',
             '• <strong>Outcome:</strong> ' . e($typeLabel),
-            '• <strong>Decision Date:</strong> ' . now()->toDateTimeString(),
+            '• <strong>Decision Date:</strong> ' . now()->format('d-M-Y H:i'),
         ];
 
         if ($this->feedbackNotes) {
@@ -78,6 +78,7 @@ class ArticleRejectedMail extends Mailable implements ShouldQueue
 
         return new Content(
             view: 'emails.generic',
+            text: 'emails.generic-text',
             with: [
                 'subject' => $this->envelope()->subject,
                 'greeting' => 'Dear ' . $this->article->user->name . ',',
