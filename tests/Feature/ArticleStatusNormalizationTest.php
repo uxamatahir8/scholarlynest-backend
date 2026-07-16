@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\Permission;
 use App\Models\Role;
@@ -66,6 +68,25 @@ class ArticleStatusNormalizationTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $acceptedArticle = $this->articleWithStatus('legacy-accepted', 'pending');
+        $acceptedVersion = ArticleVersion::create([
+            'article_id' => $acceptedArticle->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'label' => 'Initial Submission',
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+        ]);
+        ArticleFile::create([
+            'article_id' => $acceptedArticle->id,
+            'article_version_id' => $acceptedVersion->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'file_path' => 'clean/status-manuscript.pdf',
+            'original_name' => 'status-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 14,
+            'scan_status' => 'clean',
+        ]);
         $this->patchJson("/api/admin/articles/{$acceptedArticle->id}/review", [
             'status' => 'approved',
         ])->assertStatus(200)
@@ -111,6 +132,7 @@ class ArticleStatusNormalizationTest extends TestCase
             ArticleStatus::ACCEPTED,
             ArticleStatus::COPY_EDITING,
             ArticleStatus::PROOFREADING,
+            ArticleStatus::READY_FOR_PUBLICATION,
             ArticleStatus::PUBLISHED,
             ArticleStatus::REJECTED,
             ArticleStatus::WITHDRAWN,
@@ -145,10 +167,7 @@ class ArticleStatusNormalizationTest extends TestCase
                 ->assertJsonPath('article.status', ArticleStatus::RESUBMITTED);
         }
 
-        foreach ([
-            ArticleStatus::RESUBMITTED,
-            ArticleStatus::READY_FOR_PUBLICATION,
-        ] as $status) {
+        foreach ([ArticleStatus::RESUBMITTED] as $status) {
             $article = $this->articleWithStatus("editable-{$status}", $status);
 
             $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Updated {$status}"))
@@ -161,7 +180,7 @@ class ArticleStatusNormalizationTest extends TestCase
     {
         Sanctum::actingAs($this->admin);
 
-        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::PUBLISHED] as $status) {
+        foreach ([ArticleStatus::SUBMITTED, ArticleStatus::ACCEPTED, ArticleStatus::READY_FOR_PUBLICATION, ArticleStatus::PUBLISHED] as $status) {
             $article = $this->articleWithStatus("admin-locked-{$status}", $status);
 
             $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Admin Updated {$status}"))
@@ -169,10 +188,6 @@ class ArticleStatusNormalizationTest extends TestCase
                 ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
         }
 
-        $ready = $this->articleWithStatus('admin-ready', ArticleStatus::READY_FOR_PUBLICATION);
-        $this->patchJson("/api/admin/articles/{$ready->id}", $this->updatePayload($ready, 'Admin Updated Ready'))
-            ->assertOk()
-            ->assertJsonPath('article.status', ArticleStatus::READY_FOR_PUBLICATION);
     }
 
     public function test_edit_context_fetch_is_denied_for_non_editable_statuses_and_observer_mode(): void
@@ -186,8 +201,8 @@ class ArticleStatusNormalizationTest extends TestCase
 
         $ready = $this->articleWithStatus('edit-context-ready', ArticleStatus::READY_FOR_PUBLICATION);
         $this->getJson("/api/admin/articles/{$ready->id}?view_context=edit")
-            ->assertOk()
-            ->assertJsonPath('can_edit_article', true);
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
 
         $this->getJson("/api/admin/articles/{$ready->id}?view_context=edit&observer_readonly=1")
             ->assertForbidden()

@@ -16,6 +16,7 @@ use App\Models\ArticleFile;
 use App\Services\PdfGeneratorService;
 use App\Services\NotificationService;
 use App\Services\ArticleVersionService;
+use App\Services\AcceptedFileSetService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\Security\HtmlSanitizer;
@@ -28,14 +29,16 @@ class ArticleController extends Controller
     protected PdfGeneratorService $pdfService;
     protected NotificationService $notificationService;
     protected ArticleVersionService $versionService;
+    protected AcceptedFileSetService $acceptedFileSetService;
     protected MediaStorageService $mediaStorage;
 
-    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage)
+    public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage, AcceptedFileSetService $acceptedFileSetService)
     {
         $this->pdfService = $pdfService;
         $this->notificationService = $notificationService;
         $this->versionService = $versionService;
         $this->mediaStorage = $mediaStorage;
+        $this->acceptedFileSetService = $acceptedFileSetService;
     }
 
     public function show(string $idOrSlug): JsonResponse
@@ -308,6 +311,22 @@ class ArticleController extends Controller
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $linkedFileIds[] = $manuscriptFile->id;
         }
+        foreach ($validated['additional_manuscript_files'] ?? [] as $additional) {
+            if (empty($additional['upload_id'])) {
+                return response()->json([
+                    'message' => 'Each additional manuscript file must use an upload owned by the submitting author.',
+                    'errors' => ['additional_manuscript_files' => ['The selected file could not be attached to a new submission.']],
+                ], 422);
+            }
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $additional['upload_id'] ?? null, 'additional_manuscript_file');
+            $file = app(ArticleFileController::class)->createCleanDirectUploadFile(
+                $article,
+                $upload,
+                config('media_uploads.purposes.additional_manuscript_file'),
+                ['file_title' => trim($additional['file_title'])]
+            );
+            $linkedFileIds[] = $file->id;
+        }
         if ($requestedStatus === ArticleStatus::SUBMITTED) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
@@ -500,8 +519,8 @@ class ArticleController extends Controller
             }
         }
 
-        // If approved/published and pdf_path is empty, compile and generate a clean dynamic PDF download
-        if (ArticleStatus::isAcceptedOrPublished($normalizedStatus) && empty($article->pdf_path)) {
+        // Public output is generated only at publication; accepted author source files remain separate.
+        if ($normalizedStatus === ArticleStatus::PUBLISHED && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -512,18 +531,16 @@ class ArticleController extends Controller
             }
         }
 
-        $article->save();
+        \DB::transaction(function () use ($article, $normalizedStatus, $user) {
+            if ($normalizedStatus === ArticleStatus::ACCEPTED) {
+                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
+                $article->accepted_at = $article->accepted_at ?: now()->toDateString();
+            }
+            $article->save();
+        });
 
         if (ArticleStatus::normalize($article->status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $article->status);
-            if (ArticleStatus::normalize($article->status) === ArticleStatus::ACCEPTED) {
-                $this->versionService->createSnapshot(
-                    $article->fresh(['articleAuthors', 'tags', 'files']),
-                    $user,
-                    'Accepted Manuscript',
-                    $article->rejection_reason
-                );
-            }
         }
 
         // Send newsletter announcement when advanced to published
@@ -772,6 +789,42 @@ class ArticleController extends Controller
             }
             $linkedFileIds = $ownedAdditionalFiles->all();
         }
+        foreach ($validated['additional_manuscript_files'] ?? [] as $additional) {
+            if (!empty($additional['article_file_id'])) {
+                $existing = ArticleFile::query()
+                    ->whereKey($additional['article_file_id'])
+                    ->where('article_id', $article->id)
+                    ->where('uploaded_by', $user->id)
+                    ->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+                    ->where('scan_status', 'clean')
+                    ->whereNull('article_version_id')
+                    ->first();
+                if (!$existing) {
+                    return response()->json([
+                        'message' => 'One or more additional manuscript files are not available for this submission round.',
+                        'errors' => ['additional_manuscript_files' => ['Each file must be clean, owned by the author, and belong to the active submission.']],
+                    ], 422);
+                }
+                $existing->update(['file_title' => trim($additional['file_title'])]);
+                $linkedFileIds[] = $existing->id;
+                continue;
+            }
+
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $additional['upload_id'] ?? null, 'additional_manuscript_file');
+            if ($upload) {
+                $file = app(ArticleFileController::class)->createCleanDirectUploadFile(
+                    $article,
+                    $upload,
+                    config('media_uploads.purposes.additional_manuscript_file'),
+                    ['file_title' => trim($additional['file_title'])]
+                );
+                if ($file->article_version_id) {
+                    return response()->json(['message' => 'An additional manuscript file cannot be reused from a previous submission round.'], 422);
+                }
+                $linkedFileIds[] = $file->id;
+            }
+        }
+        $linkedFileIds = array_values(array_unique($linkedFileIds));
         $manuscriptUpload = !empty($validated['pdf_upload_id'])
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision'])
             : null;
@@ -779,7 +832,12 @@ class ArticleController extends Controller
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
             : null;
 
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user) {
+        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus) {
+            if (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED
+                && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
+                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
+                $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
+            }
             $article->update($updateData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
@@ -812,13 +870,6 @@ class ArticleController extends Controller
                 null,
                 $linkedFileIds
             );
-        } elseif (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Accepted Manuscript',
-                $request->input('change_summary')
-            );
         } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
@@ -831,7 +882,7 @@ class ArticleController extends Controller
         }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
-        if (ArticleStatus::isAcceptedOrPublished($article->status) && empty($article->pdf_path)) {
+        if (ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED && empty($article->pdf_path)) {
             try {
                 $generatedPdfUrl = $this->pdfService->generate($article);
                 $article->pdf_path = $generatedPdfUrl;
@@ -1135,7 +1186,7 @@ class ArticleController extends Controller
 
     private function publicArticlePayload(Article $article, bool $includeBody = false): array
     {
-        $article->loadMissing(['assets', 'publicationSections', 'tags', 'magazine']);
+        $article->loadMissing(['assets', 'publicationSections', 'tags', 'magazine', 'files']);
 
         $payload = [
             'id' => $article->id,
@@ -1253,6 +1304,20 @@ class ArticleController extends Controller
                 ])
                 ->sortBy('sort_order')
                 ->values(),
+            'publication_files' => $article->files
+                ->filter(fn ($file) => ($file->scan_status ?? 'clean') === 'clean')
+                ->filter(fn ($file) => (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
+                    || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'))
+                ->map(fn ($file) => [
+                    'id' => $file->id,
+                    'title' => $file->file_title ?: $file->original_name,
+                    'original_name' => $file->original_name,
+                    'mime_type' => $file->mime_type,
+                    'size' => $file->size,
+                    'show_on_article' => (bool) data_get($file->metadata, 'publication_visibility.show_on_article'),
+                    'show_in_downloads' => (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'),
+                    'download_url' => url("/api/articles/files/{$file->id}/download"),
+                ])->values(),
         ];
 
         if ($includeBody) {
@@ -1297,7 +1362,7 @@ class ArticleController extends Controller
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
                 'slug' => $article->magazine->slug,
-                'cover_image' => $article->magazine->cover_image,
+                'cover_image' => $article->magazine->cover_image_url,
                 'cover_image_url' => $article->magazine->cover_image_url,
                 'publication_type' => $article->magazine->publication_type,
             ] : null,
@@ -1318,7 +1383,7 @@ class ArticleController extends Controller
 
     private function adminArticleDetailPayload(Article $article, User $viewer): array
     {
-        $article->loadMissing(['articleAuthors', 'assets', 'issue']);
+        $article->loadMissing(['articleAuthors', 'assets', 'issue', 'files.uploader:id,name']);
         $payload = $this->adminArticleSummaryPayload($article, $viewer);
         $canViewEditorial = $this->hasGlobalArticleAccess($viewer)
             || $this->isAssignedToArticleMagazine($viewer, $article, ['editor']);
@@ -1381,6 +1446,10 @@ class ArticleController extends Controller
                     'download_url' => url("/api/articles/assets/{$asset->id}/download"),
                 ])
                 ->values(),
+            'files' => app(ArticleFileController::class)->filterVisibleFiles(
+                $viewer,
+                $article->files->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+            ),
             'resume_step' => $this->draftResumeStep($article),
             'next_step' => $this->draftResumeStep($article),
             'completion_step' => $this->draftResumeStep($article),
@@ -1567,7 +1636,10 @@ class ArticleController extends Controller
 
         $article = Article::findOrFail($id);
 
-        if (!ArticleStatus::isEditableStatus($article->status)) {
+        // Publication SEO is managed through this dedicated endpoint and remains
+        // available at the ready stage even though manuscript editing is locked.
+        if (!ArticleStatus::isEditableStatus($article->status)
+            && ArticleStatus::normalize($article->status) !== ArticleStatus::READY_FOR_PUBLICATION) {
             return response()->json([
                 'message' => 'This manuscript cannot be edited at its current workflow stage.',
             ], 422);
@@ -1791,6 +1863,13 @@ class ArticleController extends Controller
 
     private function isAssignedToArticleMagazine($user, Article $article, array $roles): bool
     {
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $article->loadMissing('magazine:id,publication_type');
+            if (!$article->magazine || !in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
+        }
+
         $normalizedRoles = collect($roles)
             ->map(fn ($role) => str_replace('-', '_', $role))
             ->unique()

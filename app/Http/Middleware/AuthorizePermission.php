@@ -130,6 +130,19 @@ class AuthorizePermission
                     if ($isCoAuthorEditor) {
                         return $next($request);
                     }
+                } elseif ($resource instanceof \App\Models\Magazine) {
+                    $typeAllowed = !$user->isPublicationEditor()
+                        || in_array($resource->publication_type, $user->editorPublicationTypes(), true);
+                    $isPublicationAssigned = $typeAllowed && \DB::table('magazine_user')
+                        ->where('user_id', $user->id)
+                        ->where('magazine_id', $resource->id)
+                        ->where(function ($query) {
+                            $query->whereIn('role', ['editor', 'publisher'])->orWhereNull('role');
+                        })
+                        ->exists();
+                    if ($isPublicationAssigned) {
+                        return $next($request);
+                    }
                 } else {
                     if (isset($resource->user_id) && $resource->user_id === $user->id) {
                         return $next($request);

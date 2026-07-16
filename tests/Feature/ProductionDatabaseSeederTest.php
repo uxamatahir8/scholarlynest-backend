@@ -60,6 +60,7 @@ class ProductionDatabaseSeederTest extends TestCase
             'is_active' => true,
         ]);
         $this->assertGreaterThan(0, Permission::count());
+        $this->assertDatabaseHas('permissions', ['name' => 'advertisements.manage', 'module' => 'advertisements']);
         $this->assertDatabaseHas('settings', ['key' => 'default_registration_role', 'value' => 'author']);
     }
 

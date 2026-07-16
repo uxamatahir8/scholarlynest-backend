@@ -9,3 +9,4 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('workflow:send-deadline-reminders')->dailyAt('08:00');
+Schedule::command('workflow:auto-approve-author-final-reviews')->hourly()->withoutOverlapping();

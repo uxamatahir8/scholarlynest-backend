@@ -37,6 +37,7 @@ class MediaUploadController extends Controller
             'file_fingerprint' => ['nullable', 'string', 'max:180'],
             'assignment_type' => ['nullable', 'string', 'max:80'],
             'assignment_id' => ['nullable', 'integer', 'min:1'],
+            'file_title' => [Rule::requiredIf($request->input('purpose') === 'additional_manuscript_file'), 'nullable', 'string', 'max:255'],
         ]);
 
         $purposeConfig = $this->policy->configForPurpose($validated['purpose']);
@@ -44,7 +45,8 @@ class MediaUploadController extends Controller
         $this->policy->authorizeInitiate($request->user(), $validated['purpose'], $attachable, $validated);
 
         if ($validated['size_bytes'] > (int) $purposeConfig['max_size_bytes']) {
-            return response()->json(['message' => 'The selected file exceeds the configured size limit.'], 422);
+            $limitMb = round(((int) $purposeConfig['max_size_bytes']) / 1024 / 1024, 1);
+            return response()->json(['message' => "File exceeds the {$limitMb} MB upload limit."], 422);
         }
 
         $this->expireStaleActiveSessions($request->user()->id);
@@ -67,7 +69,8 @@ class MediaUploadController extends Controller
         $safeName = $this->policy->sanitizeFilename($validated['original_filename']);
         $extension = Str::lower(pathinfo($safeName, PATHINFO_EXTENSION));
         if ($extension && !in_array($extension, $purposeConfig['extensions'] ?? [], true)) {
-            return response()->json(['message' => 'This file extension is not allowed for the selected upload purpose.'], 422);
+            $allowed = collect($purposeConfig['extensions'] ?? [])->map(fn ($item) => strtoupper($item))->join(', ');
+            return response()->json(['message' => "Unsupported file type. Allowed: {$allowed}."], 422);
         }
 
         $mode = $validated['size_bytes'] >= config('media_uploads.multipart_threshold_bytes') ? 'multipart' : 'single';
@@ -87,6 +90,7 @@ class MediaUploadController extends Controller
             'status' => MediaUploadSession::STATUS_INITIATED,
             'metadata' => [
                 'file_fingerprint' => $validated['file_fingerprint'] ?? null,
+                'file_title' => isset($validated['file_title']) ? trim($validated['file_title']) : null,
                 'assignment_type' => $validated['assignment_type'] ?? null,
                 'assignment_id' => $validated['assignment_id'] ?? null,
             ],
@@ -155,6 +159,13 @@ class MediaUploadController extends Controller
     public function resume(Request $request, MediaUploadSession $upload): JsonResponse
     {
         $this->authorizeSession($request, $upload);
+        if (in_array($upload->status, [MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN, MediaUploadSession::STATUS_CLEAN], true)) {
+            return response()->json([
+                'message' => 'This upload session is already complete.',
+                'upload' => $this->uploadPayload($upload),
+            ]);
+        }
+
         if ($upload->expires_at?->isPast() || $upload->isTerminal()) {
             return response()->json(['message' => 'This upload session cannot be resumed.'], 422);
         }
@@ -175,6 +186,13 @@ class MediaUploadController extends Controller
             'parts.*.checksum_sha256' => ['nullable', 'string', 'max:255'],
         ]);
 
+        if (in_array($upload->status, [MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN, MediaUploadSession::STATUS_CLEAN], true)) {
+            return response()->json([
+                'message' => 'Upload completion was already recorded.',
+                'upload' => $this->uploadPayload($upload),
+            ]);
+        }
+
         if ($upload->expires_at?->isPast() || $upload->isTerminal()) {
             return response()->json(['message' => 'This upload session cannot be completed.'], 422);
         }
@@ -194,16 +212,21 @@ class MediaUploadController extends Controller
         }
 
         DB::transaction(function () use ($upload) {
-            $recordMetadata = $this->createPendingRecords($upload);
-            $upload->forceFill([
+            $lockedUpload = MediaUploadSession::query()->whereKey($upload->id)->lockForUpdate()->firstOrFail();
+            if (in_array($lockedUpload->status, [MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN, MediaUploadSession::STATUS_CLEAN], true)) {
+                return;
+            }
+            $recordMetadata = $this->createPendingRecords($lockedUpload);
+            $lockedUpload->forceFill([
                 'status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
-                'metadata' => array_merge($upload->metadata ?: [], $recordMetadata),
+                'metadata' => array_merge($lockedUpload->metadata ?: [], $recordMetadata),
                 'completed_at' => now(),
                 'scan_requested_at' => now(),
                 'failure_reason' => null,
             ])->save();
         });
 
+        $upload->refresh();
         ScanPendingMedia::dispatch($upload->id);
 
         return response()->json([
@@ -312,6 +335,21 @@ class MediaUploadController extends Controller
                 'media_url' => $mediaUrl,
             ],
         ];
+    }
+
+    public function preview(Request $request, MediaUploadSession $upload)
+    {
+        $this->authorizeSession($request, $upload);
+        if ($upload->status !== MediaUploadSession::STATUS_CLEAN || !$upload->s3_clean_key) {
+            return response()->json(['message' => 'The scanned upload preview is not available.'], 404);
+        }
+
+        return app(MediaStorageService::class)->downloadResponse(
+            $upload->s3_clean_key,
+            $upload->safe_display_filename ?: 'upload-preview',
+            $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'inline'
+        );
     }
 
     private function authorizeSession(Request $request, MediaUploadSession $upload): void

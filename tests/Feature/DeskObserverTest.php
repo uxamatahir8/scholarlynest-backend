@@ -32,15 +32,19 @@ class DeskObserverTest extends TestCase
     private User $proofreader;
     private User $publisher;
     private User $editor;
+    private User $superEditor;
+    private User $magazineEditor;
+    private User $journalEditor;
     private User $author;
     private Magazine $magazineA;
     private Magazine $magazineB;
+    private Magazine $journal;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        foreach (['super_admin', 'admin', 'author', 'reviewer', 'sub_editor', 'copy_editor', 'proofreader', 'publisher', 'editor', 'magazine_editor'] as $roleName) {
+        foreach (['super_admin', 'admin', 'author', 'reviewer', 'sub_editor', 'copy_editor', 'proofreader', 'publisher', 'editor', 'super_editor', 'magazine_editor', 'journal_editor'] as $roleName) {
             $this->roles[$roleName] = Role::create([
                 'name' => $roleName,
                 'display_name' => Str::headline($roleName),
@@ -52,7 +56,7 @@ class DeskObserverTest extends TestCase
             Permission::firstOrCreate(['name' => $permission], ['module' => 'articles', 'description' => $permission]);
         }
 
-        foreach (['reviewer', 'sub_editor', 'copy_editor', 'proofreader', 'publisher', 'editor', 'magazine_editor'] as $roleName) {
+        foreach (['reviewer', 'sub_editor', 'copy_editor', 'proofreader', 'publisher', 'editor', 'super_editor', 'magazine_editor', 'journal_editor'] as $roleName) {
             $this->roles[$roleName]->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
         }
         $this->roles['editor']->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
@@ -69,13 +73,23 @@ class DeskObserverTest extends TestCase
         $this->proofreader = $this->user('proofreader', 'Proofreader A');
         $this->publisher = $this->user('publisher', 'Publisher A');
         $this->editor = $this->user('editor', 'Editor A');
+        $this->superEditor = $this->user('super_editor', 'Super Editor A');
+        $this->magazineEditor = $this->user('magazine_editor', 'Magazine Editor A');
+        $this->journalEditor = $this->user('journal_editor', 'Journal Editor A');
 
         $this->magazineA = $this->magazine('Magazine A');
         $this->magazineB = $this->magazine('Magazine B');
+        $this->journal = $this->magazine('Journal A', Magazine::TYPE_JOURNAL);
 
         $this->proofreader->magazines()->attach($this->magazineA->id, ['role' => 'proofreader']);
         $this->publisher->magazines()->attach($this->magazineA->id, ['role' => 'publisher']);
         $this->editor->magazines()->attach($this->magazineA->id, ['role' => 'editor']);
+        $this->superEditor->magazines()->attach($this->magazineA->id, ['role' => 'editor']);
+        $this->superEditor->magazines()->attach($this->journal->id, ['role' => 'editor']);
+        $this->magazineEditor->magazines()->attach($this->magazineA->id, ['role' => 'editor']);
+        $this->magazineEditor->magazines()->attach($this->journal->id, ['role' => 'editor']);
+        $this->journalEditor->magazines()->attach($this->magazineA->id, ['role' => 'editor']);
+        $this->journalEditor->magazines()->attach($this->journal->id, ['role' => 'editor']);
     }
 
     public function test_selector_is_super_admin_only_and_minimized(): void
@@ -93,6 +107,59 @@ class DeskObserverTest extends TestCase
         $this->assertArrayNotHasKey('email', $payload['users'][0]);
         $this->assertArrayNotHasKey('permissions', $payload['users'][0]);
         $this->assertArrayNotHasKey('token', $payload['users'][0]);
+    }
+
+    public function test_editor_selector_includes_current_editor_roles(): void
+    {
+        Sanctum::actingAs($this->superAdmin);
+
+        $response = $this->getJson('/api/admin/desk-observer/users?role=editor')
+            ->assertOk()
+            ->assertJsonFragment(['name' => 'Super Editor A', 'role' => 'super_editor', 'role_label' => 'Super Editor'])
+            ->assertJsonFragment(['name' => 'Magazine Editor A', 'role' => 'magazine_editor', 'role_label' => 'Magazine Editor'])
+            ->assertJsonFragment(['name' => 'Journal Editor A', 'role' => 'journal_editor', 'role_label' => 'Journal Editor']);
+
+        $this->assertSame(4, count($response->json('users')));
+
+        $this->getJson('/api/admin/desk-observer/users?role=super_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Super Editor A', 'role' => 'super_editor']);
+
+        $this->getJson('/api/admin/desk-observer/users?role=magazine_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Magazine Editor A', 'role' => 'magazine_editor'])
+            ->assertJsonMissing(['name' => 'Journal Editor A']);
+
+        $this->getJson('/api/admin/desk-observer/users?role=journal_editor')
+            ->assertOk()
+            ->assertJsonCount(1, 'users')
+            ->assertJsonFragment(['name' => 'Journal Editor A', 'role' => 'journal_editor'])
+            ->assertJsonMissing(['name' => 'Magazine Editor A']);
+    }
+
+    public function test_current_editor_observer_desks_keep_assignment_and_publication_type_scope(): void
+    {
+        $magazineArticle = $this->article($this->magazineA, 'Current Magazine Editor Article', ArticleStatus::UNDER_REVIEW);
+        $journalArticle = $this->article($this->journal, 'Current Journal Editor Article', ArticleStatus::UNDER_REVIEW);
+
+        Sanctum::actingAs($this->superAdmin);
+
+        $this->getJson("/api/admin/articles?observer_user_id={$this->magazineEditor->id}")
+            ->assertOk()
+            ->assertJsonFragment(['title' => $magazineArticle->title])
+            ->assertJsonMissing(['title' => $journalArticle->title]);
+
+        $this->getJson("/api/admin/articles?observer_user_id={$this->journalEditor->id}")
+            ->assertOk()
+            ->assertJsonFragment(['title' => $journalArticle->title])
+            ->assertJsonMissing(['title' => $magazineArticle->title]);
+
+        $this->getJson("/api/admin/articles?observer_user_id={$this->superEditor->id}")
+            ->assertOk()
+            ->assertJsonFragment(['title' => $magazineArticle->title])
+            ->assertJsonFragment(['title' => $journalArticle->title]);
     }
 
     public function test_impersonated_super_admin_cannot_use_selector_or_observer_endpoints(): void
@@ -230,12 +297,13 @@ class DeskObserverTest extends TestCase
         ]);
     }
 
-    private function magazine(string $title): Magazine
+    private function magazine(string $title, string $publicationType = Magazine::TYPE_MAGAZINE): Magazine
     {
         return Magazine::create([
             'title' => $title,
             'slug' => Str::slug($title) . '-' . uniqid(),
             'description' => 'Observer test magazine',
+            'publication_type' => $publicationType,
         ]);
     }
 

@@ -42,7 +42,8 @@ class GlobalSearchService
                     'target_url' => "/magazines/{$magazine->slug}",
                     'additional' => [
                         'description' => strip_tags($magazine->description),
-                        'cover_image' => $magazine->cover_image,
+                        'cover_image' => $magazine->cover_image_url,
+                        'cover_image_url' => $magazine->cover_image_url,
                     ]
                 ]);
             }

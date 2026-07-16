@@ -70,6 +70,7 @@ class GenericSystemMail extends Mailable
     {
         return new Content(
             view: 'emails.generic',
+            text: 'emails.generic-text',
             with: [
                 'subject' => $this->subject,
                 'greeting' => $this->greeting,

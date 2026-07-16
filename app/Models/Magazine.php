@@ -17,12 +17,20 @@ class Magazine extends Model
 
     protected $appends = [
         'cover_image_url',
+        'main_image_url',
+        'banner_image_url',
+    ];
+
+    protected $hidden = [
+        'cover_image',
+        'banner_image',
     ];
 
     protected $fillable = [
         'title',
         'slug',
         'cover_image',
+        'banner_image',
         'description',
         'about_text',
         'seo_title',
@@ -97,7 +105,21 @@ class Magazine extends Model
 
     public function getCoverImageUrlAttribute(): ?string
     {
-        $path = $this->cover_image;
+        return $this->mediaUrl($this->cover_image);
+    }
+
+    public function getMainImageUrlAttribute(): ?string
+    {
+        return $this->cover_image_url;
+    }
+
+    public function getBannerImageUrlAttribute(): ?string
+    {
+        return $this->mediaUrl($this->banner_image);
+    }
+
+    private function mediaUrl(?string $path): ?string
+    {
         if (!$path) {
             return null;
         }

@@ -28,6 +28,14 @@ return [
     ],
 
     'purposes' => [
+        'advertisement_image' => [
+            'target' => 'media',
+            'clean_prefix' => 'clean/advertisements/',
+            'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
+            'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
+            'scan_required' => true,
+        ],
         'article_manuscript' => [
             'model' => Article::class,
             'target' => 'article',
@@ -55,6 +63,17 @@ return [
             'target' => 'article',
             'article_file_type' => 'revision_response',
             'clean_prefix' => 'clean/articles/revision-responses/',
+            'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'extensions' => ['pdf', 'doc', 'docx'],
+            'scan_required' => true,
+        ],
+        'additional_manuscript_file' => [
+            'model' => Article::class,
+            'target' => 'article',
+            'allow_detached' => true,
+            'article_file_type' => 'additional_manuscript_file',
+            'clean_prefix' => 'clean/articles/additional-manuscript-files/',
             'max_size_bytes' => 25 * 1024 * 1024,
             'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
             'extensions' => ['pdf', 'doc', 'docx'],
@@ -167,6 +186,14 @@ return [
         'magazine_cover' => [
             'target' => 'reference',
             'clean_prefix' => 'clean/magazines/covers/',
+            'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
+            'extensions' => ['png', 'jpg', 'jpeg', 'webp'],
+            'scan_required' => true,
+        ],
+        'publication_banner_image' => [
+            'target' => 'reference',
+            'clean_prefix' => 'clean/publications/banners/',
             'max_size_bytes' => 5 * 1024 * 1024,
             'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'],
             'extensions' => ['png', 'jpg', 'jpeg', 'webp'],

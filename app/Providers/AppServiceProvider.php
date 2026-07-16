@@ -2,19 +2,15 @@
 
 namespace App\Providers;
 
-use Illuminate\Support\ServiceProvider;
-use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Facades\Event;
-use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Cache\RateLimiting\Limit;
 use App\Models\Article;
 use App\Policies\ArticlePolicy;
-use App\Events\ArticleSubmitted;
-use App\Events\ArticleWorkflowEventOccurred;
-use App\Listeners\SendArticleSubmissionNotifications;
-use App\Listeners\SendArticleWorkflowNotifications;
 use App\Services\Media\AntivirusScannerContract;
 use App\Services\Media\ClamAvScanner;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -44,7 +40,20 @@ class AppServiceProvider extends ServiceProvider
         ] as $name => $maxAttempts) {
             RateLimiter::for($name, function ($request) use ($maxAttempts) {
                 $userId = $request->user()?->id ?: 'guest';
-                return Limit::perMinute($maxAttempts)->by($userId . '|' . $request->ip());
+
+                return Limit::perMinute($maxAttempts)->by($userId.'|'.$request->ip());
+            });
+        }
+
+        foreach ([
+            'mfa-setup' => 10,
+            'mfa-verify' => 10,
+            'mfa-sensitive' => 5,
+        ] as $name => $maxAttempts) {
+            RateLimiter::for($name, function ($request) use ($maxAttempts) {
+                $userId = $request->user()?->id ?: 'guest';
+
+                return Limit::perMinute($maxAttempts)->by($userId.'|'.$request->ip());
             });
         }
     }
