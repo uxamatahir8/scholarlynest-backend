@@ -30,18 +30,7 @@ class AcceptedFileSetService
                 $this->fail('The article cannot be accepted because it has no submitted manuscript version.');
             }
 
-            $manuscript = ArticleFile::query()
-                ->where('article_id', $article->id)
-                ->where('article_version_id', $version->id)
-                ->where('file_type', ArticleFile::MANUSCRIPT)
-                ->where('scan_status', 'clean')
-                ->whereNull('assignment_type')
-                ->latest('id')
-                ->first();
-
-            if (!$manuscript) {
-                $this->fail('The current submitted version must contain a clean manuscript before it can be accepted.');
-            }
+            $manuscript = app(PrimaryManuscriptService::class)->validateAuthoritative($article, $version);
 
             $supporting = ArticleFile::query()
                 ->where('article_id', $article->id)
