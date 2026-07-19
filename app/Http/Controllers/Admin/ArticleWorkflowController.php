@@ -2328,6 +2328,7 @@ class ArticleWorkflowController extends Controller
     private function canRespondTransferRequest($user, Article $article): bool
     {
         return $user
+            && $user->hasRole('author')
             && ArticleStatus::normalize($article->status) === ArticleStatus::IN_TRANSIT
             && (bool) $article->pendingTransferRequest
             && (
