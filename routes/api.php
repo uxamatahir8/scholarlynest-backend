@@ -15,6 +15,7 @@ use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\Admin\SharedPublicPageController;
 use App\Http\Controllers\Admin\SubjectAreaController;
 use App\Http\Controllers\AdvertisementResolutionController;
+use App\Http\Controllers\AdvertisementEventController;
 use App\Http\Controllers\ArticleAssetController;
 use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\ArticleFileController;
@@ -51,6 +52,7 @@ use Illuminate\Support\Facades\Route;
 
 // Public Dynamic CMS Pages Fetching
 Route::get('/advertisements/resolve', AdvertisementResolutionController::class)->middleware('throttle:60,1');
+Route::post('/advertisements/{advertisement}/events', [AdvertisementEventController::class, 'store'])->middleware('throttle:120,1');
 Route::get('/cms/{slug}', [CmsPageController::class, 'show']);
 Route::get('/faqs', [FaqController::class, 'index']);
 Route::get('/public/faqs', [FaqController::class, 'publicIndex']);

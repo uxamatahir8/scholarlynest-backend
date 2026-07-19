@@ -65,6 +65,20 @@ class AdvertisementManagementTest extends TestCase
         }
     }
 
+    public function test_article_sticky_sidebar_requires_a_valid_side_and_rejects_unsafe_redirects(): void
+    {
+        $publication = Magazine::create(['title' => 'Sides', 'slug' => 'sides', 'publication_type' => 'magazine']);
+        $article = $this->article($publication, 'sides-article', 'published');
+        $payload = $this->payload($publication, $article);
+
+        unset($payload['sidebar_side']);
+        $this->postJson('/api/admin/advertisements', $payload)->assertUnprocessable()->assertJsonValidationErrors('sidebar_side');
+
+        $payload['sidebar_side'] = 'left';
+        $payload['redirect_url'] = 'javascript:alert(1)';
+        $this->postJson('/api/admin/advertisements', $payload)->assertUnprocessable()->assertJsonValidationErrors('redirect_url');
+    }
+
     public function test_all_published_article_targets_are_accepted_for_magazines_and_journals(): void
     {
         foreach (['magazine', 'journal'] as $type) {
@@ -94,7 +108,7 @@ class AdvertisementManagementTest extends TestCase
 
     private function payload(Magazine $publication, Article $article): array
     {
-        return ['title' => 'Published article ad', 'image_media_id' => $this->media->id, 'placement' => 'sidebar_sticky', 'status' => 'active', 'targets' => [[
+        return ['title' => 'Published article ad', 'image_media_id' => $this->media->id, 'placement' => 'sidebar_sticky', 'sidebar_side' => 'left', 'status' => 'active', 'targets' => [[
             'target_area' => 'article', 'target_mode' => 'specific_articles', 'publication_type' => $publication->publication_type,
             'publication_id' => $publication->id, 'article_id' => $article->id,
         ]]];

@@ -21,8 +21,9 @@ class AdvertisementRequest extends FormRequest
             'title' => ['required', 'string', 'max:255'],
             'image_media_id' => ['required', 'integer', Rule::exists('media', 'id')->where(fn ($q) => $q->where('scan_status', 'clean'))],
             'alt_text' => ['nullable', 'string', 'max:255'],
-            'redirect_url' => ['nullable', 'url', 'max:2048'],
+            'redirect_url' => ['nullable', 'url:http,https', 'max:2048'],
             'placement' => ['required', Rule::in(Advertisement::PLACEMENTS)],
+            'sidebar_side' => ['nullable', Rule::in(Advertisement::SIDEBAR_SIDES)],
             'status' => ['required', Rule::in(Advertisement::STATUSES)],
             'priority' => ['sometimes', 'integer', 'min:-100000', 'max:100000'],
             'open_in_new_tab' => ['sometimes', 'boolean'],
@@ -41,6 +42,10 @@ class AdvertisementRequest extends FormRequest
     public function after(): array
     {
         return [function (Validator $validator) {
+            $hasArticleTarget = collect($this->input('targets', []))->contains(fn ($target) => ($target['target_area'] ?? null) === 'article');
+            if ($hasArticleTarget && $this->input('placement') === 'sidebar_sticky' && !in_array($this->input('sidebar_side'), Advertisement::SIDEBAR_SIDES, true)) {
+                $validator->errors()->add('sidebar_side', 'Choose the left or right sidebar for an article Sticky Sidebar advertisement.');
+            }
             foreach ($this->input('targets', []) as $index => $target) {
                 $prefix = "targets.$index";
                 $area = $target['target_area'] ?? null;

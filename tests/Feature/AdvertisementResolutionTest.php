@@ -50,6 +50,21 @@ class AdvertisementResolutionTest extends TestCase
         $this->assertCount(0, app(AdvertisementPlacementService::class)->forArticlePage($otherArticle)['sidebar_sticky']);
     }
 
+    public function test_article_sidebar_ads_are_grouped_by_explicit_side_without_duplicates(): void
+    {
+        $publication = Magazine::create(['title' => 'Sides', 'slug' => 'side-groups', 'publication_type' => 'magazine']);
+        $article = $this->article($publication, 'side-article');
+        $target = ['target_area' => 'article', 'target_mode' => 'all_articles', 'publication_type' => 'magazine', 'publication_id' => $publication->id];
+        $left = $this->ad($target, 4, 'sidebar_sticky', ['sidebar_side' => 'left']);
+        $right = $this->ad($target, 8, 'sidebar_sticky', ['sidebar_side' => 'right']);
+
+        $resolved = app(AdvertisementPlacementService::class)->forArticlePage($article);
+        $this->assertSame([$left->id], array_column($resolved['left_sidebar'], 'id'));
+        $this->assertSame([$right->id], array_column($resolved['right_sidebar'], 'id'));
+        $this->assertSame([$right->id, $left->id], array_column($resolved['sidebar_sticky'], 'id'));
+        $this->assertArrayNotHasKey('storage_key', $resolved['left_sidebar'][0]);
+    }
+
     public function test_inactive_expired_and_future_ads_are_not_public(): void
     {
         $target = ['target_area' => 'website', 'target_mode' => 'single_page', 'page_key' => 'home'];
@@ -80,6 +95,19 @@ class AdvertisementResolutionTest extends TestCase
             $this->getJson("/api/advertisements/resolve?context=article&publication_type=$type&publication_slug={$publication->slug}&article_slug={$article->slug}")
                 ->assertOk()->assertJsonPath('advertisements.sidebar_sticky.0.id', $ad->id);
         }
+    }
+
+    public function test_impressions_are_idempotent_and_include_article_placement_context(): void
+    {
+        $publication = Magazine::create(['title' => 'Tracked', 'slug' => 'tracked', 'publication_type' => 'magazine']);
+        $article = $this->article($publication, 'tracked-article');
+        $ad = $this->ad(['target_area' => 'article', 'target_mode' => 'all_articles', 'publication_type' => 'magazine', 'publication_id' => $publication->id], 0, 'sidebar_sticky', ['sidebar_side' => 'right']);
+        $payload = ['article_id' => $article->id, 'event_type' => 'impression', 'placement' => 'right_sidebar', 'session_token' => 'browser-session-123456'];
+
+        $this->postJson("/api/advertisements/{$ad->id}/events", $payload)->assertNoContent();
+        $this->postJson("/api/advertisements/{$ad->id}/events", $payload)->assertNoContent();
+        $this->assertDatabaseCount('advertisement_events', 1);
+        $this->assertDatabaseHas('advertisement_events', ['advertisement_id' => $ad->id, 'article_id' => $article->id, 'publication_id' => $publication->id, 'placement' => 'right_sidebar', 'sidebar_side' => 'right']);
     }
 
     private function ad(array $target, int $priority = 0, string $placement = 'content_top', array $overrides = []): Advertisement
