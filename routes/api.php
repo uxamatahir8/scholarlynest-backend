@@ -32,6 +32,7 @@ use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\MfaController;
 use App\Http\Controllers\NewsletterController;
 use App\Http\Controllers\SupportTicketController;
+use App\Http\Controllers\SlugRedirectController;
 use App\Http\Controllers\TagController;
 use App\Models\Magazine;
 use App\Models\NewsletterCampaign;
@@ -61,6 +62,8 @@ Route::get('/public/footer/pages/{slug}', [FooterController::class, 'showPage'])
 // Unified Global Search
 Route::get('/search/preview', [GlobalSearchController::class, 'preview']);
 Route::get('/search/full', [GlobalSearchController::class, 'full']);
+Route::get('/slugs/resolve', [SlugRedirectController::class, 'resolve'])->middleware('throttle:120,1');
+Route::get('/sitemap', [SlugRedirectController::class, 'sitemap'])->middleware('throttle:60,1');
 
 // Public Contact Page Settings & Submission
 Route::get('/contact-settings', [ContactController::class, 'getSettings']);
