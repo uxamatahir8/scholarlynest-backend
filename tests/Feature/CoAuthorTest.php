@@ -241,6 +241,8 @@ class CoAuthorTest extends TestCase
             'title' => 'Updated by Charlie Editor',
             'abstract' => 'Abstract synopsis.',
             'full_text' => 'Full article body text.',
+            'pdf_upload_id' => $this->cleanManuscriptUpload($charlie, null, 'article_revision')->id,
+            'revision_response_upload_id' => $this->cleanManuscriptUpload($charlie, null, 'article_revision_response')->id,
         ]);
         $response->assertStatus(200);
     }

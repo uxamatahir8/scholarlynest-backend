@@ -108,8 +108,11 @@ class MediaUploadController extends Controller
             $allowedList = $purposeConfig['extensions'] ?? [];
             if (!in_array($extension, $allowedList, true)) {
                 if ($isWorkflow) {
+                    $errorPayload = \App\Services\Media\UploadValidationService::getStructuredError('EXTENSION_NOT_ALLOWED', $safeName, $allowedList);
                     return response()->json([
-                        'message' => \App\Services\Media\UploadValidationService::getErrorMessage()
+                        'message' => $errorPayload['message'],
+                        'code' => $errorPayload['code'],
+                        'details' => $errorPayload,
                     ], 422);
                 }
                 $allowed = collect($allowedList)->map(fn ($item) => strtoupper($item))->join(', ');

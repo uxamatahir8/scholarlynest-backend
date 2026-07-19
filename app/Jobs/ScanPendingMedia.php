@@ -66,13 +66,18 @@ class ScanPendingMedia implements ShouldQueue
                 fclose($stream);
             }
 
-            $inspection = $inspector->inspect($tempPath, $purposeConfig, $session->safe_display_filename);
+            $inspection = $inspector->inspect($tempPath, $purposeConfig, $session->safe_display_filename, $session->id);
             if (!($inspection['ok'] ?? false)) {
                 $reason = $inspection['reason'] ?? 'content_validation_failed';
-                if (\App\Services\Media\UploadValidationService::isWorkflowPurpose($session->purpose)
-                    && in_array($reason, ['mime_not_allowed', 'extension_not_allowed', 'extension_mime_mismatch', 'signature_mismatch'], true)
-                ) {
-                    $reason = \App\Services\Media\UploadValidationService::getErrorMessage();
+                $failureCode = $inspection['failure_code'] ?? null;
+
+                if (\App\Services\Media\UploadValidationService::isWorkflowPurpose($session->purpose)) {
+                    if ($failureCode) {
+                        $structuredError = \App\Services\Media\UploadValidationService::getStructuredError($failureCode, $session->safe_display_filename);
+                        $reason = $structuredError['message'];
+                    } elseif (in_array($reason, ['mime_not_allowed', 'extension_not_allowed', 'extension_mime_mismatch', 'signature_mismatch'], true)) {
+                        $reason = \App\Services\Media\UploadValidationService::getErrorMessage();
+                    }
                 }
                 $this->reject($session, $reason, $inspection);
                 return;
@@ -99,7 +104,12 @@ class ScanPendingMedia implements ShouldQueue
                     throw new \RuntimeException('media_scan_failed');
                 }
 
-                $this->reject($session, $scan->safeReason ?: $scan->status, $inspection, $scan->engine, $scan->status);
+                $reason = $scan->safeReason ?: $scan->status;
+                if (\App\Services\Media\UploadValidationService::isWorkflowPurpose($session->purpose)) {
+                    $structuredError = \App\Services\Media\UploadValidationService::getStructuredError('MALWARE_DETECTED', $session->safe_display_filename);
+                    $reason = $structuredError['message'];
+                }
+                $this->reject($session, $reason, $inspection, $scan->engine, $scan->status);
                 return;
             }
 
