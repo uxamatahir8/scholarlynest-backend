@@ -2,109 +2,63 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ArticleFile;
-use App\Models\MediaUploadSession;
+use App\Services\ArticleFileCleanupService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 
 class AuditArticleFiles extends Command
 {
-    protected $signature = 'article-files:audit';
+    protected $signature = 'article-files:audit
+        {--details : Show each proposed action and reference count}
+        {--apply : Apply only actions classified as safe}
+        {--article= : Limit the audit to one article ID}
+        {--file-ids= : Limit the audit to comma-separated ArticleFile IDs}';
 
-    protected $description = 'Report duplicate and invalid article-file references without modifying data';
+    protected $description = 'Audit and safely clean duplicate or invalid article-file references';
 
-    public function handle(): int
+    public function handle(ArticleFileCleanupService $cleanup): int
     {
-        $this->components->info('Article file integrity audit (read-only)');
+        $articleId = $this->option('article') ? (int) $this->option('article') : null;
+        $fileIds = collect(explode(',', (string) $this->option('file-ids')))
+            ->filter()->map(fn ($id) => (int) trim($id))->filter()->unique()->values()->all();
+        $audit = $cleanup->audit($articleId, $fileIds);
 
-        $duplicateSessions = ArticleFile::query()
-            ->whereNotNull('media_upload_session_id')
-            ->select('media_upload_session_id', DB::raw('COUNT(*) as total'), DB::raw('MIN(id) as first_id'))
-            ->groupBy('media_upload_session_id')
-            ->havingRaw('COUNT(*) > 1')
-            ->get();
-        $this->reportGroups('Duplicate upload-session references', $duplicateSessions, 'media_upload_session_id');
+        $this->components->info('Article file integrity audit'.($this->option('apply') ? ' (apply mode)' : ' (read-only)'));
+        foreach ($audit['duplicate_groups'] as $index => $group) {
+            $this->newLine();
+            $this->line('Duplicate Group #'.($index + 1));
+            $this->table(['Article', 'Version', 'Purpose', 'Records', 'Canonical', 'Proposed removal', 'References', 'Storage deletes', 'Action'], [[
+                $group['article_id'], $group['version_id'] ?: '-', $group['file_type'], implode(',', $group['record_ids']),
+                $group['canonical_id'], implode(',', $group['remove_ids']), $group['references_to_migrate'], 0,
+                $group['safe'] ? 'SAFE TO CLEAN' : 'MANUAL REVIEW REQUIRED',
+            ]]);
+            if ($this->option('details')) $this->line('Reason: '.$group['reason']);
+        }
+        foreach ($audit['invalid_records'] as $record) {
+            $this->newLine();
+            $this->line('Invalid ArticleFile #'.$record['file_id']);
+            $this->table(['Article', 'Scan status', 'Object exists', 'Action'], [[
+                $record['article_id'], $record['scan_status'] ?: '-', $record['object_exists'] ? 'yes' : 'no',
+                $record['safe'] ? 'SAFE TO CLEAN' : 'MANUAL REVIEW REQUIRED',
+            ]]);
+            if ($this->option('details')) $this->line('Reason: '.$record['reason']);
+        }
 
-        $duplicateStorage = ArticleFile::query()
-            ->whereNotNull('storage_key')
-            ->where('storage_key', '!=', '')
-            ->select('storage_key', DB::raw('COUNT(*) as total'), DB::raw('MIN(id) as first_id'))
-            ->groupBy('storage_key')
-            ->havingRaw('COUNT(*) > 1')
-            ->get();
-        $this->reportGroups('Shared storage-object references', $duplicateStorage, 'storage_key', false);
+        $result = ['applied' => [], 'skipped' => []];
+        if ($this->option('apply')) {
+            $result = $cleanup->apply($audit);
+            foreach ($result['applied'] as $action) $this->components->info("Removed ArticleFile {$action['removed_id']}".($action['canonical_id'] ? "; canonical {$action['canonical_id']}" : '').'.');
+            foreach ($result['skipped'] as $action) $this->components->warn("Skipped ArticleFile {$action['file_id']}: {$action['reason']}");
+        }
 
-        $invalidStates = ArticleFile::query()
-            ->where(function ($query) {
-                $query->where('scan_status', '!=', 'clean')
-                    ->orWhereNull('storage_key')
-                    ->orWhere('storage_key', '');
-            })
-            ->get(['id', 'article_id', 'article_version_id', 'media_upload_session_id', 'scan_status']);
-        $this->table(
-            ['Invalid/non-ready file ID', 'Article', 'Version', 'Upload session', 'Scan status'],
-            $invalidStates->map(fn (ArticleFile $file) => [
-                $file->id,
-                $file->article_id,
-                $file->article_version_id ?: '-',
-                $file->media_upload_session_id ?: '-',
-                $file->scan_status ?: '-',
-            ])->all()
-        );
-
-        $missingObjects = [];
-        ArticleFile::query()
-            ->where('scan_status', 'clean')
-            ->whereNotNull('storage_key')
-            ->orderBy('id')
-            ->chunkById(100, function ($files) use (&$missingObjects) {
-                foreach ($files as $file) {
-                    try {
-                        if (!Storage::disk($file->disk)->exists($file->storage_key)) {
-                            $missingObjects[] = [$file->id, $file->article_id, $file->media_upload_session_id ?: '-'];
-                        }
-                    } catch (\Throwable) {
-                        $missingObjects[] = [$file->id, $file->article_id, $file->media_upload_session_id ?: '-'];
-                    }
-                }
-            });
-        $this->table(['Missing-object file ID', 'Article', 'Upload session'], $missingObjects);
-
-        $unattachedCleanUploads = MediaUploadSession::query()
-            ->where('status', MediaUploadSession::STATUS_CLEAN)
-            ->whereIn('purpose', collect(config('media_uploads.purposes'))
-                ->filter(fn ($config) => ($config['target'] ?? null) === 'article')
-                ->keys())
-            ->whereNotExists(function ($query) {
-                $query->selectRaw('1')
-                    ->from('article_files')
-                    ->whereColumn('article_files.media_upload_session_id', 'media_upload_sessions.id');
-            })
-            ->get(['id', 'purpose', 'attachable_id']);
-        $this->table(
-            ['Unattached clean upload', 'Purpose', 'Article'],
-            $unattachedCleanUploads->map(fn ($upload) => [$upload->id, $upload->purpose, $upload->attachable_id ?: '-'])->all()
-        );
-
-        $this->components->warn('No data was changed. Review records and back up tables before any cleanup.');
+        $this->newLine();
+        $this->table(['Duplicate groups', 'Invalid records', 'Safe actions', 'Manual review', 'Applied', 'Skipped'], [[
+            count($audit['duplicate_groups']), count($audit['invalid_records']), count($audit['actions']),
+            $audit['manual_review_count'], count($result['applied']), count($result['skipped']),
+        ]]);
+        $this->components->warn('Storage objects are never deleted by this command.');
+        if (!$this->option('apply')) $this->components->warn('No data was changed. Back up tables and review --details before --apply.');
+        else $this->line('Run php artisan article-files:audit --details to verify the remaining state.');
 
         return self::SUCCESS;
-    }
-
-    private function reportGroups(string $title, $groups, string $groupColumn, bool $showIdentifier = true): void
-    {
-        $rows = $groups->map(function ($group) use ($groupColumn, $showIdentifier) {
-            $query = ArticleFile::query();
-            $query->where($groupColumn, $group->{$groupColumn});
-
-            return [
-                $showIdentifier ? $group->{$groupColumn} : '(redacted)',
-                $query->pluck('id')->join(','),
-                $group->total,
-            ];
-        })->all();
-        $this->line($title);
-        $this->table(['Identifier', 'ArticleFile IDs', 'Count'], $rows);
     }
 }
