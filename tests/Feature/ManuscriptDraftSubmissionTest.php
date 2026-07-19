@@ -113,7 +113,9 @@ class ManuscriptDraftSubmissionTest extends TestCase
         $this->postJson('/api/articles', ['status' => ArticleStatus::DRAFT])
             ->assertCreated();
 
-        $response = $this->postJson('/api/articles', $this->articlePayload($author), ['REMOTE_ADDR' => '203.0.113.44'])
+        $response = $this->postJson('/api/articles', array_merge($this->articlePayload($author), [
+            'pdf_upload_id' => $this->cleanManuscriptUpload($author)->id,
+        ]), ['REMOTE_ADDR' => '203.0.113.44'])
             ->assertStatus(211);
 
         $this->assertDatabaseHas('articles', [
@@ -349,6 +351,7 @@ class ManuscriptDraftSubmissionTest extends TestCase
         $response = $this->putJson("/api/admin/articles/{$article->id}", array_merge($this->articlePayload($author), [
             'title' => 'Submitted From Draft',
             'status' => ArticleStatus::SUBMITTED,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($author, $article)->id,
         ]));
 
         $response->assertOk()

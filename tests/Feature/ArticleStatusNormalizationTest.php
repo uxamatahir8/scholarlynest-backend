@@ -58,6 +58,7 @@ class ArticleStatusNormalizationTest extends TestCase
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->author)->id,
         ])->assertStatus(211)
             ->assertJsonPath('article.status', ArticleStatus::SUBMITTED);
     }

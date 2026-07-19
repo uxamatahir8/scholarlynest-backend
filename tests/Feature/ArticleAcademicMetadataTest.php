@@ -57,6 +57,7 @@ class ArticleAcademicMetadataTest extends TestCase
         Sanctum::actingAs($this->author);
 
         $this->postJson('/api/articles', array_merge($this->basePayload(), [
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->author)->id,
             'article_type' => 'Research Article',
             'subject_area' => 'Clinical Informatics',
             'language' => 'English',
@@ -125,6 +126,7 @@ class ArticleAcademicMetadataTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $this->postJson('/api/articles', array_merge($this->basePayload(), [
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->admin)->id,
             'authors' => [[
                 'name' => 'New Owner',
                 'email' => 'new.owner@example.edu',

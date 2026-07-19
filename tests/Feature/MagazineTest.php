@@ -193,6 +193,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract synopsis details',
             'full_text' => 'Full text content details',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($user)->id,
         ]);
 
         $response->assertStatus(211)
@@ -537,6 +538,7 @@ class MagazineTest extends TestCase
             'title' => 'Quantum Logic Theory with Image',
             'abstract' => 'Abstract synopsis details',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($user)->id,
             'featured_image_upload_id' => $this->cleanUpload($user, 'article_featured_image', 'featured.png')->id,
         ]);
 

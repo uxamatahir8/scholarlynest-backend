@@ -170,6 +170,33 @@ class ArticleFileAuditTest extends TestCase
         $this->assertDatabaseHas('article_files', ['id' => $historical->id, 'article_version_id' => $version]);
     }
 
+    public function test_distinct_valid_primary_manuscripts_are_reported_for_manual_review(): void
+    {
+        $version = $this->version();
+        $first = $this->file('clean/version-a.pdf', ['article_version_id' => $version]);
+        $second = $this->file('clean/version-b.pdf', ['article_version_id' => $version]);
+        DB::table('article_versions')->where('id', $version)->update(['manuscript_file_id' => $first->id]);
+
+        $record = $this->cleanup->audit()['multiple_primary_manuscripts'][0];
+        $this->assertSame('multiple_primary_manuscripts', $record['category']);
+        $this->assertEqualsCanonicalizing([$first->id, $second->id], $record['manuscript_article_file_ids']);
+        $this->assertSame($first->id, $record['recommended_canonical_manuscript']);
+        $this->assertTrue($record['manual_review_required']);
+    }
+
+    public function test_same_storage_primary_duplicates_are_reported_as_safe_cleanup_candidates(): void
+    {
+        $version = $this->version();
+        [$first, $second] = $this->duplicatePair();
+        $first->update(['article_version_id' => $version]);
+        $second->update(['article_version_id' => $version]);
+        DB::table('article_versions')->where('id', $version)->update(['manuscript_file_id' => $second->id]);
+
+        $record = $this->cleanup->audit()['multiple_primary_manuscripts'][0];
+        $this->assertFalse($record['manual_review_required']);
+        $this->assertContains($record['recommended_canonical_manuscript'], [$first->id, $second->id]);
+    }
+
     private function duplicatePair(): array
     {
         return [$this->file('clean/shared.pdf'), $this->file('clean/shared.pdf')];

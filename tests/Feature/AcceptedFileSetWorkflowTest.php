@@ -218,7 +218,7 @@ class AcceptedFileSetWorkflowTest extends TestCase
         ?int $assignmentId = null,
         string $scanStatus = 'clean'
     ): ArticleFile {
-        return ArticleFile::create([
+        $file = ArticleFile::create([
             'article_id' => $article->id,
             'article_version_id' => $version->id,
             'uploaded_by' => $this->author->id,
@@ -235,5 +235,9 @@ class AcceptedFileSetWorkflowTest extends TestCase
             'size' => 14,
             'scan_status' => $scanStatus,
         ]);
+        if ($type === ArticleFile::MANUSCRIPT && $scanStatus === 'clean' && !$assignmentType) {
+            $version->update(['manuscript_file_id' => $file->id]);
+        }
+        return $file;
     }
 }

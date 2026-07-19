@@ -87,6 +87,7 @@ class CoAuthorTest extends TestCase
             'abstract' => 'This is the abstract text.',
             'full_text' => 'This is the full text of the quantum paper.',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->primaryAuthor)->id,
             'co_authors' => json_encode([
                 [
                     'name' => 'Charlie New',
