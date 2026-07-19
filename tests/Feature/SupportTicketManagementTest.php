@@ -252,7 +252,7 @@ class SupportTicketManagementTest extends TestCase
             'purpose' => 'support_ticket_attachment',
             'original_filename' => $filename,
             'safe_display_filename' => $filename,
-            'expected_size_bytes' => 1024,
+            'expected_size_bytes' => strlen('support attachment'),
             'declared_mime_type' => 'application/pdf',
             'detected_mime_type' => 'application/pdf',
             'disk' => 'public',

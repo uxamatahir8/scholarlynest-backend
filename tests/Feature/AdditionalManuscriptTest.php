@@ -161,7 +161,7 @@ class AdditionalManuscriptTest extends TestCase
         $this->assertSame(4, $article->versions()->count());
     }
 
-    public function test_repeated_attachment_for_one_upload_session_is_idempotent(): void
+    public function testUploadIdempotencyRepeatedAttachmentUsesOneArticleFile(): void
     {
         $article = Article::create([
             'magazine_id' => $this->magazine->id,
@@ -185,6 +185,27 @@ class AdditionalManuscriptTest extends TestCase
             ->assertOk()
             ->assertJsonPath('upload.id', $upload->id)
             ->assertJsonPath('upload.status', MediaUploadSession::STATUS_CLEAN);
+    }
+
+    public function test_submission_rejects_duplicate_upload_session_references(): void
+    {
+        $upload = $this->cleanUpload('additional_manuscript_file', 'cover.pdf', null, 'Cover Letter');
+
+        $this->postJson('/api/articles', [
+            'magazine_id' => $this->magazine->id,
+            'publication_type' => 'magazine',
+            'title' => 'Duplicate upload payload',
+            'abstract' => 'Abstract',
+            'terms_accepted' => true,
+            'additional_manuscript_files' => [
+                ['file_title' => 'Cover Letter', 'upload_id' => $upload->id],
+                ['file_title' => 'Second Reference', 'upload_id' => $upload->id],
+            ],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('additional_manuscript_files');
+
+        $this->assertDatabaseCount('articles', 0);
+        $this->assertDatabaseCount('article_files', 0);
     }
 
     public function test_retry_cleanup_uses_a_fresh_session_without_duplicate_attachment(): void

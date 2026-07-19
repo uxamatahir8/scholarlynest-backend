@@ -164,7 +164,7 @@ class ArticleFileWorkflowTest extends TestCase
             'attachable_id' => $this->article->id,
             'original_filename' => $filename,
             'safe_display_filename' => $filename,
-            'expected_size_bytes' => 16,
+            'expected_size_bytes' => strlen('clean test file'),
             'declared_mime_type' => str_ends_with($filename, '.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'disk' => 's3',
             's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,

@@ -243,6 +243,38 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertDatabaseCount('media_upload_sessions', 1);
     }
 
+    public function testUploadIdempotencyRepeatedInitiationRestoresOneSession(): void
+    {
+        Sanctum::actingAs($this->author);
+        $clientUploadId = (string) \Illuminate\Support\Str::uuid();
+        $payload = $this->initiatePayload(['client_upload_id' => $clientUploadId]);
+
+        $firstId = $this->postJson('/api/media/uploads/initiate', $payload)
+            ->assertCreated()
+            ->json('upload.id');
+        $this->postJson('/api/media/uploads/initiate', $payload)
+            ->assertOk()
+            ->assertJsonPath('reused', true)
+            ->assertJsonPath('upload.id', $firstId);
+
+        $this->assertSame(1, MediaUploadSession::where('client_upload_id', $clientUploadId)->count());
+    }
+
+    public function testUploadIdempotencyKeyCannotBeReusedForAnotherFile(): void
+    {
+        Sanctum::actingAs($this->author);
+        $clientUploadId = (string) \Illuminate\Support\Str::uuid();
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'client_upload_id' => $clientUploadId,
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'client_upload_id' => $clientUploadId,
+            'original_filename' => 'different.pdf',
+        ]))->assertConflict()
+            ->assertJsonPath('message', 'This upload identifier is already assigned to another file.');
+    }
+
     public function test_can_initiate_and_complete_detached_manuscript_upload(): void
     {
         $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
@@ -353,6 +385,27 @@ class MediaUploadPipelineTest extends TestCase
         Sanctum::actingAs($this->author);
 
         $this->getJson("/api/articles/files/{$file->id}/download")->assertNotFound();
+        $this->assertSame([], app(ArticleFileController::class)->filterVisibleFiles($this->author, [$file]));
+    }
+
+    public function test_missing_storage_object_cannot_complete_or_create_article_file(): void
+    {
+        Sanctum::actingAs($this->author);
+        $session = $this->uploadSession([
+            'status' => MediaUploadSession::STATUS_UPLOADING,
+            'expected_size_bytes' => 128,
+        ]);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'The upload did not reach storage. Please retry.');
+
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $session->id,
+            'status' => MediaUploadSession::STATUS_SCAN_FAILED,
+            'failure_reason' => 'incoming_object_missing',
+        ]);
+        $this->assertDatabaseCount('article_files', 0);
     }
 
     public function test_scan_job_promotes_clean_pdf_and_marks_record_available(): void
