@@ -7,6 +7,7 @@ use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\Magazine;
 use App\Models\MediaUploadSession;
+use App\Services\PrimaryManuscriptService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,23 @@ class ArticleFileController extends Controller
         $file->delete();
 
         return response()->json(['message' => 'Additional manuscript file removed.']);
+    }
+
+    public function destroyPrimaryManuscript(Request $request, Article $article, ArticleFile $file): JsonResponse
+    {
+        if (!$request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && !$this->isAuthorRecord($request->user(), $article))) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $result = app(PrimaryManuscriptService::class)->removeDraft($article, $file);
+
+        return response()->json([
+            'message' => $result['storage_warning']
+                ? 'The manuscript was removed. Storage cleanup will be retried.'
+                : 'The manuscript was removed from this draft submission.',
+            'storage_cleanup_pending' => $result['storage_warning'],
+        ]);
     }
 
     public function store(Request $request, int $articleId): JsonResponse
@@ -98,11 +116,25 @@ class ArticleFileController extends Controller
         $metadata = $upload->metadata ?: [];
         $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
 
+        if ($purposeConfig['article_file_type'] === ArticleFile::MANUSCRIPT) {
+            return DB::transaction(function () use ($article, $upload, $purposeConfig, $metadata) {
+                Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+                app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+                return $this->createPendingFile($article, $upload, $purposeConfig, $metadata, null);
+            });
+        }
+
+        return $this->createPendingFile($article, $upload, $purposeConfig, $metadata, $isAdditionalManuscriptFile
+            ? null
+            : ($metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id')));
+    }
+
+    private function createPendingFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $metadata, ?int $versionId): ArticleFile
+    {
+
         return ArticleFile::firstOrCreate(['media_upload_session_id' => $upload->id], [
             'article_id' => $article->id,
-            'article_version_id' => $isAdditionalManuscriptFile
-                ? null
-                : ($metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id')),
+            'article_version_id' => $versionId,
             'uploaded_by' => $upload->user_id,
             'assignment_type' => $metadata['assignment_type'] ?? null,
             'assignment_id' => $metadata['assignment_id'] ?? null,
@@ -128,11 +160,12 @@ class ArticleFileController extends Controller
     public function createCleanDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $extra = []): ArticleFile
     {
         $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
+        $isPrimaryManuscript = $purposeConfig['article_file_type'] === ArticleFile::MANUSCRIPT;
         $values = [
             'article_id' => $article->id,
             'article_version_id' => array_key_exists('article_version_id', $extra)
                 ? $extra['article_version_id']
-                : ($isAdditionalManuscriptFile ? null : $article->versions()->latest('version_number')->value('id')),
+                : (($isAdditionalManuscriptFile || $isPrimaryManuscript) ? null : $article->versions()->latest('version_number')->value('id')),
             'uploaded_by' => $upload->user_id,
             'assignment_type' => $extra['assignment_type'] ?? ($upload->metadata['assignment_type'] ?? null),
             'assignment_id' => $extra['assignment_id'] ?? ($upload->metadata['assignment_id'] ?? null),
@@ -156,9 +189,14 @@ class ArticleFileController extends Controller
             ], $extra['metadata'] ?? []),
         ];
 
-        $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
-        $alreadyAttached = $file->exists;
-        $file->fill($values)->save();
+        [$file, $alreadyAttached] = DB::transaction(function () use ($article, $upload, $values, $isPrimaryManuscript) {
+            Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            if ($isPrimaryManuscript) app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+            $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
+            $alreadyAttached = $file->exists;
+            $file->fill($values)->save();
+            return [$file, $alreadyAttached];
+        });
 
         Log::info($alreadyAttached ? 'upload.attach_duplicate_prevented' : 'upload.attached', [
             'user_id' => $upload->user_id,

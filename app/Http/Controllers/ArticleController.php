@@ -19,6 +19,7 @@ use App\Services\ArticleVersionService;
 use App\Services\AcceptedFileSetService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\PrimaryManuscriptService;
 use App\Services\Security\HtmlSanitizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -268,6 +269,10 @@ class ArticleController extends Controller
         $authorResolution = $this->resolveArticleAuthors($authors, $user, $user->hasRole('super_admin'));
         $articleOwner = $authorResolution['owner'] ?? $user;
         $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
+
+        if ($requestedStatus === ArticleStatus::SUBMITTED && empty($validated['pdf_upload_id'])) {
+            return response()->json(['message' => PrimaryManuscriptService::MISSING_MESSAGE], 422);
+        }
 
         $slug = !empty($validated['title'])
             ? Str::slug($validated['title']) . '-' . Str::lower(Str::random(6))
@@ -832,8 +837,30 @@ class ArticleController extends Controller
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
             : null;
 
+        if ($manuscriptUpload) {
+            $purposeConfig = config('media_uploads.purposes.' . $manuscriptUpload->purpose);
+            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $manuscriptUpload, $purposeConfig);
+            $article->update(['pdf_path' => $manuscriptFile->file_path]);
+            $pdfPath = $manuscriptFile->file_path;
+            $linkedFileIds[] = $manuscriptFile->id;
+        }
+
+        if (in_array(ArticleStatus::normalize($status), [ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED], true)) {
+            $draftManuscripts = ArticleFile::query()
+                ->where('article_id', $article->id)
+                ->whereNull('article_version_id')
+                ->where('file_type', ArticleFile::MANUSCRIPT)
+                ->whereNull('assignment_type')
+                ->where('scan_status', 'clean')
+                ->get();
+            if ($draftManuscripts->isEmpty()) return response()->json(['message' => PrimaryManuscriptService::MISSING_MESSAGE], 422);
+            if ($draftManuscripts->count() !== 1) return response()->json(['message' => PrimaryManuscriptService::INVALID_MESSAGE], 422);
+            $linkedFileIds[] = $draftManuscripts->first()->id;
+            $linkedFileIds = array_values(array_unique($linkedFileIds));
+        }
+
         $transitionApplied = true;
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus, &$transitionApplied) {
+        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus, $linkedFileIds, &$transitionApplied) {
             $lockedArticle = Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
             if (ArticleStatus::normalize($lockedArticle->status) !== ArticleStatus::normalize($oldStatus)
                 && ArticleStatus::normalize($lockedArticle->status) === ArticleStatus::normalize($status)) {
@@ -854,15 +881,20 @@ class ArticleController extends Controller
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
+
+            if (ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
+                $this->versionService->createSnapshot(
+                    $lockedArticle->fresh(['articleAuthors', 'tags', 'files']), $user, 'Revised Manuscript',
+                    $request->input('change_summary'), null, $linkedFileIds
+                );
+            } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+                $this->versionService->createSnapshot(
+                    $lockedArticle->fresh(['articleAuthors', 'tags', 'files']), $user, 'Initial Submission',
+                    $request->input('change_summary') ?: 'Draft submitted for review.', null, $linkedFileIds
+                );
+            }
         });
 
-        if ($manuscriptUpload) {
-            $purposeConfig = config('media_uploads.purposes.' . $manuscriptUpload->purpose);
-            $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $manuscriptUpload, $purposeConfig);
-            $article->update(['pdf_path' => $manuscriptFile->file_path]);
-            $pdfPath = $manuscriptFile->file_path;
-            $linkedFileIds[] = $manuscriptFile->id;
-        }
         if ($responseUpload) {
             $purposeConfig = config('media_uploads.purposes.' . $responseUpload->purpose);
             $responseFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $responseUpload, $purposeConfig);
@@ -871,26 +903,6 @@ class ArticleController extends Controller
 
         if ($transitionApplied && ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
-        }
-
-        if ($transitionApplied && ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Revised Manuscript',
-                $request->input('change_summary'),
-                null,
-                $linkedFileIds
-            );
-        } elseif ($transitionApplied && ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Initial Submission',
-                $request->input('change_summary') ?: 'Draft submitted for review.',
-                null,
-                $linkedFileIds
-            );
         }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
@@ -1460,7 +1472,8 @@ class ArticleController extends Controller
                 ->values(),
             'files' => app(ArticleFileController::class)->filterVisibleFiles(
                 $viewer,
-                $article->files->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+                $article->files->filter(fn (ArticleFile $file) => $file->file_type === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE
+                    || ($file->isPrimaryManuscript() && !$file->article_version_id))
             ),
             'resume_step' => $this->draftResumeStep($article),
             'next_step' => $this->draftResumeStep($article),

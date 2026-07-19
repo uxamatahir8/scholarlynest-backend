@@ -31,6 +31,11 @@ class ArticleFile extends Model
         self::PUBLICATION_PDF,
     ];
 
+    public function isPrimaryManuscript(): bool
+    {
+        return $this->file_type === self::MANUSCRIPT && $this->assignment_type === null;
+    }
+
     protected $fillable = [
         'article_id',
         'article_version_id',

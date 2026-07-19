@@ -39,6 +39,8 @@ class ArticleVersionService
 
             $this->linkFiles($article, $version, $linkFileIds);
 
+            app(PrimaryManuscriptService::class)->authoritativeForSubmission($article, $version);
+
             $version->update([
                 'file_snapshot' => $this->fileSnapshot($article, $version),
             ]);
@@ -129,6 +131,7 @@ class ArticleVersionService
         $visibleFiles = collect($version->files)
             ->filter(fn (ArticleFile $file) => $fileController->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
+            ->reject(fn (ArticleFile $file) => $file->isPrimaryManuscript() && (int) $file->id !== (int) $version->manuscript_file_id)
             ->map(fn (ArticleFile $file) => $fileController->serializeFile($file))
             ->values()
             ->all();
@@ -136,6 +139,7 @@ class ArticleVersionService
         return [
             'id' => $version->id,
             'article_id' => $version->article_id,
+            'manuscript_file_id' => $version->manuscript_file_id,
             'version_number' => $version->version_number,
             'revision_number' => $version->revision_number,
             'revision_tracking_code' => $version->revision_tracking_code,

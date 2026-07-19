@@ -220,6 +220,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('/articles/{id}/files', [ArticleFileController::class, 'store'])
         ->middleware('permission:articles.manage-assets');
     Route::delete('/articles/{article}/additional-manuscript-files/{file}', [ArticleFileController::class, 'destroyAdditionalManuscriptFile']);
+    Route::delete('/articles/{article}/manuscript-files/{file}', [ArticleFileController::class, 'destroyPrimaryManuscript']);
 
     // Support tickets
     Route::get('/support/tickets', [SupportTicketController::class, 'index']);
