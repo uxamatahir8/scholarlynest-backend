@@ -68,7 +68,13 @@ class ScanPendingMedia implements ShouldQueue
 
             $inspection = $inspector->inspect($tempPath, $purposeConfig, $session->safe_display_filename);
             if (!($inspection['ok'] ?? false)) {
-                $this->reject($session, $inspection['reason'] ?? 'content_validation_failed', $inspection);
+                $reason = $inspection['reason'] ?? 'content_validation_failed';
+                if (\App\Services\Media\UploadValidationService::isWorkflowPurpose($session->purpose)
+                    && in_array($reason, ['mime_not_allowed', 'extension_not_allowed', 'extension_mime_mismatch', 'signature_mismatch'], true)
+                ) {
+                    $reason = \App\Services\Media\UploadValidationService::getErrorMessage();
+                }
+                $this->reject($session, $reason, $inspection);
                 return;
             }
 

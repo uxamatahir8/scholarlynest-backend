@@ -103,9 +103,18 @@ class MediaUploadController extends Controller
 
         $safeName = $this->policy->sanitizeFilename($validated['original_filename']);
         $extension = Str::lower(pathinfo($safeName, PATHINFO_EXTENSION));
-        if ($extension && !in_array($extension, $purposeConfig['extensions'] ?? [], true)) {
-            $allowed = collect($purposeConfig['extensions'] ?? [])->map(fn ($item) => strtoupper($item))->join(', ');
-            return response()->json(['message' => "Unsupported file type. Allowed: {$allowed}."], 422);
+        if ($extension) {
+            $isWorkflow = \App\Services\Media\UploadValidationService::isWorkflowPurpose($validated['purpose']);
+            $allowedList = $purposeConfig['extensions'] ?? [];
+            if (!in_array($extension, $allowedList, true)) {
+                if ($isWorkflow) {
+                    return response()->json([
+                        'message' => \App\Services\Media\UploadValidationService::getErrorMessage()
+                    ], 422);
+                }
+                $allowed = collect($allowedList)->map(fn ($item) => strtoupper($item))->join(', ');
+                return response()->json(['message' => "Unsupported file type. Allowed: {$allowed}."], 422);
+            }
         }
 
         $mode = $validated['size_bytes'] >= config('media_uploads.multipart_threshold_bytes') ? 'multipart' : 'single';

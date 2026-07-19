@@ -125,16 +125,23 @@ class MediaUploadPipelineTest extends TestCase
             'original_filename' => 'manuscript.png',
             'declared_mime_type' => 'image/png',
             'file_fingerprint' => 'manuscript.png:1024:1',
-        ]))->assertStatus(422)
-            ->assertJsonPath('message', 'Unsupported file type. Allowed: PDF, DOC, DOCX.');
+        ]))->assertCreated();
 
         $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
             'purpose' => 'article_supplementary',
             'original_filename' => 'dataset.zip',
             'declared_mime_type' => 'application/zip',
             'file_fingerprint' => 'dataset.zip:1024:1',
+        ]))->assertCreated();
+
+        // Rejection message validation for workflow files
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'malicious.exe',
+            'declared_mime_type' => 'application/x-msdownload',
+            'file_fingerprint' => 'malicious.exe:1024:1',
         ]))->assertStatus(422)
-            ->assertJsonPath('message', 'Unsupported file type. Allowed: PDF, DOC, DOCX, XLS, XLSX, CSV, TXT, PNG, JPG, JPEG, WEBP.');
+            ->assertJsonPath('message', \App\Services\Media\UploadValidationService::getErrorMessage());
 
         $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
             'purpose' => 'article_image',
@@ -481,6 +488,151 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertDatabaseHas('media_upload_sessions', ['id' => $session->id, 'status' => 'rejected']);
         $this->assertDatabaseHas('article_files', ['id' => $file->id, 'scan_status' => 'rejected']);
         Storage::disk('s3')->assertExists(app(S3MediaKeyResolver::class)->quarantine($session));
+    }
+
+    public function test_comprehensive_manuscript_validation_formats(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        $jpgFile = \Illuminate\Http\UploadedFile::fake()->image('test.jpg');
+        $pngFile = \Illuminate\Http\UploadedFile::fake()->image('test.png');
+        $jpgContent = file_get_contents($jpgFile->getRealPath());
+        $pngContent = file_get_contents($pngFile->getRealPath());
+
+        $formats = [
+            'doc' => ["\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 'application/msword'],
+            'docx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'xlsx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+            'pptx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+            'rtf' => ["{\\rtf1", 'application/rtf'],
+            'odt' => ["PK\x03\x04", 'application/vnd.oasis.opendocument.text'],
+            'csv' => ["col1,col2\nval1,val2", 'text/csv'],
+            'jpg' => [$jpgContent, 'image/jpeg'],
+            'png' => [$pngContent, 'image/png'],
+            'webp' => ["RIFF\x00\x00\x00\x00WEBP", 'image/webp'],
+            'tiff' => ["II\x2A\x00", 'image/tiff'],
+        ];
+
+        foreach ($formats as $ext => [$header, $mime]) {
+            // Initiate
+            $response = $this->postJson('/api/media/uploads/initiate', [
+                'purpose' => 'article_manuscript',
+                'original_filename' => "test.{$ext}",
+                'size_bytes' => strlen($header),
+                'declared_mime_type' => $mime,
+                'file_fingerprint' => "test.{$ext}:" . strlen($header) . ":1",
+            ])->assertCreated();
+
+            $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+            
+            // Upload mock content
+            Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+            // Complete and verify scan succeeds
+            $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+            $session = $session->fresh();
+            $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status, "Failed format: {$ext}");
+        }
+    }
+
+    public function test_invalid_executable_upload_is_rejected(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // Spoofing executable as .docx
+        $header = "MZ\x90\x00\x03\x00\x00\x00"; // Exe signature
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "spoofed.docx",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'file_fingerprint' => 'spoofed.docx:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_REJECTED, $session->status);
+        $this->assertStringContainsString('This file type is not supported', $session->failure_reason);
+    }
+
+    public function test_invalid_mime_spoofing_is_rejected(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // Uploading actual PNG content but declaring extension .pdf (mime/extension mismatch)
+        $header = "\x89PNG\r\n\x1A\n";
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "mismatch.pdf",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'mismatch.pdf:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_REJECTED, $session->status);
+        $this->assertStringContainsString('This file type is not supported', $session->failure_reason);
+    }
+
+    public function test_cross_browser_mime_variations_are_supported(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // docx uploaded as application/octet-stream (common browser behavior)
+        $header = "PK\x03\x04";
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "browser.docx",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/octet-stream',
+            'file_fingerprint' => 'browser.docx:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status);
     }
 
     private function initiatePayload(array $overrides = []): array

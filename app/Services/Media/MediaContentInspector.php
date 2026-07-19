@@ -28,11 +28,13 @@ class MediaContentInspector
             return ['ok' => false, 'reason' => 'extension_not_allowed', 'mime' => $detectedMime];
         }
 
-        if (!$this->extensionMatchesMime($extension, $detectedMime)) {
+        $validationService = app(\App\Services\Media\UploadValidationService::class);
+
+        if (!$validationService->extensionMatchesMime($extension, $detectedMime)) {
             return ['ok' => false, 'reason' => 'extension_mime_mismatch', 'mime' => $detectedMime];
         }
 
-        if (!$this->validSignature($path, $detectedMime, $extension)) {
+        if (!$validationService->validSignature($path, $detectedMime, $extension)) {
             return ['ok' => false, 'reason' => 'signature_mismatch', 'mime' => $detectedMime];
         }
 
@@ -42,69 +44,5 @@ class MediaContentInspector
             'size' => $size,
             'checksum_sha256' => hash_file('sha256', $path),
         ];
-    }
-
-    private function validSignature(string $path, string $mime, string $extension): bool
-    {
-        $handle = fopen($path, 'rb');
-        if (!$handle) {
-            return false;
-        }
-
-        $header = fread($handle, 560) ?: '';
-        fclose($handle);
-
-        if ($mime === 'application/pdf') {
-            return str_starts_with($header, '%PDF-') || str_contains(substr($header, 0, 1024), '%PDF-');
-        }
-
-        if ($mime === 'image/png') {
-            return str_starts_with($header, "\x89PNG\r\n\x1A\n");
-        }
-
-        if ($mime === 'image/jpeg') {
-            return str_starts_with($header, "\xFF\xD8\xFF") && @getimagesize($path) !== false;
-        }
-
-        if ($mime === 'image/webp') {
-            return str_starts_with($header, 'RIFF') && substr($header, 8, 4) === 'WEBP';
-        }
-
-        if (in_array($extension, ['docx', 'xlsx'], true)) {
-            return str_starts_with($header, "PK\x03\x04");
-        }
-
-        if (in_array($extension, ['doc', 'xls'], true)) {
-            return str_starts_with($header, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
-        }
-
-        if (in_array($mime, ['text/plain', 'text/csv'], true)) {
-            return !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $header);
-        }
-
-        return false;
-    }
-
-    private function extensionMatchesMime(string $extension, string $mime): bool
-    {
-        if ($extension === '') {
-            return true;
-        }
-
-        $allowed = [
-            'pdf' => ['application/pdf'],
-            'png' => ['image/png'],
-            'jpg' => ['image/jpeg'],
-            'jpeg' => ['image/jpeg'],
-            'webp' => ['image/webp'],
-            'txt' => ['text/plain'],
-            'csv' => ['text/plain', 'text/csv'],
-            'doc' => ['application/msword', 'application/octet-stream'],
-            'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip'],
-            'xls' => ['application/vnd.ms-excel', 'application/octet-stream'],
-            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/zip'],
-        ];
-
-        return !isset($allowed[$extension]) || in_array($mime, $allowed[$extension], true);
     }
 }

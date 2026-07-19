@@ -1087,7 +1087,7 @@ class ArticleWorkflowController extends Controller
     {
         $this->rejectObserverMutation($request);
         $request->validate([
-            'production_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'production_file' => 'nullable|file|mimes:' . \App\Services\Media\UploadValidationService::extensionsRuleString() . '|max:25600',
             'production_file_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ]);
 
@@ -1357,7 +1357,7 @@ class ArticleWorkflowController extends Controller
     {
         $this->rejectObserverMutation($request);
         $request->validate([
-            'publication_pdf' => 'nullable|file|mimes:pdf|max:25600',
+            'publication_pdf' => 'nullable|file|mimes:' . \App\Services\Media\UploadValidationService::extensionsRuleString() . '|max:25600',
         ]);
 
         $article = $this->findAuthorizedArticle($request, $articleId, ['publisher']);

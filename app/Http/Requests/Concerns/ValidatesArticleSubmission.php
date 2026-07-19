@@ -162,7 +162,7 @@ trait ValidatesArticleSubmission
             'magazine_id' => "{$draftRequired}|integer|exists:magazines,id",
             'title' => "{$draftRequired}|string|max:255",
             'abstract' => "{$draftRequired}|string",
-            'pdf_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'pdf_file' => 'nullable|file|mimes:' . \App\Services\Media\UploadValidationService::extensionsRuleString() . '|max:25600',
             'pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'revision_response_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'additional_file_ids' => 'nullable|array',
