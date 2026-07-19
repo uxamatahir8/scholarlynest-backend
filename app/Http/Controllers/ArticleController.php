@@ -832,13 +832,25 @@ class ArticleController extends Controller
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
             : null;
 
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus) {
+        $transitionApplied = true;
+        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus, &$transitionApplied) {
+            $lockedArticle = Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            if (ArticleStatus::normalize($lockedArticle->status) !== ArticleStatus::normalize($oldStatus)
+                && ArticleStatus::normalize($lockedArticle->status) === ArticleStatus::normalize($status)) {
+                $transitionApplied = false;
+                \Log::info('article_submission.duplicate_prevented', [
+                    'user_id' => $user->id,
+                    'article_id' => $article->id,
+                    'status' => ArticleStatus::normalize($status),
+                ]);
+                return;
+            }
             if (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED
                 && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
                 $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
                 $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
             }
-            $article->update($updateData);
+            $lockedArticle->update($updateData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
@@ -857,11 +869,11 @@ class ArticleController extends Controller
             $linkedFileIds[] = $responseFile->id;
         }
 
-        if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
+        if ($transitionApplied && ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
         }
 
-        if (ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
+        if ($transitionApplied && ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
                 $user,
@@ -870,7 +882,7 @@ class ArticleController extends Controller
                 null,
                 $linkedFileIds
             );
-        } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+        } elseif ($transitionApplied && ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
             $this->versionService->createSnapshot(
                 $article->fresh(['articleAuthors', 'tags', 'files']),
                 $user,

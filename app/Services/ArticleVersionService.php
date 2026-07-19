@@ -127,6 +127,7 @@ class ArticleVersionService
         $version->loadMissing(['creator:id,name', 'files.uploader:id,name']);
         $fileController = app(\App\Http\Controllers\ArticleFileController::class);
         $visibleFiles = collect($version->files)
+            ->filter(fn (ArticleFile $file) => $fileController->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
             ->map(fn (ArticleFile $file) => $fileController->serializeFile($file))
             ->values()

@@ -23,6 +23,7 @@ class MediaUploadSession extends Model
 
     protected $fillable = [
         'user_id',
+        'client_upload_id',
         'purpose',
         'attachable_type',
         'attachable_id',

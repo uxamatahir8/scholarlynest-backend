@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 
 class ArticleFileController extends Controller
 {
@@ -156,7 +157,17 @@ class ArticleFileController extends Controller
         ];
 
         $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
+        $alreadyAttached = $file->exists;
         $file->fill($values)->save();
+
+        Log::info($alreadyAttached ? 'upload.attach_duplicate_prevented' : 'upload.attached', [
+            'user_id' => $upload->user_id,
+            'article_id' => $article->id,
+            'article_version_id' => $file->article_version_id,
+            'upload_session_id' => $upload->id,
+            'article_file_id' => $file->id,
+            'purpose' => $upload->purpose,
+        ]);
 
         return $file;
     }
@@ -197,10 +208,17 @@ class ArticleFileController extends Controller
     public function filterVisibleFiles($user, iterable $files): array
     {
         return collect($files)
+            ->filter(fn (ArticleFile $file) => $this->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $this->canAccess($user, $file))
             ->map(fn (ArticleFile $file) => $this->serializeFile($file))
             ->values()
             ->all();
+    }
+
+    public function isWorkflowReady(ArticleFile $file): bool
+    {
+        return ($file->scan_status ?? 'clean') === 'clean'
+            && (bool) ($file->storage_key ?: $file->file_path);
     }
 
     public function canAccess($user, ArticleFile $file): bool
