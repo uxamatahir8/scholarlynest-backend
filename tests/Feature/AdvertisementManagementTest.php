@@ -79,6 +79,27 @@ class AdvertisementManagementTest extends TestCase
         $this->postJson('/api/admin/advertisements', $payload)->assertUnprocessable()->assertJsonValidationErrors('redirect_url');
     }
 
+    public function test_article_sidebar_side_is_persisted_and_returned_by_admin_api(): void
+    {
+        $publication = Magazine::create(['title' => 'Persisted Side', 'slug' => 'persisted-side', 'publication_type' => 'journal']);
+        $article = $this->article($publication, 'right-side-article', 'published');
+        $payload = $this->payload($publication, $article);
+        $payload['sidebar_side'] = 'right';
+
+        $created = $this->postJson('/api/admin/advertisements', $payload)
+            ->assertCreated()
+            ->assertJsonPath('sidebar_side', 'right')
+            ->json();
+
+        $this->assertDatabaseHas('advertisements', ['id' => $created['id'], 'placement' => 'sidebar_sticky', 'sidebar_side' => 'right']);
+        $this->getJson("/api/admin/advertisements/{$created['id']}")->assertOk()->assertJsonPath('sidebar_side', 'right');
+
+        $payload['sidebar_side'] = 'left';
+        $this->putJson("/api/admin/advertisements/{$created['id']}", $payload)
+            ->assertOk()
+            ->assertJsonPath('sidebar_side', 'left');
+    }
+
     public function test_all_published_article_targets_are_accepted_for_magazines_and_journals(): void
     {
         foreach (['magazine', 'journal'] as $type) {

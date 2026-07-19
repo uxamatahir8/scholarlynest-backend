@@ -61,8 +61,21 @@ class AdvertisementResolutionTest extends TestCase
         $resolved = app(AdvertisementPlacementService::class)->forArticlePage($article);
         $this->assertSame([$left->id], array_column($resolved['left_sidebar'], 'id'));
         $this->assertSame([$right->id], array_column($resolved['right_sidebar'], 'id'));
+        $this->assertNotContains($right->id, array_column($resolved['left_sidebar'], 'id'));
+        $this->assertNotContains($left->id, array_column($resolved['right_sidebar'], 'id'));
         $this->assertSame([$right->id, $left->id], array_column($resolved['sidebar_sticky'], 'id'));
         $this->assertArrayNotHasKey('storage_key', $resolved['left_sidebar'][0]);
+    }
+
+    public function test_legacy_sidebar_ad_without_a_side_is_not_silently_grouped_left_or_right(): void
+    {
+        $publication = Magazine::create(['title' => 'Legacy', 'slug' => 'legacy-side', 'publication_type' => 'magazine']);
+        $article = $this->article($publication, 'legacy-article');
+        $this->ad(['target_area' => 'article', 'target_mode' => 'all_articles', 'publication_type' => 'magazine', 'publication_id' => $publication->id], 0, 'sidebar_sticky');
+
+        $resolved = app(AdvertisementPlacementService::class)->forArticlePage($article);
+        $this->assertSame([], $resolved['left_sidebar']);
+        $this->assertSame([], $resolved['right_sidebar']);
     }
 
     public function test_inactive_expired_and_future_ads_are_not_public(): void
