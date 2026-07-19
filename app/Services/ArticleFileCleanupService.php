@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\ArticleFile;
 use App\Models\MediaUploadSession;
+use App\Models\ArticleVersion;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -44,13 +45,51 @@ class ArticleFileCleanupService
                 'reason' => $record['reason'],
             ]))->values();
 
+        $multiplePrimaryManuscripts = $this->multiplePrimaryManuscripts($articleId);
+
         return [
             'duplicate_groups' => $duplicateGroups->all(),
             'invalid_records' => $invalidRecords->all(),
             'actions' => $actions->all(),
+            'multiple_primary_manuscripts' => $multiplePrimaryManuscripts->all(),
             'manual_review_count' => $duplicateGroups->where('safe', false)->count()
-                + $invalidRecords->where('safe', false)->count(),
+                + $invalidRecords->where('safe', false)->count()
+                + $multiplePrimaryManuscripts->where('manual_review_required', true)->count(),
         ];
+    }
+
+    private function multiplePrimaryManuscripts(?int $articleId): Collection
+    {
+        return ArticleVersion::query()
+            ->when($articleId, fn ($query) => $query->where('article_id', $articleId))
+            ->with(['files' => fn ($query) => $query
+                ->where('file_type', ArticleFile::MANUSCRIPT)
+                ->where('scan_status', 'clean')
+                ->whereNull('assignment_type')])
+            ->get()
+            ->filter(fn (ArticleVersion $version) => $version->files->count() > 1)
+            ->map(function (ArticleVersion $version) {
+                $files = $version->files;
+                $sameUpload = $files->pluck('media_upload_session_id')->filter()->unique()->count() === 1
+                    && $files->every(fn (ArticleFile $file) => $file->media_upload_session_id);
+                $sameStorage = $files->pluck('storage_key')->filter()->unique()->count() === 1
+                    && $files->every(fn (ArticleFile $file) => $file->storage_key);
+                $canonical = $version->manuscript_file_id && $files->contains('id', $version->manuscript_file_id)
+                    ? $version->manuscript_file_id
+                    : (($sameUpload || $sameStorage) ? $files->sortBy('id')->first()->id : null);
+
+                return [
+                    'category' => 'multiple_primary_manuscripts',
+                    'article_id' => $version->article_id,
+                    'article_version_id' => $version->id,
+                    'version_label' => $version->label,
+                    'manuscript_article_file_ids' => $files->pluck('id')->sort()->values()->all(),
+                    'accepted_file_set_references' => DB::table('article_accepted_file_set_items')->whereIn('article_file_id', $files->pluck('id'))->pluck('article_file_id')->all(),
+                    'workflow_production_references' => $files->filter(fn (ArticleFile $file) => $file->assignment_type || $file->assignment_id)->pluck('id')->all(),
+                    'recommended_canonical_manuscript' => $canonical,
+                    'manual_review_required' => !($sameUpload || $sameStorage),
+                ];
+            })->values();
     }
 
     public function apply(array $audit, string $performedBy = 'artisan'): array
@@ -229,7 +268,7 @@ class ArticleFileCleanupService
 
     private function migrateReferences(ArticleFile $from, ArticleFile $to): array
     {
-        $migrated = ['accepted_file_set_items' => 0, 'upload_sessions' => 0, 'version_snapshots' => 0, 'workflow_assignment' => 0];
+        $migrated = ['accepted_file_set_items' => 0, 'upload_sessions' => 0, 'version_snapshots' => 0, 'version_manuscript_pointer' => 0, 'workflow_assignment' => 0];
         $items = DB::table('article_accepted_file_set_items')->where('article_file_id', $from->id)->get();
         foreach ($items as $item) {
             $conflict = DB::table('article_accepted_file_set_items')
@@ -256,6 +295,10 @@ class ArticleFileCleanupService
             }
         });
         DB::table('article_versions')->where('article_id', $from->article_id)->get()->each(function ($version) use ($from, $to, &$migrated) {
+            if ((int) ($version->manuscript_file_id ?? 0) === $from->id) {
+                DB::table('article_versions')->where('id', $version->id)->update(['manuscript_file_id' => $to->id]);
+                $migrated['version_manuscript_pointer']++;
+            }
             $snapshot = json_decode($version->file_snapshot ?: '[]', true) ?: [];
             $changed = false;
             foreach ($snapshot as &$entry) {

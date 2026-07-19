@@ -42,6 +42,15 @@ class AuditArticleFiles extends Command
             ]]);
             if ($this->option('details')) $this->line('Reason: '.$record['reason']);
         }
+        foreach ($audit['multiple_primary_manuscripts'] as $record) {
+            $this->newLine();
+            $this->line('multiple_primary_manuscripts: Article Version #'.$record['article_version_id']);
+            $this->table(['Article', 'Version label', 'Manuscript IDs', 'Accepted refs', 'Workflow refs', 'Recommended canonical', 'Action'], [[
+                $record['article_id'], $record['version_label'], implode(',', $record['manuscript_article_file_ids']),
+                implode(',', $record['accepted_file_set_references']) ?: '-', implode(',', $record['workflow_production_references']) ?: '-',
+                $record['recommended_canonical_manuscript'] ?: '-', $record['manual_review_required'] ? 'MANUAL REVIEW REQUIRED' : 'SAFE DUPLICATE CLEANUP AVAILABLE',
+            ]]);
+        }
 
         $result = ['applied' => [], 'skipped' => []];
         if ($this->option('apply')) {
@@ -51,8 +60,8 @@ class AuditArticleFiles extends Command
         }
 
         $this->newLine();
-        $this->table(['Duplicate groups', 'Invalid records', 'Safe actions', 'Manual review', 'Applied', 'Skipped'], [[
-            count($audit['duplicate_groups']), count($audit['invalid_records']), count($audit['actions']),
+        $this->table(['Duplicate groups', 'Invalid records', 'Multiple manuscripts', 'Safe actions', 'Manual review', 'Applied', 'Skipped'], [[
+            count($audit['duplicate_groups']), count($audit['invalid_records']), count($audit['multiple_primary_manuscripts']), count($audit['actions']),
             $audit['manual_review_count'], count($result['applied']), count($result['skipped']),
         ]]);
         $this->components->warn('Storage objects are never deleted by this command.');
