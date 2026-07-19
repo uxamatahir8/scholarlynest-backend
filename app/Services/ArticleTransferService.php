@@ -11,6 +11,7 @@ use App\Models\Magazine;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
+use App\Services\SlugService;
 use Illuminate\Validation\ValidationException;
 
 class ArticleTransferService
@@ -100,11 +101,15 @@ class ArticleTransferService
             $this->assertPendingResponse($article, $transferRequest);
 
             $oldMagazineId = $article->magazine_id;
+            $oldSlug = $article->slug;
+            $newSlug = app(SlugService::class)->articleSlug($targetMagazine->id, $article->title, $article->id);
             $article->update([
                 'magazine_id' => $targetMagazine->id,
+                'slug' => $newSlug,
                 'magazine_issue_id' => null,
                 'status' => ArticleStatus::SCREENING,
             ]);
+            app(SlugService::class)->recordRedirect('article', $article->id, $oldSlug, $newSlug, $oldMagazineId, true);
 
             $transferRequest->update([
                 'status' => ArticleTransferRequest::STATUS_ACCEPTED,

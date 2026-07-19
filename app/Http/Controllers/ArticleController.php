@@ -20,6 +20,7 @@ use App\Services\AcceptedFileSetService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\PrimaryManuscriptService;
+use App\Services\SlugService;
 use App\Services\Security\HtmlSanitizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -155,13 +156,13 @@ class ArticleController extends Controller
     public function showForPublication(Request $request, string $publicationSlug, string $articleSlug): JsonResponse
     {
         $type = (string) $request->route('publication_type');
-        $exists = Article::where('slug', $articleSlug)
+        $article = Article::where('slug', $articleSlug)
             ->whereHas('magazine', fn ($query) => $query
                 ->where('slug', $publicationSlug)
                 ->where('publication_type', $type))
-            ->exists();
+            ->first();
 
-        return $exists ? $this->show($articleSlug) : response()->json(['message' => 'Article not found.'], 404);
+        return $article ? $this->show((string) $article->id) : response()->json(['message' => 'Article not found.'], 404);
     }
 
 
@@ -274,14 +275,9 @@ class ArticleController extends Controller
             return response()->json(['message' => PrimaryManuscriptService::MISSING_MESSAGE], 422);
         }
 
-        $slug = !empty($validated['title'])
-            ? Str::slug($validated['title']) . '-' . Str::lower(Str::random(6))
-            : 'draft-' . Str::lower(Str::random(16));
-
         $articleData = array_merge($request->articlePayload(), [
             'user_id' => $articleOwner->id,
             'title' => $validated['title'] ?? null,
-            'slug' => $slug,
             'full_text' => '',
             'pdf_path' => null,
             'featured_image' => null,
@@ -301,7 +297,7 @@ class ArticleController extends Controller
         }
 
         $article = \DB::transaction(function() use ($articleData, $request, $authorResolution, $user) {
-            $article = Article::create($articleData);
+            $article = app(SlugService::class)->createArticle($articleData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
@@ -687,7 +683,7 @@ class ArticleController extends Controller
 
         $slug = $article->slug;
         if ($validated['title'] !== $article->title) {
-            $slug = Str::slug($validated['title']);
+            $slug = app(SlugService::class)->articleSlug($article->magazine_id, $validated['title'], $article->id);
         }
 
         // Restrict status edits to admins/editors only or handle resubmission
@@ -877,7 +873,9 @@ class ArticleController extends Controller
                 $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
                 $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
             }
+            $oldSlug = $lockedArticle->slug;
             $lockedArticle->update($updateData);
+            app(SlugService::class)->recordRedirect('article', $lockedArticle->id, $oldSlug, $lockedArticle->slug, $lockedArticle->magazine_id);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);

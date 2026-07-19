@@ -8,6 +8,7 @@ use App\Models\SharedPublicPage;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\NotificationService;
+use App\Services\SlugService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -347,11 +348,8 @@ class MagazineController extends Controller
             ? app(CleanUploadResolver::class)->cleanKey($user, $validated['banner_image_upload_id'], 'publication_banner_image')
             : null;
 
-        $slug = Str::slug($validated['title']) . '-' . Str::random(5);
-
         $magazineData = [
             'title' => $validated['title'],
-            'slug' => $slug,
             'cover_image' => $coverImagePath,
             'banner_image' => $bannerImagePath,
             'description' => $validated['description'] ?? null,
@@ -365,7 +363,7 @@ class MagazineController extends Controller
             $magazineData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        $magazine = Magazine::create($magazineData);
+        $magazine = app(SlugService::class)->createPublication($magazineData);
 
         // Sync editors
         $editorUserIds = [];
