@@ -95,6 +95,9 @@ class ArticleWorkflowController extends Controller
             'article' => $articlePayload,
             'files' => $articlePayload['files'] ?? [],
             'versions' => $articlePayload['versions'] ?? [],
+            'capabilities' => $articlePayload['capabilities'] ?? [],
+            'current_user_action' => $articlePayload['current_user_action'] ?? null,
+            'unassigned_legacy_files' => $articlePayload['unassigned_legacy_files'] ?? [],
         ]);
     }
 
@@ -2418,9 +2421,14 @@ class ArticleWorkflowController extends Controller
 
     private function serializedVersions(Article $article, $user): array
     {
+        $resolver = app(\App\Services\ArticleVersionFileSectionResolver::class);
         return $article->versions
             ->sortByDesc('version_number')
-            ->map(fn ($version) => $this->versionService->serializeVersion($version, $user))
+            ->map(function ($version) use ($user, $resolver) {
+                $serialized = $this->versionService->serializeVersion($version, $user);
+                $serialized['sections'] = $resolver->groupFilesIntoSections($serialized['files'] ?? [], $version->files ?? []);
+                return $serialized;
+            })
             ->values()
             ->all();
     }
@@ -2623,6 +2631,36 @@ class ArticleWorkflowController extends Controller
                  'created_at' => $log->created_at,
              ])->values()
              : [];
+
+        $data['capabilities'] = [
+            'view_editorial_decision' => (bool) ($canViewEditorial || ($isAuthor && collect($article->editorialDecisions)->count() > 0)),
+            'view_copy_editing' => (bool) ($canViewProduction || collect($article->productionAssignments)->where('role', 'copy_editor')->count() > 0 || collect($article->files)->where('file_type', 'copy_edited_file')->count() > 0),
+            'view_final_files' => (bool) ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'publisher']) || $user?->hasRole('proofreader') || $isAuthor || collect($article->files)->whereIn('file_type', ['proof_file', 'publication_pdf'])->count() > 0),
+            'view_workflow_history' => (bool) ($this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'publisher'])),
+        ];
+
+        $data['current_user_action'] = $this->resolveCurrentUserAction($article, $user);
+
+        $unassignedLegacyFiles = [];
+        $hasHistoryAccess = $this->isGlobal($user) || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor', 'publisher']);
+        if ($hasHistoryAccess) {
+            $fileController = app(\App\Http\Controllers\ArticleFileController::class);
+            $unassignedFiles = collect($article->files ?? [])
+                ->filter(fn ($file) => $file->article_version_id === null)
+                ->filter(function ($file) use ($article) {
+                    if ($file->file_type === ArticleFile::MANUSCRIPT && ArticleStatus::normalize($article->status) === ArticleStatus::DRAFT) {
+                        return false;
+                    }
+                    return in_array($file->file_type, [ArticleFile::ADDITIONAL_MANUSCRIPT_FILE, ArticleFile::SUPPLEMENTARY, ArticleFile::MANUSCRIPT], true);
+                })
+                ->filter(fn ($file) => $fileController->isWorkflowReady($file))
+                ->filter(fn ($file) => $fileController->canAccess($user, $file));
+
+            foreach ($unassignedFiles as $file) {
+                $unassignedLegacyFiles[] = $fileController->serializeFile($file);
+            }
+        }
+        $data['unassigned_legacy_files'] = $unassignedLegacyFiles;
 
         return $data;
     }
@@ -3089,5 +3127,176 @@ class ArticleWorkflowController extends Controller
                 return $value;
             })
             ->all();
+    }
+
+    private function resolveCurrentUserAction(Article $article, $user): ?array
+    {
+        if (!$user) {
+            return null;
+        }
+
+        $status = ArticleStatus::normalize($article->status);
+        $userId = $user->id;
+
+        $isGlobal = $this->isGlobal($user);
+        $isEditor = $isGlobal || $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']);
+        $isSubEditor = $user->hasRole('sub_editor');
+        $isReviewer = $user->hasRole('reviewer');
+        $isPublisher = $isGlobal || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
+        $isAuthor = (int) $article->user_id === (int) $userId || $this->isArticleAuthorRecord($user, $article);
+
+        if ($isEditor) {
+            if (in_array($status, [ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED], true) || $status === 'screening') {
+                return [
+                    'visible' => true,
+                    'type' => 'screen_submission',
+                    'title' => 'Screen Manuscript',
+                    'description' => 'Perform plagiarism screening and decide if the manuscript proceeds to review or is rejected.',
+                ];
+            }
+            if (in_array($status, [ArticleStatus::UNDER_REVIEW, ArticleStatus::ASSIGNED_TO_SUB_EDITOR, ArticleStatus::REVIEWER_ASSIGNED, ArticleStatus::REVIEW_IN_PROGRESS], true)) {
+                $hasSubEditor = $article->subEditorAssignments()->where('status', '!=', 'completed')->exists();
+                if (!$hasSubEditor && $status === ArticleStatus::UNDER_REVIEW) {
+                    return [
+                        'visible' => true,
+                        'type' => 'assign_sub_editor',
+                        'title' => 'Assign Sub Editor',
+                        'description' => 'Assign a Sub Editor to manage the peer review process for this manuscript.',
+                    ];
+                }
+                
+                return [
+                    'visible' => true,
+                    'type' => 'issue_editorial_decision',
+                    'title' => 'Review & Decide',
+                    'description' => 'Manage reviewer assignments or issue the final editorial decision (Accept / Revision / Reject).',
+                ];
+            }
+        }
+
+        if ($isSubEditor) {
+            $subEditorAssignment = $article->subEditorAssignments()
+                ->where('sub_editor_id', $userId)
+                ->where('status', '!=', 'completed')
+                ->first();
+
+            if ($subEditorAssignment) {
+                if ($subEditorAssignment->status === 'pending') {
+                    return [
+                        'visible' => true,
+                        'type' => 'accept_sub_editor_assignment',
+                        'title' => 'Accept Sub Editor Assignment',
+                        'description' => 'Accept the assignment to manage the review process for this manuscript.',
+                        'assignment_id' => $subEditorAssignment->id,
+                    ];
+                } else {
+                    return [
+                        'visible' => true,
+                        'type' => 'submit_sub_editor_recommendation',
+                        'title' => 'Submit Sub Editor Recommendation',
+                        'description' => 'Submit your recommendation and notes back to the chief editor.',
+                        'assignment_id' => $subEditorAssignment->id,
+                    ];
+                }
+            }
+        }
+
+        if ($isReviewer) {
+            $reviewerAssignment = $article->reviewerAssignments()
+                ->where('reviewer_id', $userId)
+                ->where('status', '!=', 'completed')
+                ->first();
+
+            if ($reviewerAssignment) {
+                if ($reviewerAssignment->status === 'pending' || !$reviewerAssignment->accepted_at) {
+                    return [
+                        'visible' => true,
+                        'type' => 'accept_reviewer_assignment',
+                        'title' => 'Accept Review Invitation',
+                        'description' => 'Please accept or decline the invitation to review this manuscript.',
+                        'assignment_id' => $reviewerAssignment->id,
+                    ];
+                } else {
+                    return [
+                        'visible' => true,
+                        'type' => 'submit_review',
+                        'title' => 'Submit Peer Review',
+                        'description' => 'Submit your structured scorecard and review comments.',
+                        'assignment_id' => $reviewerAssignment->id,
+                    ];
+                }
+            }
+        }
+
+        if ($isAuthor) {
+            if (in_array($status, [ArticleStatus::REVISION_REQUIRED, ArticleStatus::MINOR_REVISION_REQUIRED, ArticleStatus::MAJOR_REVISION_REQUIRED], true)) {
+                return [
+                    'visible' => true,
+                    'type' => 'submit_revision',
+                    'title' => 'Submit Revision',
+                    'description' => 'A revision has been requested. Please upload your revised manuscript and response to reviewers.',
+                ];
+            }
+            if ($status === ArticleStatus::PROOFREADING && $this->canApproveAuthorFinalReview($user, $article) && !$article->author_final_approved_at) {
+                return [
+                    'visible' => true,
+                    'type' => 'submit_revision',
+                    'title' => 'Author Final Approval',
+                    'description' => 'Please review and approve the final copyedited version of your manuscript.',
+                ];
+            }
+        }
+
+        $copyEditorAssignment = $article->productionAssignments()
+            ->where('user_id', $userId)
+            ->where('role', 'copy_editor')
+            ->where('status', '!=', 'completed')
+            ->first();
+
+        if ($copyEditorAssignment) {
+            return [
+                'visible' => true,
+                'type' => 'upload_copy_edited_file',
+                'title' => 'Copyediting Task',
+                'description' => 'Upload the copy-edited version of the manuscript and mark the task complete.',
+                'assignment_id' => $copyEditorAssignment->id,
+            ];
+        }
+
+        $proofreaderAssignment = $article->productionAssignments()
+            ->where('user_id', $userId)
+            ->where('role', 'proofreader')
+            ->where('status', '!=', 'completed')
+            ->first();
+
+        if ($proofreaderAssignment) {
+            return [
+                'visible' => true,
+                'type' => 'upload_proof_file',
+                'title' => 'Proofreading Task',
+                'description' => 'Upload the proof-edited version of the manuscript and mark the task complete.',
+                'assignment_id' => $proofreaderAssignment->id,
+            ];
+        }
+
+        if ($isPublisher && $status === ArticleStatus::READY_FOR_PUBLICATION) {
+            return [
+                'visible' => true,
+                'type' => 'finalize_publication',
+                'title' => 'Finalize Publication',
+                'description' => 'Assign this manuscript to an issue, configure DOI, and publish it.',
+            ];
+        }
+
+        if ($isAuthor && $status === ArticleStatus::IN_TRANSIT && $article->pendingTransferRequest?->status === 'pending') {
+            return [
+                'visible' => true,
+                'type' => 'submit_revision',
+                'title' => 'Respond to Transfer Request',
+                'description' => 'Decide whether to accept or decline the transfer of your manuscript to another publication.',
+            ];
+        }
+
+        return null;
     }
 }

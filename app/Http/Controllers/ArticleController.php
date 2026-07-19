@@ -1326,10 +1326,7 @@ class ArticleController extends Controller
                 ])
                 ->sortBy('sort_order')
                 ->values(),
-            'publication_files' => $article->files
-                ->filter(fn ($file) => ($file->scan_status ?? 'clean') === 'clean')
-                ->filter(fn ($file) => (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
-                    || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'))
+            'publication_files' => collect(app(\App\Services\PublishedArticleFileResolver::class)->resolvePublishedFiles($article))
                 ->map(fn ($file) => [
                     'id' => $file->id,
                     'title' => $file->file_title ?: $file->original_name,
