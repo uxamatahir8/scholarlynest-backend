@@ -16,6 +16,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -336,6 +337,8 @@ class MediaUploadController extends Controller
         $this->authorizeSession($request, $upload);
         if ($upload->upload_mode === 'multipart' && !$upload->isTerminal()) {
             $this->s3->abortMultipart($upload);
+        } elseif (!$upload->isTerminal() && Storage::disk($upload->disk)->exists($upload->s3_incoming_key)) {
+            Storage::disk($upload->disk)->delete($upload->s3_incoming_key);
         }
 
         $upload->forceFill([

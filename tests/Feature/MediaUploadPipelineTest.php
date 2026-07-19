@@ -408,6 +408,22 @@ class MediaUploadPipelineTest extends TestCase
         $this->assertDatabaseCount('article_files', 0);
     }
 
+    public function test_failed_single_upload_abort_removes_incoming_object_without_file_reference(): void
+    {
+        Sanctum::actingAs($this->author);
+        $session = $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADING]);
+        Storage::disk('s3')->put($session->s3_incoming_key, 'partial upload');
+
+        $this->deleteJson("/api/media/uploads/{$session->id}/abort")->assertOk();
+
+        Storage::disk('s3')->assertMissing($session->s3_incoming_key);
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $session->id,
+            'status' => MediaUploadSession::STATUS_ABORTED,
+        ]);
+        $this->assertDatabaseCount('article_files', 0);
+    }
+
     public function test_scan_job_promotes_clean_pdf_and_marks_record_available(): void
     {
         $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
