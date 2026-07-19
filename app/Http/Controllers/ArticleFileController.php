@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use App\Services\Media\MediaStorageService;
 use Illuminate\Support\Facades\Log;
 
 class ArticleFileController extends Controller
@@ -65,35 +66,70 @@ class ArticleFileController extends Controller
         $file = ArticleFile::with(['article', 'uploader:id,name'])->findOrFail($fileId);
 
         if (!$this->canAccess($request->user('sanctum'), $file)) {
-            return response()->json(['message' => 'This action is unauthorized.'], 403);
+            return response()->json([
+                'message' => 'This action is unauthorized.',
+                'code' => 'FILE_ACCESS_DENIED'
+            ], 403);
         }
 
         if (($file->scan_status ?? 'clean') !== 'clean') {
-            return response()->json(['message' => 'The requested file is not available.'], 404);
+            return response()->json([
+                'message' => 'The requested file is not available.',
+                'code' => 'FILE_NOT_CLEAN'
+            ], 404);
         }
+
+        $wantsJson = $request->has('json') || $request->query('json') === '1';
+
+        $disposition = $request->has('preview') ? 'inline' : 'attachment';
 
         if (($file->disk ?? 'public') !== 'public') {
             $key = $file->storage_key ?: $file->file_path;
             if (!$key) {
-                return response()->json(['message' => 'The requested file is not available.'], 404);
+                return response()->json([
+                    'message' => 'The requested file is not available.',
+                    'code' => 'FILE_NOT_FOUND'
+                ], 404);
             }
 
-             return redirect()->away(
-                 Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
-                     'ResponseContentDisposition' => 'attachment; filename="' . addslashes($file->safe_original_name ?: $file->original_name) . '"',
-                     'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
-                 ])
-             );
+            $ttl = (int) config('media_uploads.download_url_ttl_minutes', 5);
+            $temporaryUrl = Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes($ttl), [
+                'ResponseContentDisposition' => $disposition . '; filename="' . addslashes($file->safe_original_name ?: $file->original_name) . '"',
+                'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
+            ]);
+
+            if ($wantsJson) {
+                return response()->json([
+                    'download_url' => $temporaryUrl,
+                    'filename' => $file->original_name,
+                    'expires_at' => now()->addMinutes($ttl)->toIso8601String(),
+                ]);
+            }
+
+            return redirect()->away($temporaryUrl);
         }
 
         $relativePath = str_replace('storage/', '', $file->file_path);
         if (!Storage::disk('public')->exists($relativePath)) {
-            return response()->json(['message' => 'The requested file is not available.'], 404);
+            return response()->json([
+                'message' => 'The requested file is not available.',
+                'code' => 'FILE_NOT_FOUND'
+            ], 404);
+        }
+
+        $publicUrl = Storage::disk('public')->url($relativePath);
+
+        if ($wantsJson) {
+            return response()->json([
+                'download_url' => $publicUrl,
+                'filename' => $file->original_name,
+                'expires_at' => null,
+            ]);
         }
 
         return response()->file(Storage::disk('public')->path($relativePath), [
             'Content-Type' => $file->mime_type,
-            'Content-Disposition' => 'attachment; filename="' . $file->original_name . '"',
+            'Content-Disposition' => $disposition . '; filename="' . $file->original_name . '"',
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }
@@ -201,6 +237,16 @@ class ArticleFileController extends Controller
     {
         $file->loadMissing('uploader:id,name');
 
+        $isImage = str_starts_with($file->mime_type ?? '', 'image/');
+        $canPreview = in_array($file->mime_type, ['application/pdf', 'text/plain', 'text/html'], true) || $isImage;
+
+        $displayUrl = null;
+        $thumbnailUrl = null;
+        if ($isImage && ($file->scan_status ?? 'clean') === 'clean') {
+            $displayUrl = app(MediaStorageService::class)->temporaryUrl($file->storage_key ?: $file->file_path, now()->addMinutes(30));
+            $thumbnailUrl = $displayUrl;
+        }
+
         return [
             'id' => $file->id,
             'article_id' => $file->article_id,
@@ -208,10 +254,13 @@ class ArticleFileController extends Controller
             'source_asset_id' => $file->source_asset_id,
             'file_type' => $file->file_type,
             'file_title' => $file->file_title,
+            'title' => $file->original_name,
+            'original_filename' => $file->original_name,
             'visibility' => $file->visibility,
             'original_name' => $file->original_name,
             'mime_type' => $file->mime_type,
             'size' => $file->size,
+            'size_bytes' => $file->size,
             'scan_status' => $file->scan_status ?? 'clean',
             'available' => ($file->scan_status ?? 'clean') === 'clean',
             'uploader' => $file->uploader ? [
@@ -220,6 +269,7 @@ class ArticleFileController extends Controller
             ] : null,
             'created_at' => $file->created_at,
             'download_url' => ($file->scan_status ?? 'clean') === 'clean' ? "/api/articles/files/{$file->id}/download" : null,
+            'download_endpoint' => ($file->scan_status ?? 'clean') === 'clean' ? "/articles/files/{$file->id}/download" : null,
             'assignment_type' => $file->assignment_type,
             'assignment_id' => $file->assignment_id,
             'publication_visibility' => $file->metadata['publication_visibility'] ?? [
@@ -227,6 +277,13 @@ class ArticleFileController extends Controller
                 'show_in_downloads' => false,
                 'include_in_package' => false,
             ],
+            'is_image' => $isImage,
+            'can_preview' => $canPreview,
+            'preview_url' => $canPreview && !$isImage ? "/articles/files/{$file->id}/preview" : null,
+            'display_url' => $displayUrl,
+            'thumbnail_url' => $thumbnailUrl,
+            'width' => $file->metadata['width'] ?? null,
+            'height' => $file->metadata['height'] ?? null,
         ];
     }
 

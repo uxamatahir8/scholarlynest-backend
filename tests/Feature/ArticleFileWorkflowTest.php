@@ -126,6 +126,10 @@ class ArticleFileWorkflowTest extends TestCase
         $this->getJson("/api/articles/files/{$file->id}/download")
             ->assertRedirect();
 
+        $this->getJson("/api/articles/files/{$file->id}/download?json=1")
+            ->assertStatus(200)
+            ->assertJsonStructure(['download_url', 'filename']);
+
         $unrelatedRole = Role::create(['name' => 'support_agent', 'display_name' => 'Support Agent']);
         $unrelatedUser = User::factory()->create(['role_id' => $unrelatedRole->id]);
         Sanctum::actingAs($unrelatedUser);

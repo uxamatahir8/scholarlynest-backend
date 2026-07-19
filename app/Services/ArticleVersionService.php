@@ -188,18 +188,6 @@ class ArticleVersionService
 
     private function serializeFileSnapshot(ArticleFile $file): array
     {
-        return [
-            'id' => $file->id,
-            'file_type' => $file->file_type,
-            'file_title' => $file->file_title,
-            'visibility' => $file->visibility,
-            'original_name' => $file->original_name,
-            'mime_type' => $file->mime_type,
-            'size' => $file->size,
-            'uploaded_by' => $file->uploaded_by,
-            'uploader_name' => $file->uploader?->name,
-            'created_at' => $file->created_at,
-            'download_url' => "/api/articles/files/{$file->id}/download",
-        ];
+        return app(\App\Http\Controllers\ArticleFileController::class)->serializeFile($file);
     }
 }

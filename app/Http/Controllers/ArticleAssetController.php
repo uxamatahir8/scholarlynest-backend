@@ -96,18 +96,31 @@ class ArticleAssetController extends Controller
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
+        $wantsJson = $request->has('json') || $request->query('json') === '1';
+
+        $disposition = $request->has('preview') ? 'inline' : 'attachment';
+
         if (($asset->disk ?? 'public') !== 'public') {
             $key = $asset->storage_key ?: $asset->file_path;
             if (!$key) {
                 return response()->json(['message' => 'The requested file is not available.'], 404);
             }
 
-             return redirect()->away(
-                 Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [
-                     'ResponseContentDisposition' => 'attachment; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
-                     'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
-                 ])
-             );
+            $ttl = (int) config('media_uploads.download_url_ttl_minutes', 5);
+            $temporaryUrl = Storage::disk($asset->disk)->temporaryUrl($key, now()->addMinutes($ttl), [
+                'ResponseContentDisposition' => $disposition . '; filename="' . addslashes($asset->safe_original_filename ?: $asset->original_filename) . '"',
+                'ResponseContentType' => $asset->mime_type ?: 'application/octet-stream',
+            ]);
+
+            if ($wantsJson) {
+                return response()->json([
+                    'download_url' => $temporaryUrl,
+                    'filename' => $asset->original_filename,
+                    'expires_at' => now()->addMinutes($ttl)->toIso8601String(),
+                ]);
+            }
+
+            return redirect()->away($temporaryUrl);
         }
 
         $relativePath = str_replace('storage/', '', $asset->file_path);
@@ -115,12 +128,22 @@ class ArticleAssetController extends Controller
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
+        $publicUrl = Storage::disk('public')->url($relativePath);
+
+        if ($wantsJson) {
+            return response()->json([
+                'download_url' => $publicUrl,
+                'filename' => $asset->original_filename,
+                'expires_at' => null,
+            ]);
+        }
+
         $absolutePath = Storage::disk('public')->path($relativePath);
 
         // Enforce secure file download headers
         return response()->file($absolutePath, [
             'Content-Type' => $asset->mime_type,
-            'Content-Disposition' => 'attachment; filename="' . $asset->original_filename . '"',
+            'Content-Disposition' => $disposition . '; filename="' . $asset->original_filename . '"',
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }
