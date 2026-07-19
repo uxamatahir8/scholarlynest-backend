@@ -74,22 +74,9 @@ class ArticleFileController extends Controller
 
         if (($file->disk ?? 'public') !== 'public') {
             $key = $file->storage_key ?: $file->file_path;
-            if (!$key || !Storage::disk($file->disk)->exists($key)) {
+            if (!$key) {
                 return response()->json(['message' => 'The requested file is not available.'], 404);
             }
-
-             if ($request->has('stream')) {
-                 return response()->streamDownload(function () use ($file, $key) {
-                     $stream = Storage::disk($file->disk)->readStream($key);
-                     if ($stream) {
-                         fpassthru($stream);
-                         fclose($stream);
-                     }
-                 }, $file->safe_original_name ?: $file->original_name, [
-                     'Content-Type' => $file->mime_type ?: 'application/octet-stream',
-                     'X-Content-Type-Options' => 'nosniff',
-                 ]);
-             }
 
              return redirect()->away(
                  Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes(config('media_uploads.download_url_ttl_minutes')), [

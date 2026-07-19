@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\Storage;
 
 class MediaStorageService
 {
+    /** @var array<string, string> */
+    private array $requestUrlCache = [];
     public function __construct(private readonly S3MediaKeyResolver $keys)
     {
     }
@@ -53,7 +55,8 @@ class MediaStorageService
             return Storage::disk('public')->url($resolved['path']);
         }
 
-        return Storage::disk($resolved['disk'])->temporaryUrl($resolved['path'], $expiresAt);
+        $cacheKey = $resolved['disk'].'|'.$resolved['path'].'|'.$expiresAt->getTimestamp();
+        return $this->requestUrlCache[$cacheKey] ??= Storage::disk($resolved['disk'])->temporaryUrl($resolved['path'], $expiresAt);
     }
 
     public function applicationUrl(?string $path): ?string
@@ -99,7 +102,7 @@ class MediaStorageService
     public function downloadResponse(?string $path, string $filename, string $contentType = 'application/octet-stream', string $disposition = 'attachment')
     {
         $resolved = $this->resolvePath($path);
-        if (!$resolved || !Storage::disk($resolved['disk'])->exists($resolved['path'])) {
+        if (!$resolved) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
@@ -111,6 +114,8 @@ class MediaStorageService
             ]);
         }
 
+        // Authenticated inline previews are intentionally streamed; article file
+        // downloads use their dedicated controllers and always redirect to S3.
         if (request()->has('stream')) {
             return response()->streamDownload(function () use ($resolved) {
                 $stream = Storage::disk($resolved['disk'])->readStream($resolved['path']);

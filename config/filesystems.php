@@ -56,6 +56,10 @@ return [
             'url' => env('AWS_URL'),
             'endpoint' => env('AWS_ENDPOINT'),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
+            'http' => [
+                'connect_timeout' => (float) env('AWS_CONNECT_TIMEOUT_SECONDS', 3),
+                'timeout' => (float) env('AWS_REQUEST_TIMEOUT_SECONDS', 15),
+            ],
             'throw' => false,
             'report' => false,
         ],
