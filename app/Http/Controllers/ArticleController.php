@@ -900,6 +900,12 @@ class ArticleController extends Controller
         }
 
         if ($transitionApplied && ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
+            if (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+                event(new \App\Events\ArticleSubmitted(
+                    $article->fresh(['articleAuthors', 'magazine', 'user']),
+                    $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)
+                ));
+            }
             $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
         }
 

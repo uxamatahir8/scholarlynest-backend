@@ -68,6 +68,30 @@ class MagazineTest extends TestCase
                  ]);
     }
 
+    public function test_can_fetch_all_publication_types_using_query_param(): void
+    {
+        $mag = Magazine::create([
+            'title' => 'Test Magazine Item',
+            'slug' => 'test-magazine-item',
+            'publication_type' => 'magazine',
+        ]);
+        $journal = Magazine::create([
+            'title' => 'Test Journal Item',
+            'slug' => 'test-journal-item',
+            'publication_type' => 'journal',
+        ]);
+
+        $responseAll = $this->getJson('/api/magazines?all=1&publication_type=all');
+        $responseAll->assertStatus(200)
+            ->assertJsonFragment(['title' => 'Test Magazine Item'])
+            ->assertJsonFragment(['title' => 'Test Journal Item']);
+
+        $responseJournalOnly = $this->getJson('/api/magazines?all=1&publication_type=journal');
+        $responseJournalOnly->assertStatus(200)
+            ->assertJsonMissing(['title' => 'Test Magazine Item'])
+            ->assertJsonFragment(['title' => 'Test Journal Item']);
+    }
+
     public function test_admin_can_create_magazine_with_uploaded_cover_image(): void
     {
         Storage::fake('public');

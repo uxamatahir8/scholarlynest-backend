@@ -689,12 +689,19 @@ class MagazineController extends Controller
 
     private function requestedPublicationType(Request $request): string
     {
-        return (string) ($request->route('publication_type') ?: $request->input('publication_type', Magazine::TYPE_MAGAZINE));
+        $type = $request->query('publication_type') ?: $request->input('publication_type') ?: $request->route('publication_type');
+        return in_array($type, [Magazine::TYPE_MAGAZINE, Magazine::TYPE_JOURNAL], true) ? $type : Magazine::TYPE_MAGAZINE;
     }
 
     private function applyPublicationTypeFilter($query, Request $request): void
     {
-        $type = $request->route('publication_type') ?: $request->query('publication_type');
+        $type = $request->query('publication_type');
+        if ($type === 'all') {
+            return;
+        }
+        if (!$type) {
+            $type = $request->route('publication_type');
+        }
         if (!$type) {
             if (str_contains($request->getPathInfo(), '/journals')) {
                 $type = Magazine::TYPE_JOURNAL;

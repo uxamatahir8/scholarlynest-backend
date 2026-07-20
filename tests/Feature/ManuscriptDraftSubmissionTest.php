@@ -367,6 +367,7 @@ class ManuscriptDraftSubmissionTest extends TestCase
             'label' => 'Initial Submission',
             'status_snapshot' => ArticleStatus::SUBMITTED,
         ]);
+        Event::assertDispatched(ArticleSubmitted::class);
     }
 
     public function test_author_cannot_edit_after_submission(): void
