@@ -16,13 +16,27 @@ class NotificationLog extends Model
      * @var array<int, string>
      */
     protected $fillable = [
+        'notification_event_id',
+        'user_notification_id',
         'user_id',
         'recipient_email',
         'subject',
+        'channel',
+        'purpose',
+        'deduplication_key',
+        'privacy_variant',
         'payload',
         'status',
         'retry_count',
         'error_message',
+        'queued_at',
+        'sending_at',
+        'sent_at',
+        'failed_at',
+        'provider',
+        'provider_message_id',
+        'last_error_code',
+        'last_error_summary',
     ];
 
     /**
@@ -33,6 +47,10 @@ class NotificationLog extends Model
     protected $casts = [
         'payload' => 'array',
         'retry_count' => 'integer',
+        'queued_at' => 'datetime',
+        'sending_at' => 'datetime',
+        'sent_at' => 'datetime',
+        'failed_at' => 'datetime',
     ];
 
     /**
@@ -41,5 +59,15 @@ class NotificationLog extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function event(): BelongsTo
+    {
+        return $this->belongsTo(NotificationEvent::class, 'notification_event_id');
+    }
+
+    public function userNotification(): BelongsTo
+    {
+        return $this->belongsTo(UserNotification::class);
     }
 }

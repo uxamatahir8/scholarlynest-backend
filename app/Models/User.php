@@ -243,4 +243,14 @@ class User extends Authenticatable
             ->withPivot('created_by')
             ->withTimestamps();
     }
+
+    public function inAppNotifications(): HasMany
+    {
+        return $this->hasMany(UserNotification::class, 'recipient_user_id');
+    }
+
+    public function notificationPreferences(): HasMany
+    {
+        return $this->hasMany(NotificationPreference::class);
+    }
 }

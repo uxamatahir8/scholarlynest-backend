@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Policies\SupportTicketPolicy;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,15 +26,15 @@ class SupportTicketController extends Controller
 {
     public function __construct(
         private NotificationService $notifications,
-        private SupportTicketPolicy $policy
-    ) {
-    }
+        private SupportTicketPolicy $policy,
+        private NotificationEventRecorder $notificationEvents,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
         $isAdminEndpoint = str_starts_with($request->path(), 'api/admin/');
-        if ($isAdminEndpoint && !$this->policy->viewAny($user)) {
+        if ($isAdminEndpoint && ! $this->policy->viewAny($user)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -79,6 +80,13 @@ class SupportTicketController extends Controller
             $this->attachUploads($ticket, null, $uploads, $user);
             $this->activity($ticket, $user, 'ticket_created', null, 'submitted');
 
+            $this->notificationEvents->record(
+                'support.ticket_created', null, $user,
+                ['support_ticket_id' => $ticket->id, 'ticket_reference' => $ticket->ticket_number],
+                'support_ticket', $ticket->id,
+                deduplicationKey: "support-ticket:{$ticket->id}:created"
+            );
+
             return $ticket->fresh(['user:id,name,email', 'attachments.uploadSession']);
         });
 
@@ -92,7 +100,7 @@ class SupportTicketController extends Controller
 
     public function show(Request $request, SupportTicket $ticket): JsonResponse
     {
-        if (!$this->policy->view($request->user(), $ticket)) {
+        if (! $this->policy->view($request->user(), $ticket)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -103,7 +111,7 @@ class SupportTicketController extends Controller
 
     public function messages(Request $request, SupportTicket $ticket): JsonResponse
     {
-        if (!$this->policy->view($request->user(), $ticket)) {
+        if (! $this->policy->view($request->user(), $ticket)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -111,7 +119,7 @@ class SupportTicketController extends Controller
 
         return response()->json([
             'data' => $ticket->messages
-                ->filter(fn ($message) => !$message->is_internal_note || $this->policy->viewAny($request->user()))
+                ->filter(fn ($message) => ! $message->is_internal_note || $this->policy->viewAny($request->user()))
                 ->map(fn ($message) => $this->messagePayload($message, $request->user()))
                 ->values(),
         ]);
@@ -120,7 +128,7 @@ class SupportTicketController extends Controller
     public function reply(ReplySupportTicketRequest $request, SupportTicket $ticket): JsonResponse
     {
         $user = $request->user();
-        if (!$this->policy->reply($user, $ticket)) {
+        if (! $this->policy->reply($user, $ticket)) {
             return response()->json(['message' => $ticket->status === 'closed' ? 'Closed tickets cannot be replied to by the ticket owner.' : 'Forbidden.'], 403);
         }
 
@@ -141,6 +149,13 @@ class SupportTicketController extends Controller
             $this->attachUploads($ticket, $message, $uploads, $user);
             $this->activity($ticket, $user, 'reply_added');
 
+            $this->notificationEvents->record(
+                'support.ticket_replied', null, $user,
+                ['support_ticket_id' => $ticket->id, 'ticket_reference' => $ticket->ticket_number],
+                'support_ticket', $ticket->id,
+                deduplicationKey: "support-message:{$message->id}:created"
+            );
+
             return $message->fresh(['user.role', 'attachments.uploadSession']);
         });
 
@@ -156,7 +171,7 @@ class SupportTicketController extends Controller
     public function updateStatus(UpdateSupportTicketStatusRequest $request, SupportTicket $ticket): JsonResponse
     {
         $user = $request->user();
-        if (!$this->policy->updateStatus($user, $ticket)) {
+        if (! $this->policy->updateStatus($user, $ticket)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -169,7 +184,20 @@ class SupportTicketController extends Controller
                 'closed_at' => $new === 'closed' ? now() : null,
                 'closed_by_id' => $new === 'closed' ? $user->id : null,
             ]);
-            $this->activity($ticket, $user, $new === 'closed' ? 'ticket_closed' : ($old === 'closed' ? 'ticket_reopened' : 'status_changed'), $old, $new);
+            $activity = $this->activity($ticket, $user, $new === 'closed' ? 'ticket_closed' : ($old === 'closed' ? 'ticket_reopened' : 'status_changed'), $old, $new);
+            $this->notificationEvents->record(
+                'support.ticket_status_changed', null, $user,
+                [
+                    'support_ticket_id' => $ticket->id,
+                    'ticket_reference' => $ticket->ticket_number,
+                    'previous_status' => $old,
+                    'status' => $new,
+                    'recipient_user_id' => $ticket->user_id,
+                    'recipient_privacy_variant' => 'support_owner',
+                ],
+                'support_ticket', $ticket->id,
+                deduplicationKey: "support-activity:{$activity->id}:status"
+            );
         });
 
         $this->notifyStatusChanged($ticket->fresh('user'), $user, $old, $new);
@@ -182,7 +210,7 @@ class SupportTicketController extends Controller
 
     public function activities(Request $request, SupportTicket $ticket): JsonResponse
     {
-        if (!$this->policy->viewActivity($request->user(), $ticket)) {
+        if (! $this->policy->viewActivity($request->user(), $ticket)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -195,12 +223,12 @@ class SupportTicketController extends Controller
 
     public function downloadAttachment(Request $request, SupportTicketAttachment $attachment)
     {
-        if (!$this->policy->downloadAttachment($request->user(), $attachment)) {
+        if (! $this->policy->downloadAttachment($request->user(), $attachment)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
         $upload = $attachment->uploadSession;
-        if (!$upload || $upload->status !== MediaUploadSession::STATUS_CLEAN || !$upload->s3_clean_key) {
+        if (! $upload || $upload->status !== MediaUploadSession::STATUS_CLEAN || ! $upload->s3_clean_key) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
@@ -237,9 +265,9 @@ class SupportTicketController extends Controller
         }
     }
 
-    private function activity(SupportTicket $ticket, ?User $actor, string $type, ?string $old = null, ?string $new = null, array $metadata = []): void
+    private function activity(SupportTicket $ticket, ?User $actor, string $type, ?string $old = null, ?string $new = null, array $metadata = []): SupportTicketActivity
     {
-        SupportTicketActivity::create([
+        return SupportTicketActivity::create([
             'support_ticket_id' => $ticket->id,
             'actor_id' => $actor?->id,
             'activity_type' => $type,
@@ -292,7 +320,7 @@ class SupportTicketController extends Controller
             'can_update_status' => $this->policy->updateStatus($viewer, $ticket),
             'attachments' => $ticket->attachments->whereNull('support_ticket_message_id')->map(fn ($attachment) => $this->attachmentPayload($attachment))->values(),
             'messages' => $ticket->messages
-                ->filter(fn ($message) => !$message->is_internal_note || $this->policy->viewAny($viewer))
+                ->filter(fn ($message) => ! $message->is_internal_note || $this->policy->viewAny($viewer))
                 ->sortBy('created_at')
                 ->map(fn ($message) => $this->messagePayload($message, $viewer))
                 ->values(),
@@ -364,21 +392,21 @@ class SupportTicketController extends Controller
 
     private function notifyTicketCreated(SupportTicket $ticket): void
     {
-        $adminUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support-tickets/{$ticket->id}";
-        $userUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}";
+        $adminUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/')."/admin/support-tickets/{$ticket->id}";
+        $userUrl = rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/')."/admin/support/{$ticket->id}";
 
-        $this->notifications->send($ticket->user->email, "Support Ticket Received: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+        $this->notifications->send($ticket->user->email, "Support Ticket Received: {$ticket->ticket_number}", 'Dear '.$ticket->user->name.',', [
             'Your support ticket has been submitted successfully.',
-            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Issue Type: ' . str_replace('_', ' ', $ticket->issue_type) . '. Title: ' . $ticket->title . '. Status: ' . str_replace('_', ' ', $ticket->status) . '. Submitted At: ' . $ticket->created_at->toDateTimeString() . '.',
-            'Details: ' . strip_tags((string) $ticket->message),
+            'Ticket Details: Ticket Number: '.$ticket->ticket_number.'. Issue Type: '.str_replace('_', ' ', $ticket->issue_type).'. Title: '.$ticket->title.'. Status: '.str_replace('_', ' ', $ticket->status).'. Submitted At: '.$ticket->created_at->toDateTimeString().'.',
+            'Details: '.strip_tags((string) $ticket->message),
             'Next Action: Our support team will review your ticket and reply in the ticket thread.',
         ], ['text' => 'View Ticket', 'url' => $userUrl], 'default', $ticket->user_id);
 
         foreach ($this->supportRecipients($ticket->user) as $recipient) {
-            $this->notifications->send($recipient->email, "New Support Ticket: {$ticket->ticket_number} — {$ticket->title}", 'Dear ' . $recipient->name . ',', [
+            $this->notifications->send($recipient->email, "New Support Ticket: {$ticket->ticket_number} — {$ticket->title}", 'Dear '.$recipient->name.',', [
                 'A new support ticket has been created.',
-                'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Issue Type: ' . str_replace('_', ' ', $ticket->issue_type) . '. Title: ' . $ticket->title . '. Status: ' . str_replace('_', ' ', $ticket->status) . '. Submitted By: ' . $ticket->user->name . '. Requester Email: ' . $ticket->user->email . '. Submitted At: ' . $ticket->created_at->toDateTimeString() . '.',
-                'Details: ' . strip_tags((string) $ticket->message),
+                'Ticket Details: Ticket Number: '.$ticket->ticket_number.'. Issue Type: '.str_replace('_', ' ', $ticket->issue_type).'. Title: '.$ticket->title.'. Status: '.str_replace('_', ' ', $ticket->status).'. Submitted By: '.$ticket->user->name.'. Requester Email: '.$ticket->user->email.'. Submitted At: '.$ticket->created_at->toDateTimeString().'.',
+                'Details: '.strip_tags((string) $ticket->message),
                 'Next Action: Please review and respond from the admin support ticket panel.',
             ], ['text' => 'Open Ticket', 'url' => $adminUrl], 'default', $recipient->id);
         }
@@ -388,20 +416,21 @@ class SupportTicketController extends Controller
     {
         if ((int) $actor->id === (int) $ticket->user_id) {
             foreach ($this->supportRecipients($actor) as $recipient) {
-                $this->notifications->send($recipient->email, "User Replied to Support Ticket: {$ticket->ticket_number}", 'Dear ' . $recipient->name . ',', [
+                $this->notifications->send($recipient->email, "User Replied to Support Ticket: {$ticket->ticket_number}", 'Dear '.$recipient->name.',', [
                     'The ticket owner has replied to a support ticket.',
-                    'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Current Status: ' . str_replace('_', ' ', $ticket->status) . '. Replied By: ' . $actor->name . '. Replied At: ' . now()->toDateTimeString() . '.',
+                    'Ticket Details: Ticket Number: '.$ticket->ticket_number.'. Title: '.$ticket->title.'. Current Status: '.str_replace('_', ' ', $ticket->status).'. Replied By: '.$actor->name.'. Replied At: '.now()->toDateTimeString().'.',
                     'Next Action: Please review the latest reply and continue support handling.',
-                ], ['text' => 'Open Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support-tickets/{$ticket->id}"], 'default', $recipient->id);
+                ], ['text' => 'Open Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/')."/admin/support-tickets/{$ticket->id}"], 'default', $recipient->id);
             }
+
             return;
         }
 
-        $this->notifications->send($ticket->user->email, "Support Ticket Updated: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+        $this->notifications->send($ticket->user->email, "Support Ticket Updated: {$ticket->ticket_number}", 'Dear '.$ticket->user->name.',', [
             'A support team member has replied to your ticket.',
-            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Current Status: ' . str_replace('_', ' ', $ticket->status) . '. Replied By: ' . $actor->name . '. Replied At: ' . now()->toDateTimeString() . '.',
+            'Ticket Details: Ticket Number: '.$ticket->ticket_number.'. Title: '.$ticket->title.'. Current Status: '.str_replace('_', ' ', $ticket->status).'. Replied By: '.$actor->name.'. Replied At: '.now()->toDateTimeString().'.',
             'Next Action: Please open the ticket to review the reply and respond if needed.',
-        ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
+        ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/')."/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
     }
 
     private function notifyStatusChanged(SupportTicket $ticket, User $actor, string $old, string $new): void
@@ -410,10 +439,10 @@ class SupportTicketController extends Controller
             return;
         }
 
-        $this->notifications->send($ticket->user->email, "Support Ticket Status Changed: {$ticket->ticket_number}", 'Dear ' . $ticket->user->name . ',', [
+        $this->notifications->send($ticket->user->email, "Support Ticket Status Changed: {$ticket->ticket_number}", 'Dear '.$ticket->user->name.',', [
             'The status of your support ticket has been updated.',
-            'Ticket Details: Ticket Number: ' . $ticket->ticket_number . '. Title: ' . $ticket->title . '. Previous Status: ' . str_replace('_', ' ', $old) . '. New Status: ' . str_replace('_', ' ', $new) . '. Updated By: ' . $actor->name . '. Updated At: ' . now()->toDateTimeString() . '.',
+            'Ticket Details: Ticket Number: '.$ticket->ticket_number.'. Title: '.$ticket->title.'. Previous Status: '.str_replace('_', ' ', $old).'. New Status: '.str_replace('_', ' ', $new).'. Updated By: '.$actor->name.'. Updated At: '.now()->toDateTimeString().'.',
             'Next Action: Please open the ticket to review the latest status and any related replies.',
-        ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . "/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
+        ], ['text' => 'View Ticket', 'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/')."/admin/support/{$ticket->id}"], 'default', $ticket->user_id);
     }
 }

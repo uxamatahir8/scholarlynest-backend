@@ -4,13 +4,13 @@ namespace App\Listeners;
 
 use App\Events\ArticleSubmitted;
 use App\Models\ArticleAuditLog;
+use App\Models\NotificationEvent;
 use App\Models\User;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Collection;
 
-class SendArticleSubmissionNotifications implements ShouldQueue
+class SendArticleSubmissionNotifications
 {
     /**
      * Create the event listener.
@@ -18,8 +18,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
     public function __construct(
         protected NotificationService $notificationService,
         protected PasswordSetupService $passwordSetupService
-    ) {
-    }
+    ) {}
 
     /**
      * Handle the event.
@@ -37,23 +36,23 @@ class SendArticleSubmissionNotifications implements ShouldQueue
 
         // 1. Send to the Primary Author
         if ($primaryAuthor) {
-            $subject = 'Submission Received: ' . $article->title . ' — ' . ($article->magazine?->title ?? 'ScholarlyNest');
-            $greeting = 'Dear ' . $primaryAuthor->name . ',';
+            $subject = 'Submission Received: '.$article->title.' — '.($article->magazine?->title ?? 'ScholarlyNest');
+            $greeting = 'Dear '.$primaryAuthor->name.',';
             $bodyLines = [
-                'Your article has been submitted successfully to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
+                'Your article has been submitted successfully to '.($article->magazine?->title ?? 'ScholarlyNest').'.',
                 '<br><strong>Submission Details:</strong>',
-                '• <strong>Article Title:</strong> ' . e($article->title),
-                '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
-                '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
+                '• <strong>Article Title:</strong> '.e($article->title),
+                '• <strong>Magazine:</strong> '.e($article->magazine?->title ?? 'ScholarlyNest'),
+                '• <strong>Tracking Code:</strong> '.e($article->tracking_code ?? 'Not assigned'),
                 '• <strong>Submission Status:</strong> Submitted',
-                '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('d-M-Y H:i'),
+                '• <strong>Submitted At:</strong> '.optional($article->created_at)->format('d-M-Y H:i'),
                 '<br><strong>Abstract:</strong>',
-                '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
-                'Next Action: No immediate action is required. The editorial team will screen your submission, and you can track progress from your article dashboard.'
+                '<div>'.nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))).'</div>',
+                'Next Action: No immediate action is required. The editorial team will screen your submission, and you can track progress from your article dashboard.',
             ];
             $action = [
                 'text' => 'Go to Dashboard',
-                'url' => $frontendUrl . '/admin/articles',
+                'url' => $frontendUrl.'/admin/articles',
             ];
 
             $this->notificationService->send(
@@ -63,7 +62,8 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 $bodyLines,
                 $action,
                 'default',
-                $primaryAuthor->id
+                $primaryAuthor->id,
+                context: $this->deliveryContext($event, $primaryAuthor->email, 'article_owner')
             );
             $recipientCount++;
             $sentEmails[] = strtolower($primaryAuthor->email);
@@ -76,7 +76,7 @@ class SendArticleSubmissionNotifications implements ShouldQueue
             if (in_array(strtolower($email), $sentEmails, true)) {
                 continue;
             }
-            $createdAccount = !empty($coAuthor['account_provisioned']) && !empty($coAuthor['user_id']);
+            $createdAccount = ! empty($coAuthor['account_provisioned']) && ! empty($coAuthor['user_id']);
 
             if ($createdAccount && ($createdUser = User::find($coAuthor['user_id']))) {
                 $this->passwordSetupService->sendSetupLink($createdUser);
@@ -84,18 +84,18 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                 $sentEmails[] = strtolower($email);
             } else {
                 // Text-only informational notification email (for existing account or create_account = false)
-                $subject = 'You Were Added as a Co-author: ' . $article->title;
-                $greeting = 'Dear ' . $name . ',';
+                $subject = 'You Were Added as a Co-author: '.$article->title;
+                $greeting = 'Dear '.$name.',';
                 $bodyLines = [
                     'You have been listed as a co-author on a submitted article in Scholarly Nest.',
                     '<br><strong>Submission Details:</strong>',
-                    '• <strong>Article Title:</strong> ' . e($article->title),
-                    '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
-                    '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
-                    '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('d-M-Y H:i'),
+                    '• <strong>Article Title:</strong> '.e($article->title),
+                    '• <strong>Magazine:</strong> '.e($article->magazine?->title ?? 'ScholarlyNest'),
+                    '• <strong>Tracking Code:</strong> '.e($article->tracking_code ?? 'Not assigned'),
+                    '• <strong>Submitted At:</strong> '.optional($article->created_at)->format('d-M-Y H:i'),
                     '<br><strong>Abstract:</strong>',
-                    '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
-                    'Next Action: Review the article status from your ScholarlyNest account. If you need a new account, a separate secure password setup email will be sent.'
+                    '<div>'.nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))).'</div>',
+                    'Next Action: Review the article status from your ScholarlyNest account. If you need a new account, a separate secure password setup email will be sent.',
                 ];
 
                 $this->notificationService->send(
@@ -105,7 +105,8 @@ class SendArticleSubmissionNotifications implements ShouldQueue
                     $bodyLines,
                     null,
                     'default',
-                    $coAuthor['user_id'] ?? null
+                    $coAuthor['user_id'] ?? null,
+                    context: $this->deliveryContext($event, $email, 'corresponding_author')
                 );
                 $recipientCount++;
                 $sentEmails[] = strtolower($email);
@@ -117,24 +118,25 @@ class SendArticleSubmissionNotifications implements ShouldQueue
         foreach ($staffRecipients as $recipient) {
             $this->notificationService->send(
                 $recipient['email'],
-                'New Article Submitted: ' . $article->title . ' — ' . ($article->tracking_code ?? 'Not assigned'),
-                $recipient['name'] ? 'Dear ' . $recipient['name'] . ',' : 'Hello,',
+                'New Article Submitted: '.$article->title.' — '.($article->tracking_code ?? 'Not assigned'),
+                $recipient['name'] ? 'Dear '.$recipient['name'].',' : 'Hello,',
                 [
-                    'A new manuscript titled "' . $article->title . '" has been submitted to ' . ($article->magazine?->title ?? 'ScholarlyNest') . '.',
+                    'A new manuscript titled "'.$article->title.'" has been submitted to '.($article->magazine?->title ?? 'ScholarlyNest').'.',
                     '<br><strong>Submission Details:</strong>',
-                    '• <strong>Tracking Code:</strong> ' . e($article->tracking_code ?? 'Not assigned'),
-                    '• <strong>Submitting Author:</strong> ' . e($primaryAuthor?->name ?? 'Not recorded'),
-                    '• <strong>Submitted At:</strong> ' . optional($article->created_at)->format('d-M-Y H:i'),
+                    '• <strong>Tracking Code:</strong> '.e($article->tracking_code ?? 'Not assigned'),
+                    '• <strong>Submitting Author:</strong> '.e($primaryAuthor?->name ?? 'Not recorded'),
+                    '• <strong>Submitted At:</strong> '.optional($article->created_at)->format('d-M-Y H:i'),
                     '<br><strong>Abstract:</strong>',
-                    '<div>' . nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))) . '</div>',
+                    '<div>'.nl2br(e(strip_tags((string) ($article->abstract ?? 'Not provided.')))).'</div>',
                     'Next Action: Open the article board to begin editorial screening and assignment.',
                 ],
                 [
                     'text' => 'Open Article Board',
-                    'url' => $frontendUrl . '/admin/articles',
+                    'url' => $frontendUrl.'/admin/articles',
                 ],
                 'default',
-                $recipient['user_id'] ?? null
+                $recipient['user_id'] ?? null,
+                context: $this->deliveryContext($event, $recipient['email'], 'editorial_staff')
             );
             $recipientCount++;
             $sentEmails[] = strtolower($recipient['email']);
@@ -184,8 +186,18 @@ class SendArticleSubmissionNotifications implements ShouldQueue
 
         return $editors
             ->merge($superAdmins)
-            ->filter(fn ($recipient) => !empty($recipient['email']))
+            ->filter(fn ($recipient) => ! empty($recipient['email']))
             ->unique(fn ($recipient) => strtolower($recipient['email']))
             ->values();
+    }
+
+    private function deliveryContext(ArticleSubmitted $event, ?string $email, string $variant): array
+    {
+        return [
+            'notification_event_id' => $event->notificationEventId ?: NotificationEvent::where('event_uuid', $event->notificationEventUuid)->value('id'),
+            'purpose' => 'article.submitted',
+            'privacy_variant' => $variant,
+            'deduplication_key' => hash('sha256', $event->notificationEventUuid.'|'.strtolower((string) $email).'|'.$variant.'|email'),
+        ];
     }
 }

@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\ArticleFileController;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
 use App\Models\User;
+use App\Services\Notifications\NotificationEventRecorder;
 use Illuminate\Support\Facades\DB;
 
 class ArticleVersionService
@@ -34,7 +36,7 @@ class ArticleVersionService
             ]);
             if ($label === 'Revised Manuscript') {
                 $revision = max(1, $version->version_number - 1);
-                $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code . '-R' . $revision]);
+                $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code.'-R'.$revision]);
             }
 
             $this->linkFiles($article, $version, $linkFileIds);
@@ -44,6 +46,16 @@ class ArticleVersionService
             $version->update([
                 'file_snapshot' => $this->fileSnapshot($article, $version),
             ]);
+
+            app(NotificationEventRecorder::class)->record(
+                'article.version_created',
+                $article,
+                $user,
+                ['article_version_id' => $version->id, 'revision_number' => $version->revision_number],
+                'article_version',
+                $version->id,
+                deduplicationKey: "article-version:{$version->id}:created"
+            );
 
             return $version->fresh(['creator:id,name,email', 'files.uploader:id,name,email']);
         });
@@ -92,7 +104,7 @@ class ArticleVersionService
             'data_availability_statement' => $article->data_availability_statement,
             'author_contribution_statement' => $article->author_contribution_statement,
             'full_text' => $article->full_text,
-            'has_pdf' => !empty($article->pdf_path),
+            'has_pdf' => ! empty($article->pdf_path),
             'doi' => $article->doi,
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
@@ -127,7 +139,7 @@ class ArticleVersionService
     public function serializeVersion(ArticleVersion $version, ?User $viewer = null): array
     {
         $version->loadMissing(['creator:id,name', 'files.uploader:id,name']);
-        $fileController = app(\App\Http\Controllers\ArticleFileController::class);
+        $fileController = app(ArticleFileController::class);
         $visibleFiles = collect($version->files)
             ->filter(fn (ArticleFile $file) => $fileController->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
@@ -177,6 +189,7 @@ class ArticleVersionService
             $snapshot['authors'] = collect($snapshot['authors'])
                 ->map(function ($author) {
                     unset($author['email']);
+
                     return $author;
                 })
                 ->values()
@@ -188,6 +201,6 @@ class ArticleVersionService
 
     private function serializeFileSnapshot(ArticleFile $file): array
     {
-        return app(\App\Http\Controllers\ArticleFileController::class)->serializeFile($file);
+        return app(ArticleFileController::class)->serializeFile($file);
     }
 }

@@ -10,12 +10,13 @@ use App\Http\Controllers\Admin\FooterCategoryController;
 use App\Http\Controllers\Admin\FooterPageController;
 use App\Http\Controllers\Admin\ImpersonationController;
 use App\Http\Controllers\Admin\LanguageController;
+use App\Http\Controllers\Admin\NotificationDeliveryController;
 use App\Http\Controllers\Admin\RbacController;
 use App\Http\Controllers\Admin\SearchController;
 use App\Http\Controllers\Admin\SharedPublicPageController;
 use App\Http\Controllers\Admin\SubjectAreaController;
-use App\Http\Controllers\AdvertisementResolutionController;
 use App\Http\Controllers\AdvertisementEventController;
+use App\Http\Controllers\AdvertisementResolutionController;
 use App\Http\Controllers\ArticleAssetController;
 use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\ArticleFileController;
@@ -32,8 +33,10 @@ use App\Http\Controllers\MediaObjectController;
 use App\Http\Controllers\MediaUploadController;
 use App\Http\Controllers\MfaController;
 use App\Http\Controllers\NewsletterController;
-use App\Http\Controllers\SupportTicketController;
+use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\NotificationPreferenceController;
 use App\Http\Controllers\SlugRedirectController;
+use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\TagController;
 use App\Models\Magazine;
 use App\Models\NewsletterCampaign;
@@ -165,6 +168,15 @@ Route::middleware('throttle:10,1')->group(function () {
 // ==========================================
 Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/counts', [NotificationController::class, 'counts']);
+    Route::get('/notifications/{notification}', [NotificationController::class, 'show']);
+    Route::patch('/notifications/{notification}/read', [NotificationController::class, 'read']);
+    Route::post('/notifications/read-all', [NotificationController::class, 'readAll']);
+    Route::patch('/notifications/{notification}/visibility', [NotificationController::class, 'visibility']);
+    Route::get('/notification-preferences', [NotificationPreferenceController::class, 'show']);
+    Route::put('/notification-preferences', [NotificationPreferenceController::class, 'update']);
+
     // Session profile & Logout
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/profile', [AuthController::class, 'updateProfile']);
@@ -239,6 +251,9 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
+        Route::get('/notification-deliveries', [NotificationDeliveryController::class, 'index'])->middleware('permission:notifications.delivery.manage');
+        Route::get('/notification-deliveries/{notificationDelivery}', [NotificationDeliveryController::class, 'show'])->middleware('permission:notifications.delivery.manage');
+        Route::post('/notification-deliveries/{notificationDelivery}/retry', [NotificationDeliveryController::class, 'retry'])->middleware('permission:notifications.delivery.manage');
         Route::middleware('permission:advertisements.manage')->prefix('advertisements')->group(function () {
             Route::get('/static-pages', [AdvertisementController::class, 'staticPages']);
             Route::get('/publications', [AdvertisementController::class, 'publications']);

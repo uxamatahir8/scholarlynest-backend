@@ -56,6 +56,10 @@ class SendNotificationJob implements ShouldQueue
         $log = NotificationLog::findOrFail($this->logId);
 
         try {
+            if ($log->status === 'sent') {
+                return;
+            }
+            $log->update(['status' => 'sending', 'sending_at' => now(), 'failed_at' => null]);
             $payload = $log->payload;
             if ($log->status === 'sent' && isset($payload['redacted'])) {
                 return;
@@ -97,13 +101,21 @@ class SendNotificationJob implements ShouldQueue
             $log->update([
                 'status' => 'sent',
                 'error_message' => null,
+                'sent_at' => now(),
+                'sending_at' => null,
+                'last_error_code' => null,
+                'last_error_summary' => null,
                 ...($sensitive ? ['payload' => ['redacted' => true]] : []),
             ]);
         } catch (Throwable $exception) {
             $log->increment('retry_count');
             $log->update([
                 'status' => 'failed',
-                'error_message' => $exception->getMessage()."\n".$exception->getTraceAsString(),
+                'error_message' => $this->safeError($exception),
+                'failed_at' => now(),
+                'sending_at' => null,
+                'last_error_code' => class_basename($exception),
+                'last_error_summary' => $this->safeError($exception),
             ]);
             throw $exception;
         }
@@ -114,6 +126,10 @@ class SendNotificationJob implements ShouldQueue
         $log->update([
             'status' => 'failed',
             'error_message' => 'Sensitive notification payload unavailable; email was not sent.',
+            'failed_at' => now(),
+            'sending_at' => null,
+            'last_error_code' => 'sensitive_payload_unavailable',
+            'last_error_summary' => 'Sensitive notification payload unavailable; email was not sent.',
         ]);
     }
 
@@ -126,8 +142,17 @@ class SendNotificationJob implements ShouldQueue
         if ($log) {
             $log->update([
                 'status' => 'failed',
-                'error_message' => 'Job Failed after max retries: '.$exception->getMessage()."\n".$exception->getTraceAsString(),
+                'error_message' => 'Job failed after maximum retries: '.$this->safeError($exception),
+                'failed_at' => now(),
+                'sending_at' => null,
+                'last_error_code' => class_basename($exception),
+                'last_error_summary' => $this->safeError($exception),
             ]);
         }
+    }
+
+    private function safeError(Throwable $exception): string
+    {
+        return 'Notification delivery failed ('.class_basename($exception).').';
     }
 }

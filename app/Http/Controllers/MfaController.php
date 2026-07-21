@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\UserMfaMethod;
 use App\Models\UserMfaSetting;
 use App\Services\MfaService;
+use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\NotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -17,6 +19,7 @@ class MfaController extends Controller
     public function __construct(
         private readonly MfaService $mfa,
         private readonly NotificationService $notifications,
+        private readonly NotificationEventRecorder $notificationEvents,
     ) {}
 
     public function status(Request $request): JsonResponse
@@ -32,7 +35,11 @@ class MfaController extends Controller
     public function verifyTotpSetup(Request $request): JsonResponse
     {
         $validated = $request->validate(['code' => ['required', 'string', 'regex:/^\d{6}$/']]);
-        $codes = $this->mfa->verifyTotpSetup($request->user(), $validated['code']);
+        $codes = $this->mfa->verifyTotpSetup(
+            $request->user(),
+            $validated['code'],
+            fn () => $this->recordMfaChange($request, 'totp-enabled')
+        );
 
         return response()->json([
             'message' => 'Authenticator App MFA has been enabled.',
@@ -49,22 +56,25 @@ class MfaController extends Controller
         ]);
         $this->confirmSensitiveAction($request, $validated);
         $user = $request->user();
-        UserMfaMethod::where('user_id', $user->id)->where('method', 'totp')->update([
-            'is_enabled' => false,
-            'is_verified' => false,
-            'secret_encrypted' => null,
-            'pending_secret_encrypted' => null,
-            'pending_expires_at' => null,
-            'pending_attempts' => 0,
-            'metadata_json' => null,
-        ]);
-        $setting = UserMfaSetting::firstOrCreate(['user_id' => $user->id]);
-        $methods = $this->mfa->methods($user->refresh());
-        $setting->update([
-            'is_enabled' => $methods !== [],
-            'default_method' => in_array('email', $methods, true) ? 'email' : null,
-        ]);
-        $user->mfaRecoveryCodes()->delete();
+        DB::transaction(function () use ($user, $request) {
+            UserMfaMethod::where('user_id', $user->id)->where('method', 'totp')->update([
+                'is_enabled' => false,
+                'is_verified' => false,
+                'secret_encrypted' => null,
+                'pending_secret_encrypted' => null,
+                'pending_expires_at' => null,
+                'pending_attempts' => 0,
+                'metadata_json' => null,
+            ]);
+            $setting = UserMfaSetting::firstOrCreate(['user_id' => $user->id]);
+            $methods = $this->mfa->methods($user->refresh());
+            $setting->update([
+                'is_enabled' => $methods !== [],
+                'default_method' => in_array('email', $methods, true) ? 'email' : null,
+            ]);
+            $user->mfaRecoveryCodes()->delete();
+            $this->recordMfaChange($request, 'totp-disabled');
+        });
 
         return response()->json(['message' => 'Authenticator App MFA has been disabled.', 'mfa' => $this->mfa->settings($user)]);
     }
@@ -76,10 +86,13 @@ class MfaController extends Controller
         if (! in_array($validated['method'], $this->mfa->methods($user), true)) {
             throw ValidationException::withMessages(['method' => ['The default method must be enabled and verified.']]);
         }
-        UserMfaSetting::updateOrCreate(['user_id' => $user->id], [
-            'is_enabled' => true,
-            'default_method' => $validated['method'],
-        ]);
+        DB::transaction(function () use ($user, $validated, $request) {
+            UserMfaSetting::updateOrCreate(['user_id' => $user->id], [
+                'is_enabled' => true,
+                'default_method' => $validated['method'],
+            ]);
+            $this->recordMfaChange($request, 'default-'.$validated['method']);
+        });
 
         return response()->json(['message' => 'Default MFA method updated.', 'mfa' => $this->mfa->settings($user->refresh())]);
     }
@@ -95,9 +108,16 @@ class MfaController extends Controller
             throw ValidationException::withMessages(['totp' => ['Authenticator App MFA must be enabled.']]);
         }
 
+        $codes = DB::transaction(function () use ($request) {
+            $codes = $this->mfa->regenerateRecoveryCodes($request->user());
+            $this->recordMfaChange($request, 'recovery-codes-regenerated');
+
+            return $codes;
+        });
+
         return response()->json([
             'message' => 'New recovery codes generated. Previous codes are no longer valid.',
-            'recovery_codes' => $this->mfa->regenerateRecoveryCodes($request->user()),
+            'recovery_codes' => $codes,
         ]);
     }
 
@@ -132,6 +152,21 @@ class MfaController extends Controller
             'access_token' => $token,
             'token_type' => 'Bearer',
         ], $state));
+    }
+
+    private function recordMfaChange(Request $request, string $purpose): void
+    {
+        $user = $request->user();
+        $stateVersion = collect([
+            $user->mfaSetting()->value('updated_at'),
+            $user->mfaMethods()->max('updated_at'),
+            $user->mfaRecoveryCodes()->max('updated_at'),
+        ])->filter()->map(fn ($value) => now()->parse($value)->format('Y-m-d H:i:s.u'))->sort()->last();
+        $idempotencyVersion = $request->header('Idempotency-Key') ?: $stateVersion;
+        $this->notificationEvents->record(
+            'account.mfa_method_changed', null, $user, ['recipient_user_id' => $user->id, 'recipient_privacy_variant' => 'account'], 'user', $user->id,
+            deduplicationKey: hash('sha256', "mfa|{$purpose}|{$user->id}|{$idempotencyVersion}")
+        );
     }
 
     public function resendEmail(Request $request): JsonResponse

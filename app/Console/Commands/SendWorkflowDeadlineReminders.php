@@ -2,173 +2,206 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Article;
 use App\Models\ArticleAuditLog;
 use App\Models\ProductionAssignment;
 use App\Models\ReviewerAssignment;
 use App\Models\SubEditorAssignment;
 use App\Models\User;
 use App\Models\WorkflowDeadlineReminderLog;
-use App\Services\NotificationService;
+use App\Services\Notifications\NotificationEventRecorder;
 use Illuminate\Console\Command;
-use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
 class SendWorkflowDeadlineReminders extends Command
 {
-    protected $signature = 'workflow:send-deadline-reminders';
+    protected $signature = 'workflow:send-deadline-reminders {--chunk=200}';
 
-    protected $description = 'Send workflow assignment deadline reminders without duplicating reminder windows.';
+    protected $description = 'Record retry-safe workflow deadline, final-review, and invitation-expiry notifications.';
 
-    private int $sent = 0;
+    private int $recorded = 0;
 
-    public function __construct(private NotificationService $notificationService)
+    public function __construct(private NotificationEventRecorder $events)
     {
         parent::__construct();
     }
 
     public function handle(): int
     {
-        $this->processAssignments(
-            SubEditorAssignment::with(['article.magazine', 'subEditor'])
-                ->where('status', 'pending')
-                ->whereNotNull('due_date')
-                ->get(),
-            'sub_editor_assignment',
-            fn (SubEditorAssignment $assignment) => $assignment->subEditor,
-            'Sub Editor'
-        );
+        if (! config('notification_system.features.enabled', true) || ! config('notification_system.features.reminders', true)) {
+            $this->info('Workflow reminder notifications are disabled.');
 
-        $this->processAssignments(
-            ReviewerAssignment::with(['article.magazine', 'reviewer'])
-                ->whereIn('status', ['pending', 'accepted'])
-                ->whereNotNull('due_date')
-                ->get(),
-            'reviewer_assignment',
-            fn (ReviewerAssignment $assignment) => $assignment->reviewer,
-            'Reviewer'
-        );
+            return self::SUCCESS;
+        }
+        $this->processAssignmentType(SubEditorAssignment::class, 'sub_editor_assignment', 'subEditor', 'sub_editor_id', ['pending']);
+        $this->processAssignmentType(ReviewerAssignment::class, 'reviewer_assignment', 'reviewer', 'reviewer_id', ['pending', 'accepted', 'review_in_progress', 'reopened']);
+        $this->processAssignmentType(ProductionAssignment::class, 'production_assignment', 'user', 'user_id', ['pending', 'in_progress']);
+        $this->processAuthorFinalReviews();
+        $this->processExpiredInvitations();
 
-        $this->processAssignments(
-            ProductionAssignment::with(['article.magazine', 'user'])
-                ->where('status', 'pending')
-                ->whereNotNull('due_date')
-                ->get(),
-            'production_assignment',
-            fn (ProductionAssignment $assignment) => $assignment->user,
-            'Production'
-        );
-
-        $this->info("Workflow deadline reminders sent: {$this->sent}");
+        $this->info("Workflow reminder notification events recorded: {$this->recorded}");
 
         return self::SUCCESS;
     }
 
-    private function processAssignments(EloquentCollection $assignments, string $assignmentType, callable $recipientResolver, string $label): void
+    private function processAssignmentType(string $modelClass, string $assignmentType, string $recipientRelation, string $recipientColumn, array $statuses): void
     {
-        foreach ($assignments as $assignment) {
-            $reminderType = $this->reminderType($assignment->due_date);
-            if (!$reminderType) {
-                continue;
-            }
-
-            if ($this->alreadySent($assignmentType, $assignment->id, $reminderType)) {
-                continue;
-            }
-
-            $recipient = $recipientResolver($assignment);
-            if (!$recipient instanceof User || !$recipient->email) {
-                continue;
-            }
-
-            $article = $assignment->article;
-            $subject = $this->subjectFor($reminderType, $label, $article->title);
-            $body = [
-                $this->bodyLineFor($reminderType, $label, $article->title),
-                '<br><strong>Assignment Details:</strong>',
-                '• <strong>Manuscript:</strong> ' . e($article->title),
-                '• <strong>Magazine:</strong> ' . e($article->magazine?->title ?? 'ScholarlyNest'),
-                '• <strong>Assignment:</strong> ' . e($label),
-                '• <strong>Due Date:</strong> ' . $assignment->due_date->format('d-M-Y H:i'),
-                'Next Action: Open the workflow and complete the outstanding assignment as soon as possible.',
-            ];
-
-            $this->notificationService->send(
-                $recipient->email,
-                $subject,
-                'Dear ' . $recipient->name . ',',
-                $body,
-                [
-                    'text' => 'Open Workflow',
-                    'url' => rtrim(env('APP_URL_FRONTEND', 'http://localhost:3000'), '/') . '/admin/articles',
-                ],
-                'default',
-                $recipient->id
-            );
-
-            WorkflowDeadlineReminderLog::create([
-                'article_id' => $article->id,
-                'assignment_type' => $assignmentType,
-                'assignment_id' => $assignment->id,
-                'reminder_type' => $reminderType,
-                'due_date' => $assignment->due_date,
-                'sent_at' => now(),
-            ]);
-
-            ArticleAuditLog::create([
-                'article_id' => $article->id,
-                'actor_id' => null,
-                'event' => $reminderType === 'overdue_3_days' ? 'deadline.overdue_reminder.sent' : 'deadline.reminder.sent',
-                'from_status' => $article->status,
-                'to_status' => $article->status,
-                'payload' => [
-                    'assignment_type' => $assignmentType,
-                    'assignment_id' => $assignment->id,
-                    'reminder_type' => $reminderType,
-                    'recipient_email' => $recipient->email,
-                ],
-            ]);
-
-            $this->sent++;
+        foreach ($this->windows() as $reminderType => $date) {
+            $modelClass::query()
+                ->with(['article.magazine', $recipientRelation, 'assigner'])
+                ->whereIn('status', $statuses)
+                ->whereBetween('due_date', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
+                ->chunkById($this->chunkSize(), function ($assignments) use ($assignmentType, $recipientColumn, $statuses, $reminderType) {
+                    foreach ($assignments as $assignment) {
+                        $fresh = $assignment::query()->with(['article.magazine', 'assigner'])->find($assignment->id);
+                        if (! $fresh || ! in_array($fresh->status, $statuses, true) || ! $fresh->due_date) {
+                            continue;
+                        }
+                        $recipient = User::find($fresh->{$recipientColumn});
+                        if (! $recipient) {
+                            continue;
+                        }
+                        $recipientIds = collect([$recipient->id]);
+                        if ($reminderType === 'overdue_3_days' && $fresh->assigned_by) {
+                            $recipientIds->push((int) $fresh->assigned_by);
+                        }
+                        $recipientIds->unique()->each(fn (int $recipientId) => $this->recordAssignmentReminder(
+                            $fresh, $assignmentType, $reminderType, $recipientId, $recipientId !== (int) $recipient->id
+                        ));
+                    }
+                });
         }
     }
 
-    private function reminderType($dueDate): ?string
+    private function recordAssignmentReminder(Model $assignment, string $assignmentType, string $reminderType, int $recipientId, bool $escalation): void
     {
-        $daysUntilDue = (int) now()->startOfDay()->diffInDays($dueDate->copy()->startOfDay(), false);
+        $dueVersion = hash('sha256', $assignment->due_date->utc()->format('Y-m-d\TH:i:s.u\Z'));
+        DB::transaction(function () use ($assignment, $assignmentType, $reminderType, $recipientId, $escalation, $dueVersion) {
+            $log = WorkflowDeadlineReminderLog::firstOrCreate(
+                [
+                    'assignment_type' => $assignmentType,
+                    'assignment_id' => $assignment->id,
+                    'recipient_user_id' => $recipientId,
+                    'reminder_type' => $reminderType,
+                    'due_date_version' => $dueVersion,
+                ],
+                [
+                    'article_id' => $assignment->article_id,
+                    'due_date' => $assignment->due_date,
+                    'sent_at' => now(),
+                    'escalated_to_user_id' => $escalation ? $recipientId : null,
+                    'delivery_status' => 'recorded',
+                ]
+            );
+            if (! $log->wasRecentlyCreated) {
+                return;
+            }
 
-        return match ($daysUntilDue) {
-            3 => 'due_in_3_days',
-            0 => 'due_today',
-            -3 => 'overdue_3_days',
-            default => null,
-        };
+            $eventType = "deadline.{$reminderType}";
+            $subjectType = match ($assignmentType) {
+                'sub_editor_assignment' => 'sub_editor_assignment',
+                'reviewer_assignment' => 'reviewer_assignment',
+                default => 'production_assignment',
+            };
+            $event = $this->events->record(
+                $eventType,
+                $assignment->article,
+                null,
+                [
+                    'assignment_id' => $assignment->id,
+                    'recipient_user_id' => $recipientId,
+                    'recipient_privacy_variant' => $escalation ? 'editor' : match ($assignmentType) {
+                        'sub_editor_assignment' => 'sub_editor',
+                        'reviewer_assignment' => 'reviewer',
+                        default => 'assignee',
+                    },
+                    'due_at' => $assignment->due_date->toISOString(),
+                    'due_date_version' => $dueVersion,
+                    'reminder_type' => $reminderType,
+                    'is_escalation' => $escalation,
+                ],
+                $subjectType,
+                $assignment->id,
+                deduplicationKey: "reminder:{$assignmentType}:{$assignment->id}:{$recipientId}:{$reminderType}:{$dueVersion}"
+            );
+            $log->update(['notification_event_id' => $event?->id]);
+            $this->audit($assignment->article, $assignmentType, $assignment->id, $reminderType, $recipientId, $dueVersion);
+            $this->recorded++;
+        });
     }
 
-    private function alreadySent(string $assignmentType, int $assignmentId, string $reminderType): bool
+    private function processAuthorFinalReviews(): void
     {
-        return WorkflowDeadlineReminderLog::query()
-            ->where('assignment_type', $assignmentType)
-            ->where('assignment_id', $assignmentId)
-            ->where('reminder_type', $reminderType)
-            ->exists();
+        foreach (['due_in_3_days' => now()->addDays(3), 'due_today' => now()] as $reminderType => $date) {
+            Article::query()
+                ->with(['user', 'articleAuthors.user', 'magazine'])
+                ->whereNull('author_final_approved_at')
+                ->whereNotNull('author_final_review_due_at')
+                ->whereBetween('author_final_review_due_at', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
+                ->chunkById($this->chunkSize(), function ($articles) use ($reminderType) {
+                    foreach ($articles as $article) {
+                        $recipients = collect([$article->user_id])
+                            ->merge($article->articleAuthors->filter(fn ($author) => $author->is_corresponding)->pluck('user_id'))
+                            ->filter()->unique();
+                        foreach ($recipients as $recipientId) {
+                            $dueVersion = hash('sha256', $article->author_final_review_due_at->utc()->format('Y-m-d\TH:i:s.u\Z'));
+                            $key = "author-final-review:{$article->id}:{$recipientId}:{$reminderType}:{$dueVersion}";
+                            $event = $this->events->record(
+                                'author.final_review_reminder', $article, null,
+                                ['recipient_user_id' => (int) $recipientId, 'recipient_privacy_variant' => 'author', 'due_at' => $article->author_final_review_due_at->toISOString(), 'reminder_type' => $reminderType, 'due_date_version' => $dueVersion],
+                                'article', $article->id, deduplicationKey: $key
+                            );
+                            if ($event?->wasRecentlyCreated) {
+                                $this->recorded++;
+                            }
+                        }
+                    }
+                });
+        }
     }
 
-    private function subjectFor(string $reminderType, string $label, string $articleTitle): string
+    private function processExpiredInvitations(): void
     {
-        return match ($reminderType) {
-            'due_in_3_days' => "{$label} Deadline Approaching: {$articleTitle}",
-            'due_today' => "{$label} Deadline Today: {$articleTitle}",
-            'overdue_3_days' => "{$label} Deadline Overdue: {$articleTitle}",
-            default => "{$label} Deadline Reminder: {$articleTitle}",
-        };
+        ReviewerAssignment::query()
+            ->with(['article.magazine', 'reviewer'])
+            ->where('status', 'pending')
+            ->whereNotNull('invite_expires_at')
+            ->where('invite_expires_at', '<=', now())
+            ->chunkById($this->chunkSize(), function ($assignments) {
+                foreach ($assignments as $assignment) {
+                    $key = "review-invitation:{$assignment->id}:expired:{$assignment->invite_expires_at->utc()->timestamp}";
+                    $event = $this->events->record(
+                        'review.invitation_expired', $assignment->article, null,
+                        ['assignment_id' => $assignment->id, 'due_at' => $assignment->invite_expires_at->toISOString()],
+                        'reviewer_assignment', $assignment->id, deduplicationKey: $key
+                    );
+                    if ($event?->wasRecentlyCreated) {
+                        $this->recorded++;
+                    }
+                }
+            });
     }
 
-    private function bodyLineFor(string $reminderType, string $label, string $articleTitle): string
+    private function windows(): array
     {
-        return match ($reminderType) {
-            'due_in_3_days' => "Your {$label} assignment for \"{$articleTitle}\" is due in 3 days.",
-            'due_today' => "Your {$label} assignment for \"{$articleTitle}\" is due today.",
-            'overdue_3_days' => "Your {$label} assignment for \"{$articleTitle}\" is now 3 days overdue.",
-            default => "Your {$label} assignment for \"{$articleTitle}\" has a deadline update.",
-        };
+        return ['due_in_3_days' => now()->addDays(3), 'due_today' => now(), 'overdue_3_days' => now()->subDays(3)];
+    }
+
+    private function chunkSize(): int
+    {
+        return max(25, min(1000, (int) $this->option('chunk')));
+    }
+
+    private function audit(Article $article, string $assignmentType, int $assignmentId, string $reminderType, int $recipientId, string $dueVersion): void
+    {
+        ArticleAuditLog::create([
+            'article_id' => $article->id,
+            'actor_id' => null,
+            'event' => $reminderType === 'overdue_3_days' ? 'deadline.overdue_reminder.recorded' : 'deadline.reminder.recorded',
+            'from_status' => $article->status,
+            'to_status' => $article->status,
+            'payload' => compact('assignmentType', 'assignmentId', 'reminderType', 'recipientId', 'dueVersion'),
+        ]);
     }
 }

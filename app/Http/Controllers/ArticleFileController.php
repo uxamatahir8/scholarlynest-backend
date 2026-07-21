@@ -7,13 +7,15 @@ use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\Magazine;
 use App\Models\MediaUploadSession;
+use App\Models\User;
+use App\Services\Media\MediaStorageService;
+use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\PrimaryManuscriptService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use App\Services\Media\MediaStorageService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class ArticleFileController extends Controller
 {
@@ -22,13 +24,13 @@ class ArticleFileController extends Controller
         if ((int) $file->article_id !== (int) $article->id
             || $file->file_type !== ArticleFile::ADDITIONAL_MANUSCRIPT_FILE
             || $file->article_version_id
-            || !$request->user()
-            || ((int) $article->user_id !== (int) $request->user()->id && !$this->isAuthorRecord($request->user(), $article))) {
+            || ! $request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && ! $this->isAuthorRecord($request->user(), $article))) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
         }
 
         $status = ArticleStatus::normalize($article->status);
-        if ($status !== ArticleStatus::DRAFT && !ArticleStatus::isRevisionRequired($status)) {
+        if ($status !== ArticleStatus::DRAFT && ! ArticleStatus::isRevisionRequired($status)) {
             return response()->json(['message' => 'Historical submission files cannot be removed.'], 422);
         }
 
@@ -39,8 +41,8 @@ class ArticleFileController extends Controller
 
     public function destroyPrimaryManuscript(Request $request, Article $article, ArticleFile $file): JsonResponse
     {
-        if (!$request->user()
-            || ((int) $article->user_id !== (int) $request->user()->id && !$this->isAuthorRecord($request->user(), $article))) {
+        if (! $request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && ! $this->isAuthorRecord($request->user(), $article))) {
             return response()->json(['message' => 'This action is unauthorized.'], 403);
         }
 
@@ -65,17 +67,17 @@ class ArticleFileController extends Controller
     {
         $file = ArticleFile::with(['article', 'uploader:id,name'])->findOrFail($fileId);
 
-        if (!$this->canAccess($request->user('sanctum'), $file)) {
+        if (! $this->canAccess($request->user('sanctum'), $file)) {
             return response()->json([
                 'message' => 'This action is unauthorized.',
-                'code' => 'FILE_ACCESS_DENIED'
+                'code' => 'FILE_ACCESS_DENIED',
             ], 403);
         }
 
         if (($file->scan_status ?? 'clean') !== 'clean') {
             return response()->json([
                 'message' => 'The requested file is not available.',
-                'code' => 'FILE_NOT_CLEAN'
+                'code' => 'FILE_NOT_CLEAN',
             ], 404);
         }
 
@@ -85,16 +87,16 @@ class ArticleFileController extends Controller
 
         if (($file->disk ?? 'public') !== 'public') {
             $key = $file->storage_key ?: $file->file_path;
-            if (!$key) {
+            if (! $key) {
                 return response()->json([
                     'message' => 'The requested file is not available.',
-                    'code' => 'FILE_NOT_FOUND'
+                    'code' => 'FILE_NOT_FOUND',
                 ], 404);
             }
 
             $ttl = (int) config('media_uploads.download_url_ttl_minutes', 5);
             $temporaryUrl = Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes($ttl), [
-                'ResponseContentDisposition' => $disposition . '; filename="' . addslashes($file->safe_original_name ?: $file->original_name) . '"',
+                'ResponseContentDisposition' => $disposition.'; filename="'.addslashes($file->safe_original_name ?: $file->original_name).'"',
                 'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
             ]);
 
@@ -110,10 +112,10 @@ class ArticleFileController extends Controller
         }
 
         $relativePath = str_replace('storage/', '', $file->file_path);
-        if (!Storage::disk('public')->exists($relativePath)) {
+        if (! Storage::disk('public')->exists($relativePath)) {
             return response()->json([
                 'message' => 'The requested file is not available.',
-                'code' => 'FILE_NOT_FOUND'
+                'code' => 'FILE_NOT_FOUND',
             ], 404);
         }
 
@@ -129,7 +131,7 @@ class ArticleFileController extends Controller
 
         return response()->file(Storage::disk('public')->path($relativePath), [
             'Content-Type' => $file->mime_type,
-            'Content-Disposition' => $disposition . '; filename="' . $file->original_name . '"',
+            'Content-Disposition' => $disposition.'; filename="'.$file->original_name.'"',
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }
@@ -143,6 +145,7 @@ class ArticleFileController extends Controller
             return DB::transaction(function () use ($article, $upload, $purposeConfig, $metadata) {
                 Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
                 app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+
                 return $this->createPendingFile($article, $upload, $purposeConfig, $metadata, null);
             });
         }
@@ -214,10 +217,27 @@ class ArticleFileController extends Controller
 
         [$file, $alreadyAttached] = DB::transaction(function () use ($article, $upload, $values, $isPrimaryManuscript) {
             Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
-            if ($isPrimaryManuscript) app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+            if ($isPrimaryManuscript) {
+                app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+            }
             $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
             $alreadyAttached = $file->exists;
             $file->fill($values)->save();
+
+            if (! $alreadyAttached && ($file->assignment_type || in_array($file->file_type, [
+                ArticleFile::ANNOTATED_MANUSCRIPT,
+                ArticleFile::REVIEWED_MANUSCRIPT,
+                ArticleFile::COPY_EDITED_FILE,
+                ArticleFile::PROOF_FILE,
+                ArticleFile::PUBLICATION_PDF,
+            ], true))) {
+                app(NotificationEventRecorder::class)->record(
+                    'article_file.available', $article, User::find($upload->user_id),
+                    ['article_file_id' => $file->id], 'article_file', $file->id,
+                    deduplicationKey: "article-file:{$file->id}:available"
+                );
+            }
+
             return [$file, $alreadyAttached];
         });
 
@@ -279,7 +299,7 @@ class ArticleFileController extends Controller
             ],
             'is_image' => $isImage,
             'can_preview' => $canPreview,
-            'preview_url' => $canPreview && !$isImage ? "/articles/files/{$file->id}/preview" : null,
+            'preview_url' => $canPreview && ! $isImage ? "/articles/files/{$file->id}/preview" : null,
             'display_url' => $displayUrl,
             'thumbnail_url' => $thumbnailUrl,
             'width' => $file->metadata['width'] ?? null,
@@ -307,7 +327,7 @@ class ArticleFileController extends Controller
     {
         $article = $file->article;
 
-        if (!$article) {
+        if (! $article) {
             return false;
         }
 
@@ -315,7 +335,7 @@ class ArticleFileController extends Controller
             return true;
         }
 
-        if (!$user) {
+        if (! $user) {
             $isPublicationVisible = (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
                 || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads');
             $isActivePublicationPdf = $file->file_type === ArticleFile::PUBLICATION_PDF
@@ -348,6 +368,7 @@ class ArticleFileController extends Controller
             if ($this->isActiveAcceptedFile($file)) {
                 return true;
             }
+
             return in_array($file->file_type, [
                 ArticleFile::COPY_EDITED_FILE,
                 ArticleFile::PROOF_FILE,
@@ -397,7 +418,7 @@ class ArticleFileController extends Controller
             return true;
         }
 
-        if (!$article) {
+        if (! $article) {
             if ($fileType === ArticleFile::MANUSCRIPT) {
                 return $user && (
                     $user->hasPermission('articles.create')
@@ -422,7 +443,7 @@ class ArticleFileController extends Controller
                 || $status === ArticleStatus::RESUBMITTED
                 || ArticleStatus::isEditableStatus($status);
 
-            if (!$isAllowedStatus) {
+            if (! $isAllowedStatus) {
                 return false;
             }
 
@@ -439,7 +460,7 @@ class ArticleFileController extends Controller
 
         if (
             $fileType === ArticleFile::MANUSCRIPT
-            && !ArticleStatus::isEditableStatus($article->status)
+            && ! ArticleStatus::isEditableStatus($article->status)
         ) {
             return false;
         }
@@ -486,13 +507,13 @@ class ArticleFileController extends Controller
 
     private function isAssignedToMagazine($user, int $magazineId, array $roles): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
         if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
             $publicationType = Magazine::query()->whereKey($magazineId)->value('publication_type');
-            if (!$publicationType || !in_array($publicationType, $user->editorPublicationTypes(), true)) {
+            if (! $publicationType || ! in_array($publicationType, $user->editorPublicationTypes(), true)) {
                 return false;
             }
         }
@@ -515,7 +536,7 @@ class ArticleFileController extends Controller
 
     private function hasSubEditorAssignment($user, Article $article, ?int $assignmentId = null): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -528,7 +549,7 @@ class ArticleFileController extends Controller
 
     private function hasReviewerAssignment($user, Article $article, ?int $assignmentId = null): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -544,7 +565,7 @@ class ArticleFileController extends Controller
 
     private function hasProductionAssignment($user, Article $article, ?int $assignmentId = null, ?string $role = null): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
