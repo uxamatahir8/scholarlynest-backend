@@ -2,11 +2,12 @@
 
 namespace App\Services\Media;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class MediaContentInspector
 {
-    public function inspect(string $path, array $purposeConfig, string $originalFilename): array
+    public function inspect(string $path, array $purposeConfig, string $originalFilename, ?string $uploadSessionId = null): array
     {
         if (!is_file($path) || !is_readable($path)) {
             return ['ok' => false, 'reason' => 'file_unavailable'];
@@ -21,19 +22,50 @@ class MediaContentInspector
         $extension = Str::lower(pathinfo($originalFilename, PATHINFO_EXTENSION));
 
         if (!in_array($detectedMime, $purposeConfig['detected_mime_types'] ?? [], true)) {
-            return ['ok' => false, 'reason' => 'mime_not_allowed', 'mime' => $detectedMime];
+            $this->logInspectionFailure('mime_not_allowed', $uploadSessionId, $originalFilename, $detectedMime, $extension, $purposeConfig);
+            return ['ok' => false, 'reason' => 'mime_not_allowed', 'mime' => $detectedMime, 'failure_code' => 'MIME_NOT_ALLOWED'];
         }
 
         if ($extension && !in_array($extension, $purposeConfig['extensions'] ?? [], true)) {
-            return ['ok' => false, 'reason' => 'extension_not_allowed', 'mime' => $detectedMime];
+            $this->logInspectionFailure('extension_not_allowed', $uploadSessionId, $originalFilename, $detectedMime, $extension, $purposeConfig);
+            return ['ok' => false, 'reason' => 'extension_not_allowed', 'mime' => $detectedMime, 'failure_code' => 'EXTENSION_NOT_ALLOWED'];
         }
 
-        if (!$this->extensionMatchesMime($extension, $detectedMime)) {
-            return ['ok' => false, 'reason' => 'extension_mime_mismatch', 'mime' => $detectedMime];
+        $validationService = app(UploadValidationService::class);
+
+        if (!$validationService->extensionMatchesMime($extension, $detectedMime)) {
+            $this->logInspectionFailure('extension_mime_mismatch', $uploadSessionId, $originalFilename, $detectedMime, $extension, $purposeConfig);
+            return ['ok' => false, 'reason' => 'extension_mime_mismatch', 'mime' => $detectedMime, 'failure_code' => 'EXTENSION_MIME_MISMATCH'];
         }
 
-        if (!$this->validSignature($path, $detectedMime, $extension)) {
-            return ['ok' => false, 'reason' => 'signature_mismatch', 'mime' => $detectedMime];
+        if (!$validationService->validSignature($path, $detectedMime, $extension)) {
+            $this->logInspectionFailure('signature_mismatch', $uploadSessionId, $originalFilename, $detectedMime, $extension, $purposeConfig);
+            return ['ok' => false, 'reason' => 'signature_mismatch', 'mime' => $detectedMime, 'failure_code' => 'SIGNATURE_MISMATCH'];
+        }
+
+        // OOXML/ODF package validation for ZIP-based document formats
+        if (
+            UploadValidationService::requiresOoxmlValidation($extension)
+            && in_array($detectedMime, ['application/zip', 'application/octet-stream', 'application/x-zip-compressed'], true)
+        ) {
+            $ooxmlResult = $validationService->validateOoxmlPackage($path, $extension);
+            if (!$ooxmlResult['valid']) {
+                Log::warning('Media content inspector: OOXML validation failed.', [
+                    'upload_session_id' => $uploadSessionId,
+                    'filename' => $originalFilename,
+                    'extension' => $extension,
+                    'detected_mime' => $detectedMime,
+                    'ooxml_code' => $ooxmlResult['code'],
+                    'ooxml_message' => $ooxmlResult['message'],
+                ]);
+                return [
+                    'ok' => false,
+                    'reason' => $ooxmlResult['code'],
+                    'mime' => $detectedMime,
+                    'failure_code' => $ooxmlResult['code'],
+                    'failure_detail' => $ooxmlResult['message'],
+                ];
+            }
         }
 
         return [
@@ -44,67 +76,21 @@ class MediaContentInspector
         ];
     }
 
-    private function validSignature(string $path, string $mime, string $extension): bool
-    {
-        $handle = fopen($path, 'rb');
-        if (!$handle) {
-            return false;
-        }
-
-        $header = fread($handle, 560) ?: '';
-        fclose($handle);
-
-        if ($mime === 'application/pdf') {
-            return str_starts_with($header, '%PDF-') || str_contains(substr($header, 0, 1024), '%PDF-');
-        }
-
-        if ($mime === 'image/png') {
-            return str_starts_with($header, "\x89PNG\r\n\x1A\n");
-        }
-
-        if ($mime === 'image/jpeg') {
-            return str_starts_with($header, "\xFF\xD8\xFF") && @getimagesize($path) !== false;
-        }
-
-        if ($mime === 'image/webp') {
-            return str_starts_with($header, 'RIFF') && substr($header, 8, 4) === 'WEBP';
-        }
-
-        if (in_array($extension, ['docx', 'xlsx'], true)) {
-            return str_starts_with($header, "PK\x03\x04");
-        }
-
-        if (in_array($extension, ['doc', 'xls'], true)) {
-            return str_starts_with($header, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
-        }
-
-        if (in_array($mime, ['text/plain', 'text/csv'], true)) {
-            return !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $header);
-        }
-
-        return false;
-    }
-
-    private function extensionMatchesMime(string $extension, string $mime): bool
-    {
-        if ($extension === '') {
-            return true;
-        }
-
-        $allowed = [
-            'pdf' => ['application/pdf'],
-            'png' => ['image/png'],
-            'jpg' => ['image/jpeg'],
-            'jpeg' => ['image/jpeg'],
-            'webp' => ['image/webp'],
-            'txt' => ['text/plain'],
-            'csv' => ['text/plain', 'text/csv'],
-            'doc' => ['application/msword', 'application/octet-stream'],
-            'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip'],
-            'xls' => ['application/vnd.ms-excel', 'application/octet-stream'],
-            'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/zip'],
-        ];
-
-        return !isset($allowed[$extension]) || in_array($mime, $allowed[$extension], true);
+    private function logInspectionFailure(
+        string $reason,
+        ?string $uploadSessionId,
+        string $filename,
+        string $detectedMime,
+        string $extension,
+        array $purposeConfig,
+    ): void {
+        Log::warning('Media content inspector: validation failed.', [
+            'upload_session_id' => $uploadSessionId,
+            'reason' => $reason,
+            'filename' => $filename,
+            'detected_mime' => $detectedMime,
+            'extension' => $extension,
+            'purpose' => $purposeConfig['purpose'] ?? null,
+        ]);
     }
 }

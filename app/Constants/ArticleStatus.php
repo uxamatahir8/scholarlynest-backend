@@ -10,6 +10,7 @@ final class ArticleStatus
     public const IN_TRANSIT = 'in_transit';
     public const UNDER_REVIEW = 'under_review';
     public const ASSIGNED_TO_SUB_EDITOR = 'assigned_to_sub_editor';
+    public const SUB_EDITOR_RECOMMENDED = 'sub_editor_recommended';
     public const REVIEWER_ASSIGNED = 'reviewer_assigned';
     public const REVIEW_IN_PROGRESS = 'review_in_progress';
     public const REVISION_REQUIRED = 'revision_required';
@@ -32,6 +33,7 @@ final class ArticleStatus
         self::IN_TRANSIT,
         self::UNDER_REVIEW,
         self::ASSIGNED_TO_SUB_EDITOR,
+        self::SUB_EDITOR_RECOMMENDED,
         self::REVIEWER_ASSIGNED,
         self::REVIEW_IN_PROGRESS,
         self::REVISION_REQUIRED,
@@ -60,8 +62,9 @@ final class ArticleStatus
         self::SUBMITTED => [self::SCREENING, self::IN_TRANSIT, self::UNDER_REVIEW, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED, self::WITHDRAWN],
         self::SCREENING => [self::IN_TRANSIT, self::UNDER_REVIEW, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED, self::WITHDRAWN],
         self::IN_TRANSIT => [self::SCREENING],
-        self::UNDER_REVIEW => [self::ASSIGNED_TO_SUB_EDITOR, self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED],
-        self::ASSIGNED_TO_SUB_EDITOR => [self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
+        self::UNDER_REVIEW => [self::ASSIGNED_TO_SUB_EDITOR, self::SUB_EDITOR_RECOMMENDED, self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED, self::PUBLISHED],
+        self::ASSIGNED_TO_SUB_EDITOR => [self::SUB_EDITOR_RECOMMENDED, self::REVIEWER_ASSIGNED, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
+        self::SUB_EDITOR_RECOMMENDED => [self::UNDER_REVIEW, self::REVIEWER_ASSIGNED, self::REVIEW_IN_PROGRESS, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVIEWER_ASSIGNED => [self::REVIEW_IN_PROGRESS, self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVIEW_IN_PROGRESS => [self::REVISION_REQUIRED, self::MINOR_REVISION_REQUIRED, self::MAJOR_REVISION_REQUIRED, self::ACCEPTED, self::REJECTED],
         self::REVISION_REQUIRED => [self::RESUBMITTED, self::WITHDRAWN],
@@ -82,6 +85,7 @@ final class ArticleStatus
         self::IN_TRANSIT => 'In Transit',
         self::UNDER_REVIEW => 'Under review',
         self::ASSIGNED_TO_SUB_EDITOR => 'Under review',
+        self::SUB_EDITOR_RECOMMENDED => 'Under review',
         self::REVIEWER_ASSIGNED => 'Under review',
         self::REVIEW_IN_PROGRESS => 'Under review',
         self::REVISION_REQUIRED => 'Revision required',

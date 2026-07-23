@@ -3,9 +3,8 @@
 namespace App\Policies;
 
 use App\Constants\ArticleStatus;
-use App\Models\User;
 use App\Models\Article;
-use App\Models\Magazine;
+use App\Models\User;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Illuminate\Support\Facades\DB;
 
@@ -24,7 +23,7 @@ class ArticlePolicy
         }
 
         // Non-published states require authentication
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -35,6 +34,11 @@ class ArticlePolicy
 
         // Editors can view assigned magazines.
         if ($this->isAssignedMagazineRole($user, $article, ['editor'])) {
+            return true;
+        }
+
+        // Assigned publishers use the same article context in the production and issue workflows.
+        if ($user->hasRole('publisher') && $this->isAssignedMagazineRole($user, $article, ['publisher'])) {
             return true;
         }
 
@@ -82,7 +86,7 @@ class ArticlePolicy
             ->where('article_id', $article->id)
             ->where(function ($query) use ($user) {
                 $query->where('user_id', $user->id)
-                      ->orWhere('co_author_email', $user->email);
+                    ->orWhere('co_author_email', $user->email);
             })
             ->exists();
     }
@@ -92,7 +96,7 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
-        if (!ArticleStatus::isEditableStatus($article->status)) {
+        if (! ArticleStatus::isEditableStatus($article->status)) {
             return false;
         }
 
@@ -133,7 +137,7 @@ class ArticlePolicy
     {
         if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
             $article->loadMissing('magazine:id,publication_type');
-            if (!$article->magazine || !in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
+            if (! $article->magazine || ! in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
                 return false;
             }
         }

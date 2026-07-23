@@ -145,6 +145,7 @@ class ArticleVersionWorkflowTest extends TestCase
             'size' => 14,
             'scan_status' => 'clean',
         ]);
+        $version->update(['manuscript_file_id' => $file->id]);
 
         Sanctum::actingAs($this->editor);
 

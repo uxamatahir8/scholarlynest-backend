@@ -3,23 +3,32 @@
 namespace App\Http\Controllers;
 
 use App\Constants\ArticleStatus;
+use App\Events\ArticleSubmitted;
 use App\Events\ArticleWorkflowEventOccurred;
+use App\Http\Controllers\Admin\DeskObserverController;
 use App\Http\Requests\StoreArticleRequest;
 use App\Http\Requests\UpdateArticleRequest;
-use App\Http\Controllers\Admin\DeskObserverController;
 use App\Models\Article;
+use App\Models\ArticleAuthor;
+use App\Models\ArticleFile;
+use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleShareClick;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
+use App\Models\NewsletterSubscriber;
 use App\Models\Role;
+use App\Models\Tag;
 use App\Models\User;
-use App\Models\ArticleFile;
-use App\Services\PdfGeneratorService;
-use App\Services\NotificationService;
-use App\Services\ArticleVersionService;
 use App\Services\AcceptedFileSetService;
+use App\Services\ArticleVersionService;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
+use App\Services\NotificationService;
+use App\Services\PdfGeneratorService;
+use App\Services\PrimaryManuscriptService;
+use App\Services\PublishedArticleFileResolver;
 use App\Services\Security\HtmlSanitizer;
+use App\Services\SlugService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -27,9 +36,13 @@ use Illuminate\Support\Str;
 class ArticleController extends Controller
 {
     protected PdfGeneratorService $pdfService;
+
     protected NotificationService $notificationService;
+
     protected ArticleVersionService $versionService;
+
     protected AcceptedFileSetService $acceptedFileSetService;
+
     protected MediaStorageService $mediaStorage;
 
     public function __construct(PdfGeneratorService $pdfService, NotificationService $notificationService, ArticleVersionService $versionService, MediaStorageService $mediaStorage, AcceptedFileSetService $acceptedFileSetService)
@@ -57,7 +70,7 @@ class ArticleController extends Controller
             ? $query->find((int) $idOrSlug)
             : $query->where('slug', $idOrSlug)->first();
 
-        if (!$article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
+        if (! $article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -76,11 +89,11 @@ class ArticleController extends Controller
 
         $previousArticle = Article::where('magazine_id', $article->magazine_id)
             ->where('status', 'published')
-            ->where(function($query) use ($publishedAt) {
+            ->where(function ($query) use ($publishedAt) {
                 $query->where('published_at', '<', $publishedAt)
-                      ->orWhere(function($q) use ($publishedAt) {
-                          $q->whereNull('published_at')->where('created_at', '<', $publishedAt);
-                      });
+                    ->orWhere(function ($q) use ($publishedAt) {
+                        $q->whereNull('published_at')->where('created_at', '<', $publishedAt);
+                    });
             })
             ->orderBy('published_at', 'desc')
             ->orderBy('created_at', 'desc')
@@ -88,11 +101,11 @@ class ArticleController extends Controller
 
         $nextArticle = Article::where('magazine_id', $article->magazine_id)
             ->where('status', 'published')
-            ->where(function($query) use ($publishedAt) {
+            ->where(function ($query) use ($publishedAt) {
                 $query->where('published_at', '>', $publishedAt)
-                      ->orWhere(function($q) use ($publishedAt) {
-                          $q->whereNull('published_at')->where('created_at', '>', $publishedAt);
-                      });
+                    ->orWhere(function ($q) use ($publishedAt) {
+                        $q->whereNull('published_at')->where('created_at', '>', $publishedAt);
+                    });
             })
             ->orderBy('published_at', 'asc')
             ->orderBy('created_at', 'asc')
@@ -124,7 +137,7 @@ class ArticleController extends Controller
     public function latest(Request $request): JsonResponse
     {
         $limit = min($request->integer('limit', 10), 10);
-        
+
         $query = Article::where('status', 'published')
             ->with([
                 'magazine:id,title,slug,cover_image,publication_type',
@@ -147,22 +160,21 @@ class ArticleController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'data' => $articles
+            'data' => $articles,
         ]);
     }
 
     public function showForPublication(Request $request, string $publicationSlug, string $articleSlug): JsonResponse
     {
         $type = (string) $request->route('publication_type');
-        $exists = Article::where('slug', $articleSlug)
+        $article = Article::where('slug', $articleSlug)
             ->whereHas('magazine', fn ($query) => $query
                 ->where('slug', $publicationSlug)
                 ->where('publication_type', $type))
-            ->exists();
+            ->first();
 
-        return $exists ? $this->show($articleSlug) : response()->json(['message' => 'Article not found.'], 404);
+        return $article ? $this->show((string) $article->id) : response()->json(['message' => 'Article not found.'], 404);
     }
-
 
     /**
      * GET /api/public/homepage-stats
@@ -202,7 +214,7 @@ class ArticleController extends Controller
     public function trackClick(int $id): JsonResponse
     {
         $article = Article::find($id);
-        if (!$article) {
+        if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -210,7 +222,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Click tracked successfully.',
-            'clicks' => $article->clicks
+            'clicks' => $article->clicks,
         ]);
     }
 
@@ -221,7 +233,7 @@ class ArticleController extends Controller
     public function trackShareClick(Request $request, int $id): JsonResponse
     {
         $article = Article::find($id);
-        if (!$article) {
+        if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -229,13 +241,13 @@ class ArticleController extends Controller
             'platform' => 'required|string|max:50',
         ]);
 
-        $shareClick = \App\Models\ArticleShareClick::firstOrCreate(
+        $shareClick = ArticleShareClick::firstOrCreate(
             [
                 'article_id' => $article->id,
                 'platform' => $validated['platform'],
             ],
             [
-                'clicks' => 0
+                'clicks' => 0,
             ]
         );
 
@@ -255,7 +267,7 @@ class ArticleController extends Controller
     public function store(StoreArticleRequest $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
@@ -269,14 +281,13 @@ class ArticleController extends Controller
         $articleOwner = $authorResolution['owner'] ?? $user;
         $requestedStatus = ArticleStatus::normalize($validated['status'] ?? ArticleStatus::SUBMITTED) ?: ArticleStatus::SUBMITTED;
 
-        $slug = !empty($validated['title'])
-            ? Str::slug($validated['title']) . '-' . Str::lower(Str::random(6))
-            : 'draft-' . Str::lower(Str::random(16));
+        if ($requestedStatus === ArticleStatus::SUBMITTED && empty($validated['pdf_upload_id'])) {
+            return response()->json(['message' => PrimaryManuscriptService::MISSING_MESSAGE], 422);
+        }
 
         $articleData = array_merge($request->articlePayload(), [
             'user_id' => $articleOwner->id,
             'title' => $validated['title'] ?? null,
-            'slug' => $slug,
             'full_text' => '',
             'pdf_path' => null,
             'featured_image' => null,
@@ -295,17 +306,23 @@ class ArticleController extends Controller
             $articleData['seo_keywords'] = $validated['seo_keywords'] ?? null;
         }
 
-        $article = \DB::transaction(function() use ($articleData, $request, $authorResolution, $user) {
-            $article = Article::create($articleData);
+        $article = \DB::transaction(function () use ($articleData, $request, $authorResolution, $user, $articleOwner, $requestedStatus) {
+            $article = app(SlugService::class)->createArticle($articleData);
             $this->syncTags($article, $request->input('tags'));
             $this->persistArticleAuthors($article, $authorResolution['authors']);
             $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
+            if ($requestedStatus === ArticleStatus::SUBMITTED) {
+                event(new ArticleSubmitted(
+                    $article->fresh(['articleAuthors', 'magazine', 'user']),
+                    $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)
+                ));
+            }
 
             return $article;
         });
 
         $linkedFileIds = [];
-        if (!empty($validated['pdf_upload_id'])) {
+        if (! empty($validated['pdf_upload_id'])) {
             $upload = app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], 'article_manuscript');
             $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article, $upload, config('media_uploads.purposes.article_manuscript'));
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
@@ -337,15 +354,13 @@ class ArticleController extends Controller
                 $linkedFileIds
             );
 
-            // Dispatch synchronized queued notifications
-            event(new \App\Events\ArticleSubmitted($article, $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)));
         }
 
         return response()->json([
             'message' => $requestedStatus === ArticleStatus::DRAFT
                 ? 'Draft manuscript saved.'
                 : 'Your research article has been submitted successfully for peer review.',
-            'article' => $article->load(['tags', 'articleAuthors', 'reviewerPreferences'])
+            'article' => $article->load(['tags', 'articleAuthors', 'reviewerPreferences']),
         ], $requestedStatus === ArticleStatus::DRAFT ? 201 : 211);
     }
 
@@ -356,7 +371,7 @@ class ArticleController extends Controller
     public function adminList(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
@@ -383,7 +398,7 @@ class ArticleController extends Controller
     public function adminStatusOptions(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
@@ -418,11 +433,11 @@ class ArticleController extends Controller
     public function adminFilterOptions(Request $request): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        if ($user->hasRole('author') && !$user->hasPermission('articles.view-any')) {
+        if ($user->hasRole('author') && ! $user->hasPermission('articles.view-any')) {
             return response()->json(['authors' => []]);
         }
 
@@ -455,14 +470,14 @@ class ArticleController extends Controller
     public function review(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        
+
         $article = Article::with('user')->find($id);
-        if (!$article) {
+        if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        if (!$this->hasGlobalArticleAccess($user) && !$user->hasPermission('articles.auto-approve')) {
-            if (!$this->isAssignedToArticleMagazine($user, $article, ['editor'])) {
+        if (! $this->hasGlobalArticleAccess($user) && ! $user->hasPermission('articles.auto-approve')) {
+            if (! $this->isAssignedToArticleMagazine($user, $article, ['editor'])) {
                 return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
             }
             if (ArticleStatus::normalize($request->input('status')) === ArticleStatus::PUBLISHED) {
@@ -471,7 +486,7 @@ class ArticleController extends Controller
         }
 
         $validated = $request->validate([
-            'status' => 'required|' . ArticleStatus::validationRuleWithLegacy([
+            'status' => 'required|'.ArticleStatus::validationRuleWithLegacy([
                 'approved',
                 'published',
                 'minor_review_rejected',
@@ -489,20 +504,20 @@ class ArticleController extends Controller
 
         $oldStatus = $article->status;
         $normalizedStatus = ArticleStatus::normalize($validated['status']);
-        if (!ArticleStatus::canTransition($oldStatus, $normalizedStatus)) {
+        if (! ArticleStatus::canTransition($oldStatus, $normalizedStatus)) {
             return response()->json([
                 'message' => "Invalid status transition from {$oldStatus} to {$normalizedStatus}.",
-                'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$normalizedStatus}."]]
+                'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$normalizedStatus}."]],
             ], 422);
         }
 
         $article->status = $normalizedStatus;
-        
+
         if (ArticleStatus::isRevisionRequired($normalizedStatus) || ArticleStatus::isRejected($normalizedStatus)) {
             if (empty($validated['rejection_reason'])) {
                 return response()->json([
                     'message' => 'Rejection or revision reason is required.',
-                    'errors' => ['rejection_reason' => ['Rejection or revision reason is required.']]
+                    'errors' => ['rejection_reason' => ['Rejection or revision reason is required.']],
                 ], 422);
             }
             $article->rejection_reason = $validated['rejection_reason'];
@@ -514,7 +529,7 @@ class ArticleController extends Controller
                 $article->published_year = $validated['published_year'];
                 $article->published_month = $validated['published_month'];
             }
-            if (!$article->published_at) {
+            if (! $article->published_at) {
                 $article->published_at = now();
             }
         }
@@ -550,7 +565,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article status updated successfully.',
-            'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'shareClicks']), $user)
+            'article' => $this->adminArticleSummaryPayload($article->fresh(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'shareClicks']), $user),
         ]);
     }
 
@@ -561,7 +576,7 @@ class ArticleController extends Controller
     public function showById(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
@@ -578,7 +593,7 @@ class ArticleController extends Controller
             'editorialDecisions.decider:id,name,email',
             'productionAssignments.user:id,name,email',
         ])->find($id);
-        if (!$article) {
+        if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -596,7 +611,7 @@ class ArticleController extends Controller
                 return response()->json(['message' => 'Observer mode is read-only.'], 403);
             }
 
-            if (!ArticleStatus::isEditableStatus($article->status)) {
+            if (! ArticleStatus::isEditableStatus($article->status)) {
                 return response()->json([
                     'message' => 'This manuscript cannot be edited at its current workflow stage.',
                 ], 422);
@@ -641,12 +656,12 @@ class ArticleController extends Controller
     public function update(UpdateArticleRequest $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
         $article = Article::find($id);
-        if (!$article) {
+        if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -658,7 +673,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.'], 410);
         }
 
-        if (!ArticleStatus::isEditableStatus($article->status)) {
+        if (! ArticleStatus::isEditableStatus($article->status)) {
             return response()->json([
                 'message' => 'This manuscript cannot be edited at its current workflow stage.',
             ], 422);
@@ -682,7 +697,7 @@ class ArticleController extends Controller
 
         $slug = $article->slug;
         if ($validated['title'] !== $article->title) {
-            $slug = Str::slug($validated['title']);
+            $slug = app(SlugService::class)->articleSlug($article->magazine_id, $validated['title'], $article->id);
         }
 
         // Restrict status edits to admins/editors only or handle resubmission
@@ -692,7 +707,7 @@ class ArticleController extends Controller
         $isEditorial = $this->hasGlobalArticleAccess($user)
             || $this->isAssignedToArticleMagazine($user, $article, ['editor']);
 
-        if (!$isEditorial) {
+        if (! $isEditorial) {
             // Authors saving requested revisions resubmit the manuscript for editorial review.
             $requestedStatus = ArticleStatus::normalize($validated['status'] ?? $article->status);
             $normalizedOldStatus = ArticleStatus::normalize($article->status);
@@ -701,10 +716,10 @@ class ArticleController extends Controller
                 : (ArticleStatus::isRevisionRequired($normalizedOldStatus) ? ArticleStatus::RESUBMITTED : $normalizedOldStatus);
         } else {
             $status = ArticleStatus::normalize($validated['status'] ?? $article->status);
-            if (!ArticleStatus::canTransition($oldStatus, $status)) {
+            if (! ArticleStatus::canTransition($oldStatus, $status)) {
                 return response()->json([
                     'message' => "Invalid status transition from {$oldStatus} to {$status}.",
-                    'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$status}."]]
+                    'errors' => ['status' => ["Invalid status transition from {$oldStatus} to {$status}."]],
                 ], 422);
             }
         }
@@ -719,7 +734,7 @@ class ArticleController extends Controller
             if ($publishValidator->fails()) {
                 return response()->json([
                     'message' => 'Publishing targeting metadata is required.',
-                    'errors' => $publishValidator->errors()
+                    'errors' => $publishValidator->errors(),
                 ], 422);
             }
             $publishedYear = $request->input('published_year');
@@ -734,7 +749,7 @@ class ArticleController extends Controller
             if ($rejectionReasonValidator->fails()) {
                 return response()->json([
                     'message' => 'Rejection reason is required.',
-                    'errors' => $rejectionReasonValidator->errors()
+                    'errors' => $rejectionReasonValidator->errors(),
                 ], 422);
             }
             $rejectionReason = $request->input('rejection_reason');
@@ -743,7 +758,7 @@ class ArticleController extends Controller
         }
 
         $publishedAt = $article->published_at;
-        if (ArticleStatus::isAcceptedOrPublished($status) && !$publishedAt) {
+        if (ArticleStatus::isAcceptedOrPublished($status) && ! $publishedAt) {
             $publishedAt = now();
         }
 
@@ -790,7 +805,7 @@ class ArticleController extends Controller
             $linkedFileIds = $ownedAdditionalFiles->all();
         }
         foreach ($validated['additional_manuscript_files'] ?? [] as $additional) {
-            if (!empty($additional['article_file_id'])) {
+            if (! empty($additional['article_file_id'])) {
                 $existing = ArticleFile::query()
                     ->whereKey($additional['article_file_id'])
                     ->where('article_id', $article->id)
@@ -799,7 +814,7 @@ class ArticleController extends Controller
                     ->where('scan_status', 'clean')
                     ->whereNull('article_version_id')
                     ->first();
-                if (!$existing) {
+                if (! $existing) {
                     return response()->json([
                         'message' => 'One or more additional manuscript files are not available for this submission round.',
                         'errors' => ['additional_manuscript_files' => ['Each file must be clean, owned by the author, and belong to the active submission.']],
@@ -807,6 +822,7 @@ class ArticleController extends Controller
                 }
                 $existing->update(['file_title' => trim($additional['file_title'])]);
                 $linkedFileIds[] = $existing->id;
+
                 continue;
             }
 
@@ -825,60 +841,92 @@ class ArticleController extends Controller
             }
         }
         $linkedFileIds = array_values(array_unique($linkedFileIds));
-        $manuscriptUpload = !empty($validated['pdf_upload_id'])
+        $manuscriptUpload = ! empty($validated['pdf_upload_id'])
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['pdf_upload_id'], ['article_manuscript', 'article_revision'])
             : null;
-        $responseUpload = !empty($validated['revision_response_upload_id'])
+        $responseUpload = ! empty($validated['revision_response_upload_id'])
             ? app(CleanUploadResolver::class)->resolveOwned($user, $validated['revision_response_upload_id'], 'article_revision_response')
             : null;
 
-        \DB::transaction(function() use ($article, $updateData, $request, $authorResolution, $user, $status, $oldStatus) {
-            if (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED
-                && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
-                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
-                $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
-            }
-            $article->update($updateData);
-            $this->syncTags($article, $request->input('tags'));
-            $this->persistArticleAuthors($article, $authorResolution['authors']);
-            $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
-        });
-
         if ($manuscriptUpload) {
-            $purposeConfig = config('media_uploads.purposes.' . $manuscriptUpload->purpose);
+            $purposeConfig = config('media_uploads.purposes.'.$manuscriptUpload->purpose);
             $manuscriptFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $manuscriptUpload, $purposeConfig);
             $article->update(['pdf_path' => $manuscriptFile->file_path]);
             $pdfPath = $manuscriptFile->file_path;
             $linkedFileIds[] = $manuscriptFile->id;
         }
+
+        if (in_array(ArticleStatus::normalize($status), [ArticleStatus::SUBMITTED, ArticleStatus::RESUBMITTED], true)) {
+            $draftManuscripts = ArticleFile::query()
+                ->where('article_id', $article->id)
+                ->whereNull('article_version_id')
+                ->where('file_type', ArticleFile::MANUSCRIPT)
+                ->whereNull('assignment_type')
+                ->where('scan_status', 'clean')
+                ->get();
+            if ($draftManuscripts->isEmpty()) {
+                return response()->json(['message' => PrimaryManuscriptService::MISSING_MESSAGE], 422);
+            }
+            if ($draftManuscripts->count() !== 1) {
+                return response()->json(['message' => PrimaryManuscriptService::INVALID_MESSAGE], 422);
+            }
+            $linkedFileIds[] = $draftManuscripts->first()->id;
+            $linkedFileIds = array_values(array_unique($linkedFileIds));
+        }
+
+        $transitionApplied = true;
+        \DB::transaction(function () use ($article, $updateData, $request, $authorResolution, $articleOwner, $user, $status, $oldStatus, $linkedFileIds, &$transitionApplied) {
+            $lockedArticle = Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            if (ArticleStatus::normalize($lockedArticle->status) !== ArticleStatus::normalize($oldStatus)
+                && ArticleStatus::normalize($lockedArticle->status) === ArticleStatus::normalize($status)) {
+                $transitionApplied = false;
+                \Log::info('article_submission.duplicate_prevented', [
+                    'user_id' => $user->id,
+                    'article_id' => $article->id,
+                    'status' => ArticleStatus::normalize($status),
+                ]);
+
+                return;
+            }
+            if (ArticleStatus::normalize($status) === ArticleStatus::ACCEPTED
+                && ArticleStatus::normalize($oldStatus) !== ArticleStatus::ACCEPTED) {
+                $this->acceptedFileSetService->createForCurrentSubmission($article, $user);
+                $updateData['accepted_at'] = $article->accepted_at ?: now()->toDateString();
+            }
+            $oldSlug = $lockedArticle->slug;
+            $lockedArticle->update($updateData);
+            app(SlugService::class)->recordRedirect('article', $lockedArticle->id, $oldSlug, $lockedArticle->slug, $lockedArticle->magazine_id);
+            $this->syncTags($article, $request->input('tags'));
+            $this->persistArticleAuthors($article, $authorResolution['authors']);
+            $this->persistReviewerPreferences($article, $request->reviewerPreferencesPayload(), $user);
+
+            if (ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
+                $this->versionService->createSnapshot(
+                    $lockedArticle->fresh(['articleAuthors', 'tags', 'files']), $user, 'Revised Manuscript',
+                    $request->input('change_summary'), null, $linkedFileIds
+                );
+            } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+                $this->versionService->createSnapshot(
+                    $lockedArticle->fresh(['articleAuthors', 'tags', 'files']), $user, 'Initial Submission',
+                    $request->input('change_summary') ?: 'Draft submitted for review.', null, $linkedFileIds
+                );
+            }
+
+            if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
+                if (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
+                    event(new ArticleSubmitted(
+                        $lockedArticle->fresh(['articleAuthors', 'magazine', 'user']),
+                        $this->notificationAuthors($authorResolution['authors'], $articleOwner->email)
+                    ));
+                }
+                $this->dispatchStatusWorkflowEvent($lockedArticle->fresh(), $user, $oldStatus, $status);
+            }
+        });
+
         if ($responseUpload) {
-            $purposeConfig = config('media_uploads.purposes.' . $responseUpload->purpose);
+            $purposeConfig = config('media_uploads.purposes.'.$responseUpload->purpose);
             $responseFile = app(ArticleFileController::class)->createCleanDirectUploadFile($article->fresh(), $responseUpload, $purposeConfig);
             $linkedFileIds[] = $responseFile->id;
-        }
-
-        if (ArticleStatus::normalize($status) !== ArticleStatus::normalize($oldStatus)) {
-            $this->dispatchStatusWorkflowEvent($article->fresh(), $user, $oldStatus, $status);
-        }
-
-        if (ArticleStatus::normalize($status) === ArticleStatus::RESUBMITTED && ArticleStatus::isRevisionRequired($oldStatus)) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Revised Manuscript',
-                $request->input('change_summary'),
-                null,
-                $linkedFileIds
-            );
-        } elseif (ArticleStatus::normalize($status) === ArticleStatus::SUBMITTED && ArticleStatus::normalize($oldStatus) === ArticleStatus::DRAFT) {
-            $this->versionService->createSnapshot(
-                $article->fresh(['articleAuthors', 'tags', 'files']),
-                $user,
-                'Initial Submission',
-                $request->input('change_summary') ?: 'Draft submitted for review.',
-                null,
-                $linkedFileIds
-            );
         }
 
         // If approved/published and pdf_path is empty, generate dynamic PDF
@@ -889,7 +937,7 @@ class ArticleController extends Controller
                 $article->save();
             } catch (\Exception $e) {
                 return response()->json([
-                    'message' => 'Article updated successfully, but PDF generation failed. Please try again.'
+                    'message' => 'Article updated successfully, but PDF generation failed. Please try again.',
                 ], 500);
             }
         }
@@ -901,7 +949,7 @@ class ArticleController extends Controller
 
         return response()->json([
             'message' => 'Article updated successfully.',
-            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image,publication_type', 'issue', 'articleAuthors', 'reviewerPreferences', 'assets:id,article_id,original_filename,file_size,mime_type']), $user)
+            'article' => $this->adminArticleDetailPayload($article->fresh(['tags:id,name', 'magazine:id,title,slug,cover_image,publication_type', 'issue', 'articleAuthors', 'reviewerPreferences', 'assets:id,article_id,original_filename,file_size,mime_type']), $user),
         ]);
     }
 
@@ -917,7 +965,7 @@ class ArticleController extends Controller
         foreach ($authors as $author) {
             $email = strtolower(trim($author['email']));
             $linkedUser = User::whereRaw('LOWER(email) = ?', [$email])->first();
-            $shouldCreateAccount = !$linkedUser && ($createMissingAuthors || $author['create_account'] || $author['can_edit'] || $author['is_owner']);
+            $shouldCreateAccount = ! $linkedUser && ($createMissingAuthors || $author['create_account'] || $author['can_edit'] || $author['is_owner']);
 
             if ($shouldCreateAccount) {
                 $linkedUser = User::create([
@@ -931,7 +979,7 @@ class ArticleController extends Controller
                 ]);
             }
 
-            if (!$linkedUser && $author['is_owner']) {
+            if (! $linkedUser && $author['is_owner']) {
                 $linkedUser = $fallbackOwner;
             }
 
@@ -956,7 +1004,7 @@ class ArticleController extends Controller
         $article->articleAuthors()->delete();
 
         foreach ($authors as $author) {
-            \App\Models\ArticleAuthor::create([
+            ArticleAuthor::create([
                 'article_id' => $article->id,
                 'user_id' => $author['user_id'] ?? null,
                 'co_author_name' => $author['name'],
@@ -982,7 +1030,7 @@ class ArticleController extends Controller
 
         foreach (['suggested', 'opposed'] as $type) {
             foreach (($preferences[$type] ?? []) as $preference) {
-                \App\Models\ArticleReviewerPreference::create([
+                ArticleReviewerPreference::create([
                     'article_id' => $article->id,
                     'created_by_author_id' => $creator->id,
                     'type' => $type,
@@ -1019,6 +1067,7 @@ class ArticleController extends Controller
     {
         if (empty($tagsInput)) {
             $article->tags()->sync([]);
+
             return;
         }
 
@@ -1031,7 +1080,7 @@ class ArticleController extends Controller
             }
         }
 
-        if (!is_array($tagsInput)) {
+        if (! is_array($tagsInput)) {
             return;
         }
 
@@ -1040,9 +1089,9 @@ class ArticleController extends Controller
             if (is_numeric($item)) {
                 $tagIds[] = (int) $item;
             } elseif (is_string($item) && trim($item) !== '') {
-                $tag = \App\Models\Tag::firstOrCreate([
+                $tag = Tag::firstOrCreate([
                     'magazine_id' => $article->magazine_id,
-                    'name' => trim($item)
+                    'name' => trim($item),
                 ]);
                 $tagIds[] = $tag->id;
             }
@@ -1068,7 +1117,7 @@ class ArticleController extends Controller
             default => null,
         };
 
-        if (!$event) {
+        if (! $event) {
             return;
         }
 
@@ -1088,13 +1137,13 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
 
-        if (!$scopeUser || (!$this->hasGlobalArticleAccess($scopeUser) && !$this->usesMagazineArticleScope($scopeUser))) {
+        if (! $scopeUser || (! $this->hasGlobalArticleAccess($scopeUser) && ! $this->usesMagazineArticleScope($scopeUser))) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
         $magazineIds = null;
         $publisherScoped = false;
-        if (!$this->hasGlobalArticleAccess($scopeUser) || $observedUser) {
+        if (! $this->hasGlobalArticleAccess($scopeUser) || $observedUser) {
             $publisherScoped = $this->usesPublisherArticleScope($scopeUser);
             $magazineIds = $publisherScoped
                 ? $this->assignedMagazineIds($scopeUser, ['publisher'])
@@ -1122,19 +1171,19 @@ class ArticleController extends Controller
         $fullyRejectedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::REJECTED))->count();
         $resubmittedArticles = (clone $query)->whereIn('status', ArticleStatus::queryValues(ArticleStatus::RESUBMITTED))->count();
 
-        $magazinesQuery = \App\Models\Magazine::query();
+        $magazinesQuery = Magazine::query();
         if ($magazineIds !== null) {
             $magazinesQuery->whereIn('id', $magazineIds);
         }
         $totalMagazines = $magazinesQuery->count();
-        $totalUsers = \App\Models\User::count(); // general users count remains system-wide
+        $totalUsers = User::count(); // general users count remains system-wide
 
         $totalClicks = (clone $query)->sum('clicks');
         $totalImpressions = (clone $query)->sum('impressions');
 
         // Top articles by engagement
         $topArticles = Article::with(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name'])
-            ->when($magazineIds !== null, function($q) use ($magazineIds) {
+            ->when($magazineIds !== null, function ($q) use ($magazineIds) {
                 $q->whereIn('magazine_id', $magazineIds);
             })
             ->when($publisherScoped, function ($q) {
@@ -1177,7 +1226,7 @@ class ArticleController extends Controller
     {
         $article = Article::find($id);
 
-        if (!$article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED || empty($article->pdf_path)) {
+        if (! $article || ArticleStatus::normalize($article->status) !== ArticleStatus::PUBLISHED || empty($article->pdf_path)) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 
@@ -1217,13 +1266,13 @@ class ArticleController extends Controller
             'page_end' => $article->page_end,
             'article_type' => $article->article_type,
             'article_category' => $article->article_category,
-            'seo_title' => $article->seo_title ?: $article->title . ' | ' . ($article->magazine?->title ?? 'ScholarlyNest'),
+            'seo_title' => $article->seo_title ?: $article->title.' | '.($article->magazine?->title ?? 'ScholarlyNest'),
             'seo_description' => $article->seo_description ?: Str::limit(strip_tags((string) $article->abstract), 160, ''),
             'seo_keywords' => $article->seo_keywords ?: $article->tags->pluck('name')->implode(', '),
             'og_image' => $article->magazine?->cover_image_url,
-            'has_pdf' => !empty($article->pdf_path),
-            'pdf_url' => !empty($article->pdf_path) ? url("/api/articles/{$article->id}/download-pdf") : null,
-            'public_url' => $article->magazine ? '/' . $article->magazine->publicRoutePrefix() . '/' . $article->magazine->slug . '/articles/' . $article->slug : null,
+            'has_pdf' => ! empty($article->pdf_path),
+            'pdf_url' => ! empty($article->pdf_path) ? url("/api/articles/{$article->id}/download-pdf") : null,
+            'public_url' => $article->magazine ? '/'.$article->magazine->publicRoutePrefix().'/'.$article->magazine->slug.'/articles/'.$article->slug : null,
             'publication_type' => $article->magazine?->publication_type ?? Magazine::TYPE_MAGAZINE,
             'publication_label' => $article->magazine?->publicationTypeLabel() ?? 'Magazine',
             'publication_name' => $article->magazine?->title,
@@ -1281,7 +1330,7 @@ class ArticleController extends Controller
                 ->values()
                 ->map(fn ($asset, $index) => [
                     'id' => $asset->id,
-                    'label' => 'Figure ' . ($index + 1),
+                    'label' => 'Figure '.($index + 1),
                     'title' => $asset->title,
                     'caption' => $asset->caption,
                     'description' => $asset->description,
@@ -1299,15 +1348,12 @@ class ArticleController extends Controller
                     'content_html' => app(HtmlSanitizer::class)->sanitize($section->content_html),
                     'content_text' => $section->content_text,
                     'sort_order' => $section->sort_order,
-                    'has_image' => !empty($section->media_upload_session_id),
+                    'has_image' => ! empty($section->media_upload_session_id),
                     'image_url' => $section->media_upload_session_id ? url("/api/articles/publication-sections/{$section->id}/image") : null,
                 ])
                 ->sortBy('sort_order')
                 ->values(),
-            'publication_files' => $article->files
-                ->filter(fn ($file) => ($file->scan_status ?? 'clean') === 'clean')
-                ->filter(fn ($file) => (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
-                    || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads'))
+            'publication_files' => collect(app(PublishedArticleFileResolver::class)->resolvePublishedFiles($article))
                 ->map(fn ($file) => [
                     'id' => $file->id,
                     'title' => $file->file_title ?: $file->original_name,
@@ -1357,7 +1403,7 @@ class ArticleController extends Controller
             'published_month' => $article->published_month,
             'page_start' => $article->page_start,
             'page_end' => $article->page_end,
-            'has_pdf' => !empty($article->pdf_path),
+            'has_pdf' => ! empty($article->pdf_path),
             'magazine' => $article->magazine ? [
                 'id' => $article->magazine->id,
                 'title' => $article->magazine->title,
@@ -1433,6 +1479,7 @@ class ArticleController extends Controller
                         $data['co_author_email'] = $author->co_author_email;
                         $data['can_edit'] = $author->can_edit;
                     }
+
                     return $data;
                 })
                 ->values(),
@@ -1448,7 +1495,8 @@ class ArticleController extends Controller
                 ->values(),
             'files' => app(ArticleFileController::class)->filterVisibleFiles(
                 $viewer,
-                $article->files->where('file_type', ArticleFile::ADDITIONAL_MANUSCRIPT_FILE)
+                $article->files->filter(fn (ArticleFile $file) => $file->file_type === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE
+                    || ($file->isPrimaryManuscript() && ! $file->article_version_id))
             ),
             'resume_step' => $this->draftResumeStep($article),
             'next_step' => $this->draftResumeStep($article),
@@ -1484,14 +1532,14 @@ class ArticleController extends Controller
             || trim((string) $article->title) !== ''
             || trim(strip_tags((string) $article->abstract)) !== ''
         );
-        if (!$hasBasics) {
+        if (! $hasBasics) {
             return 1;
         }
 
         $hasCollaborators = $article->articleAuthors
-            ->filter(fn ($author) => !$author->is_owner || (int) $author->author_order > 1)
+            ->filter(fn ($author) => ! $author->is_owner || (int) $author->author_order > 1)
             ->isNotEmpty();
-        if (!$hasCollaborators) {
+        if (! $hasCollaborators) {
             return 2;
         }
 
@@ -1500,7 +1548,7 @@ class ArticleController extends Controller
         }
 
         $hasClassificationOrDeclaration = (bool) (
-            !empty($article->keywords)
+            ! empty($article->keywords)
             || trim((string) $article->article_category) !== ''
             || trim((string) $article->article_type) !== ''
             || trim((string) $article->subject_area) !== ''
@@ -1512,8 +1560,8 @@ class ArticleController extends Controller
             || trim((string) $article->author_contribution_statement) !== ''
         );
 
-        $hasUploads = !empty($article->pdf_path) || $article->assets->isNotEmpty();
-        if (!$hasClassificationOrDeclaration && !$hasUploads) {
+        $hasUploads = ! empty($article->pdf_path) || $article->assets->isNotEmpty();
+        if (! $hasClassificationOrDeclaration && ! $hasUploads) {
             return 4;
         }
 
@@ -1527,7 +1575,7 @@ class ArticleController extends Controller
         $isAuthor = (int) $article->user_id === (int) $viewer->id
             || $article->articleAuthors->contains(fn ($author) => (int) $author->user_id === (int) $viewer->id || strtolower((string) $author->co_author_email) === strtolower((string) $viewer->email));
 
-        if (!$canViewEditorial && !$isAuthor) {
+        if (! $canViewEditorial && ! $isAuthor) {
             return ['suggested' => [], 'opposed' => []];
         }
 
@@ -1574,7 +1622,7 @@ class ArticleController extends Controller
         try {
             $article->load(['magazine', 'user']);
             $magazine = $article->magazine;
-            $subscribers = \App\Models\NewsletterSubscriber::where('is_active', true)->get();
+            $subscribers = NewsletterSubscriber::where('is_active', true)->get();
             $frontendUrl = rtrim(env('APP_URL_FRONTEND', 'https://dev.scholarlynest.com'), '/');
 
             $authorName = $article->user ? e($article->user->name) : 'ScholarlyNest Author';
@@ -1584,18 +1632,18 @@ class ArticleController extends Controller
 
             foreach ($subscribers as $sub) {
                 $unsubscribeUrl = "{$frontendUrl}/unsubscribe/{$sub->token}";
-                
+
                 $bodyLines = [
                     'A new peer-reviewed article is now available on ScholarlyNest.',
                     '<br><strong>Publication Details:</strong>',
-                    '• <strong>Article:</strong> ' . e($article->title),
-                    '• <strong>Magazine:</strong> ' . $magazineTitle,
-                    '• <strong>Author:</strong> ' . $authorName,
+                    '• <strong>Article:</strong> '.e($article->title),
+                    '• <strong>Magazine:</strong> '.$magazineTitle,
+                    '• <strong>Author:</strong> '.$authorName,
                 ];
 
                 if ($article->abstract) {
                     $bodyLines[] = '<br><strong>Abstract:</strong>';
-                    $bodyLines[] = '<div>' . nl2br(e(strip_tags((string) $article->abstract))) . '</div>';
+                    $bodyLines[] = '<div>'.nl2br(e(strip_tags((string) $article->abstract))).'</div>';
                 }
 
                 $bodyLines[] = 'Next Action: Use the link below to read the complete article.';
@@ -1607,7 +1655,7 @@ class ArticleController extends Controller
 
                 $this->notificationService->send(
                     $sub->email,
-                    "New Article Published: " . $article->title,
+                    'New Article Published: '.$article->title,
                     $article->title,
                     $bodyLines,
                     $action,
@@ -1619,7 +1667,7 @@ class ArticleController extends Controller
                 );
             }
         } catch (\Exception $e) {
-            logger()->error("Error sending article newsletter announcement: " . $e->getMessage());
+            logger()->error('Error sending article newsletter announcement: '.$e->getMessage());
         }
     }
 
@@ -1630,7 +1678,7 @@ class ArticleController extends Controller
     public function updateSeo(Request $request, int $id): JsonResponse
     {
         $user = $request->user();
-        if (!$user || !$user->hasPermission('seo.articles')) {
+        if (! $user || ! $user->hasPermission('seo.articles')) {
             return response()->json(['message' => 'Unauthorized. SEO permission required.'], 403);
         }
 
@@ -1638,7 +1686,7 @@ class ArticleController extends Controller
 
         // Publication SEO is managed through this dedicated endpoint and remains
         // available at the ready stage even though manuscript editing is locked.
-        if (!ArticleStatus::isEditableStatus($article->status)
+        if (! ArticleStatus::isEditableStatus($article->status)
             && ArticleStatus::normalize($article->status) !== ArticleStatus::READY_FOR_PUBLICATION) {
             return response()->json([
                 'message' => 'This manuscript cannot be edited at its current workflow stage.',
@@ -1651,14 +1699,14 @@ class ArticleController extends Controller
         $hasEditAny = $user->hasPermission('articles.edit-any');
         $hasEditOwn = $user->hasPermission('articles.edit-own');
 
-        if ($hasEditOwn && !$hasEditAny && $article->user_id !== $user->id) {
+        if ($hasEditOwn && ! $hasEditAny && $article->user_id !== $user->id) {
             return response()->json(['message' => 'You can only manage SEO for your own articles.'], 403);
         }
 
         $validated = $request->validate([
-            'seo_title'       => 'nullable|string|max:255',
+            'seo_title' => 'nullable|string|max:255',
             'seo_description' => 'nullable|string|max:500',
-            'seo_keywords'    => 'nullable|string|max:500',
+            'seo_keywords' => 'nullable|string|max:500',
         ]);
 
         $article->update($validated);
@@ -1678,7 +1726,7 @@ class ArticleController extends Controller
     {
         $query = Article::query();
 
-        if ($this->hasGlobalArticleAccess($user) && !$observedUser) {
+        if ($this->hasGlobalArticleAccess($user) && ! $observedUser) {
             return $query;
         }
 
@@ -1753,7 +1801,7 @@ class ArticleController extends Controller
                 ->values()
                 ->all();
 
-            if (!empty($statuses)) {
+            if (! empty($statuses)) {
                 $query->whereIn('status', $statuses);
             }
         }
@@ -1822,7 +1870,7 @@ class ArticleController extends Controller
 
     private function usesPublisherArticleScope($user): bool
     {
-        return $user && $user->hasRole('publisher') && !$this->usesEditorialArticleScope($user);
+        return $user && $user->hasRole('publisher') && ! $this->usesEditorialArticleScope($user);
     }
 
     private function publisherVisibleStatuses(): array
@@ -1865,7 +1913,7 @@ class ArticleController extends Controller
     {
         if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
             $article->loadMissing('magazine:id,publication_type');
-            if (!$article->magazine || !in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
+            if (! $article->magazine || ! in_array($article->magazine->publication_type, $user->editorPublicationTypes(), true)) {
                 return false;
             }
         }

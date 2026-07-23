@@ -12,7 +12,7 @@ class MediaObjectController extends Controller
         $path = $mediaStorage->decodePath($token);
         $resolved = $mediaStorage->resolvePath($path);
 
-        if (!$resolved || !Storage::disk($resolved['disk'])->exists($resolved['path'])) {
+        if (!$resolved) {
             return response()->json(['message' => 'The requested file is not available.'], 404);
         }
 

@@ -155,7 +155,9 @@ class ArticleWorkflowTest extends TestCase
 
         Sanctum::actingAs($this->editor);
         $this->getJson('/api/admin/articles?tracking_code=' . urlencode($this->article->tracking_code))
-            ->assertOk()->assertJsonCount(1, 'data');
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.tracking_code', $this->article->tracking_code);
         $this->getJson('/api/admin/articles?tracking_code=' . urlencode(substr($this->article->tracking_code, 0, -1)))
             ->assertOk()->assertJsonCount(0, 'data');
         $this->getJson('/api/admin/articles?title=Biomedical')

@@ -190,6 +190,7 @@ class UniversityMetadataTest extends TestCase
             'abstract' => 'Quantum computing methods are explored...',
             'full_text' => 'This is full text content.',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->author)->id,
             'co_authors' => json_encode([
                 [
                     'name' => 'Dr. David',

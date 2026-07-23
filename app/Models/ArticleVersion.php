@@ -10,6 +10,7 @@ class ArticleVersion extends Model
 {
     protected $fillable = [
         'article_id',
+        'manuscript_file_id',
         'created_by',
         'version_number',
         'revision_number',
@@ -43,6 +44,11 @@ class ArticleVersion extends Model
     public function files(): HasMany
     {
         return $this->hasMany(ArticleFile::class);
+    }
+
+    public function manuscriptFile(): BelongsTo
+    {
+        return $this->belongsTo(ArticleFile::class, 'manuscript_file_id');
     }
 
     public function accepter(): BelongsTo

@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\MfaService;
+use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
 use Google\Client;
@@ -27,11 +28,14 @@ class AuthController extends Controller
 
     protected MfaService $mfaService;
 
-    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService, MfaService $mfaService)
+    protected NotificationEventRecorder $notificationEvents;
+
+    public function __construct(NotificationService $notificationService, PasswordSetupService $passwordSetupService, MfaService $mfaService, NotificationEventRecorder $notificationEvents)
     {
         $this->notificationService = $notificationService;
         $this->passwordSetupService = $passwordSetupService;
         $this->mfaService = $mfaService;
+        $this->notificationEvents = $notificationEvents;
     }
 
     /**
@@ -309,11 +313,14 @@ class AuthController extends Controller
     public function enable2Fa(Request $request): JsonResponse
     {
         $user = $request->user();
-        $user->two_factor_enabled = true;
-        $user->save();
-        $user->mfaMethods()->updateOrCreate(['method' => 'email'], ['is_enabled' => true, 'is_verified' => true]);
-        $setting = $user->mfaSetting()->firstOrCreate();
-        $setting->update(['is_enabled' => true, 'default_method' => $setting->default_method ?: 'email']);
+        \DB::transaction(function () use ($user) {
+            $user->two_factor_enabled = true;
+            $user->save();
+            $user->mfaMethods()->updateOrCreate(['method' => 'email'], ['is_enabled' => true, 'is_verified' => true]);
+            $setting = $user->mfaSetting()->firstOrCreate();
+            $setting->update(['is_enabled' => true, 'default_method' => $setting->default_method ?: 'email']);
+            $this->recordAccountEvent('account.mfa_method_changed', $user, 'mfa-email-enabled');
+        });
 
         return response()->json([
             'message' => 'Two-Factor Authentication has been enabled successfully.',
@@ -366,17 +373,20 @@ class AuthController extends Controller
             return response()->json(['message' => '2FA code has expired.'], 400);
         }
 
-        $user->update([
-            'two_factor_enabled' => false,
-            'two_factor_code' => null,
-            'two_factor_code_expires_at' => null,
-        ]);
-        $user->mfaMethods()->where('method', 'email')->update(['is_enabled' => false]);
-        $methods = $this->mfaService->methods($user->refresh());
-        $user->mfaSetting()->updateOrCreate([], [
-            'is_enabled' => $methods !== [],
-            'default_method' => in_array('totp', $methods, true) ? 'totp' : null,
-        ]);
+        \DB::transaction(function () use ($user) {
+            $user->update([
+                'two_factor_enabled' => false,
+                'two_factor_code' => null,
+                'two_factor_code_expires_at' => null,
+            ]);
+            $user->mfaMethods()->where('method', 'email')->update(['is_enabled' => false]);
+            $methods = $this->mfaService->methods($user->refresh());
+            $user->mfaSetting()->updateOrCreate([], [
+                'is_enabled' => $methods !== [],
+                'default_method' => in_array('totp', $methods, true) ? 'totp' : null,
+            ]);
+            $this->recordAccountEvent('account.mfa_method_changed', $user, 'mfa-email-disabled');
+        });
 
         return response()->json([
             'message' => 'Two-Factor Authentication has been disabled successfully.',
@@ -444,19 +454,21 @@ class AuthController extends Controller
             return response()->json(['message' => 'Invalid password change code.'], 400);
         }
 
-        $user->update([
-            'password' => Hash::make($request->password),
-            'password_change_code' => null,
-            'password_change_code_expires_at' => null,
-            'password_change_verified_at' => null,
-            'password_change_failed_attempts' => 0,
-        ]);
-
-        $this->notificationService->send($user->email, 'Your Scholarly Nest Password Was Changed', 'Dear '.$user->name.',', [
-            'Your Scholarly Nest account password was changed successfully.',
-            'Account: Email: '.$user->email.'. Changed At: '.now()->toDateTimeString().'.',
-            'If you made this change, no further action is required. If you did not make this change, please contact support immediately.',
-        ], null, 'high', $user->id);
+        \DB::transaction(function () use ($user, $request) {
+            $user->update([
+                'password' => Hash::make($request->password),
+                'password_change_code' => null,
+                'password_change_code_expires_at' => null,
+                'password_change_verified_at' => null,
+                'password_change_failed_attempts' => 0,
+            ]);
+            $this->notificationService->send($user->email, 'Your Scholarly Nest Password Was Changed', 'Dear '.$user->name.',', [
+                'Your Scholarly Nest account password was changed successfully.',
+                'Account: Email: '.$user->email.'. Changed At: '.now()->toDateTimeString().'.',
+                'If you made this change, no further action is required. If you did not make this change, please contact support immediately.',
+            ], null, 'high', $user->id);
+            $this->recordAccountEvent('account.password_changed', $user, 'password-changed');
+        });
 
         return response()->json([
             'message' => 'Password updated successfully.',
@@ -880,7 +892,6 @@ class AuthController extends Controller
             'email_change_code_expires_at' => now()->addMinutes(15),
             'current_email_verified' => false,
         ]);
-
         // Send email
         $this->notificationService->send(
             $user->email,
@@ -1006,13 +1017,16 @@ class AuthController extends Controller
         }
 
         // Apply change
-        $user->update([
-            'email' => $user->pending_email,
-            'pending_email' => null,
-            'new_email_verification_code' => null,
-            'new_email_verification_code_expires_at' => null,
-            'current_email_verified' => false,
-        ]);
+        \DB::transaction(function () use ($user) {
+            $user->update([
+                'email' => $user->pending_email,
+                'pending_email' => null,
+                'new_email_verification_code' => null,
+                'new_email_verification_code_expires_at' => null,
+                'current_email_verified' => false,
+            ]);
+            $this->recordAccountEvent('account.email_changed', $user, 'email-changed');
+        });
 
         return response()->json([
             'message' => 'Email updated successfully.',
@@ -1028,6 +1042,20 @@ class AuthController extends Controller
         }
 
         return filter_var($value, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function recordAccountEvent(string $type, User $user, string $purpose): void
+    {
+        $stateVersion = collect([
+            $user->fresh()?->updated_at,
+            $user->mfaSetting()->value('updated_at'),
+            $user->mfaMethods()->max('updated_at'),
+        ])->filter()->map(fn ($value) => now()->parse($value)->format('Y-m-d H:i:s.u'))->sort()->last();
+        $idempotencyVersion = request()?->header('Idempotency-Key') ?: $stateVersion;
+        $this->notificationEvents->record(
+            $type, null, $user, ['recipient_user_id' => $user->id, 'recipient_privacy_variant' => 'account'], 'user', $user->id,
+            deduplicationKey: hash('sha256', "{$purpose}|{$user->id}|{$idempotencyVersion}")
+        );
     }
 
     private function defaultRegistrationRole(): ?Role

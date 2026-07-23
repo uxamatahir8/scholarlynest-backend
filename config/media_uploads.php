@@ -1,6 +1,10 @@
 <?php
 
 use App\Models\Article;
+use App\Services\Media\UploadValidationService;
+
+$workflowExtensions = UploadValidationService::getAllowedExtensions();
+$workflowMimes = UploadValidationService::getAllowedMimeTypes();
 
 return [
     'disk' => env('MEDIA_S3_DISK', 's3'),
@@ -43,8 +47,8 @@ return [
             'article_file_type' => 'manuscript',
             'clean_prefix' => 'clean/articles/original/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_revision' => [
@@ -54,8 +58,8 @@ return [
             'article_file_type' => 'manuscript',
             'clean_prefix' => 'clean/articles/revisions/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_revision_response' => [
@@ -64,8 +68,8 @@ return [
             'article_file_type' => 'revision_response',
             'clean_prefix' => 'clean/articles/revision-responses/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'additional_manuscript_file' => [
@@ -75,8 +79,8 @@ return [
             'article_file_type' => 'additional_manuscript_file',
             'clean_prefix' => 'clean/articles/additional-manuscript-files/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_supplementary' => [
@@ -85,19 +89,8 @@ return [
             'article_file_type' => 'supplementary',
             'clean_prefix' => 'clean/articles/supplementary/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => [
-                'application/pdf',
-                'application/msword',
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                'application/vnd.ms-excel',
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'text/plain',
-                'text/csv',
-                'image/png',
-                'image/jpeg',
-                'image/webp',
-            ],
-            'extensions' => ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'png', 'jpg', 'jpeg', 'webp'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
             'create_article_asset' => true,
             'asset_type' => 'supplementary',
@@ -120,8 +113,8 @@ return [
             'article_file_type' => 'copy_edited_file',
             'clean_prefix' => 'clean/articles/production/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_plagiarism_report' => [
@@ -130,8 +123,8 @@ return [
             'article_file_type' => 'plagiarism_report',
             'clean_prefix' => 'clean/articles/plagiarism/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'],
-            'extensions' => ['pdf', 'doc', 'docx', 'txt'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_annotated_manuscript' => [
@@ -140,8 +133,8 @@ return [
             'article_file_type' => 'annotated_manuscript',
             'clean_prefix' => 'clean/articles/annotations/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_reviewed_manuscript' => [
@@ -150,8 +143,8 @@ return [
             'article_file_type' => 'reviewed_manuscript',
             'clean_prefix' => 'clean/articles/reviews/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            'extensions' => ['pdf', 'doc', 'docx'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_proof_file' => [
@@ -160,8 +153,8 @@ return [
             'article_file_type' => 'proof_file',
             'clean_prefix' => 'clean/articles/proofs/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf'],
-            'extensions' => ['pdf'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_published_pdf' => [
@@ -171,8 +164,8 @@ return [
             'article_file_type' => 'publication_pdf',
             'clean_prefix' => 'clean/articles/published/',
             'max_size_bytes' => 25 * 1024 * 1024,
-            'detected_mime_types' => ['application/pdf'],
-            'extensions' => ['pdf'],
+            'detected_mime_types' => $workflowMimes,
+            'extensions' => $workflowExtensions,
             'scan_required' => true,
         ],
         'article_featured_image' => [

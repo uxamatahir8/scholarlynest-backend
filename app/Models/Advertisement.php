@@ -11,9 +11,10 @@ class Advertisement extends Model
     use SoftDeletes;
 
     public const PLACEMENTS = ['header_banner', 'sidebar_sticky', 'content_top', 'content_middle', 'content_bottom', 'footer_banner'];
+    public const SIDEBAR_SIDES = ['left', 'right'];
     public const STATUSES = ['draft', 'active', 'inactive', 'expired'];
 
-    protected $fillable = ['title', 'image_media_id', 'alt_text', 'redirect_url', 'placement', 'status', 'priority', 'open_in_new_tab', 'starts_at', 'ends_at', 'created_by', 'updated_by'];
+    protected $fillable = ['title', 'image_media_id', 'alt_text', 'redirect_url', 'placement', 'sidebar_side', 'status', 'priority', 'open_in_new_tab', 'starts_at', 'ends_at', 'created_by', 'updated_by'];
     protected $casts = ['open_in_new_tab' => 'boolean', 'starts_at' => 'datetime', 'ends_at' => 'datetime', 'priority' => 'integer'];
 
     public function targets() { return $this->hasMany(AdvertisementTarget::class); }
@@ -30,6 +31,8 @@ class Advertisement extends Model
             'redirect_url' => $this->redirect_url,
             'alt_text' => $this->alt_text ?: $this->title,
             'placement' => $this->placement,
+            'sidebar_side' => $this->sidebar_side,
+            'priority' => $this->priority,
             'open_in_new_tab' => $this->open_in_new_tab,
         ];
     }

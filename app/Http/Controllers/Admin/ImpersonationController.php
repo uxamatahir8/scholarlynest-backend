@@ -3,15 +3,18 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\User;
-use App\Models\ImpersonationSession;
 use App\Models\AuditLog;
-use App\Models\Permission;
-use Illuminate\Http\Request;
+use App\Models\ImpersonationSession;
+use App\Models\User;
+use App\Services\Notifications\NotificationEventRecorder;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ImpersonationController extends Controller
 {
+    public function __construct(private NotificationEventRecorder $notificationEvents) {}
+
     /**
      * Start user impersonation.
      */
@@ -24,23 +27,23 @@ class ImpersonationController extends Controller
         }
 
         // Assert caller is Super Admin
-        if (!$request->user() || !$request->user()->hasRole('super_admin')) {
+        if (! $request->user() || ! $request->user()->hasRole('super_admin')) {
             return response()->json(['message' => 'Forbidden. Only Super Admin can access this resource.'], 403);
         }
 
         // Require explicit confirmation flag
-        if (!$request->input('confirmed')) {
+        if (! $request->input('confirmed')) {
             return response()->json(['message' => 'Impersonation request not confirmed.'], 400);
         }
 
         // Find target user
         $targetUser = User::withTrashed()->find($id);
-        if (!$targetUser) {
+        if (! $targetUser) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
         // Target cannot be soft-deleted, must be active (email verified)
-        if ($targetUser->trashed() || !$targetUser->email_verified_at) {
+        if ($targetUser->trashed() || ! $targetUser->email_verified_at) {
             return response()->json(['message' => 'This user cannot be impersonated.'], 400);
         }
 
@@ -56,32 +59,36 @@ class ImpersonationController extends Controller
 
         $expiry = now()->addMinutes(30);
 
-        // Issue temporary token with 30-min expiry
-        $tokenInstance = $targetUser->createToken('impersonation_token', ['*'], $expiry);
+        $tokenInstance = DB::transaction(function () use ($request, $targetUser, $expiry) {
+            $tokenInstance = $targetUser->createToken('impersonation_token', ['*'], $expiry);
+            ImpersonationSession::create([
+                'original_super_admin_id' => $request->user()->id,
+                'impersonated_user_id' => $targetUser->id,
+                'impersonation_token_id' => $tokenInstance->accessToken->id,
+                'started_at' => now(),
+                'expires_at' => $expiry,
+                'status' => 'active',
+                'started_ip' => $request->ip(),
+                'started_user_agent' => $request->userAgent(),
+            ]);
+            AuditLog::create([
+                'event' => 'impersonation_started',
+                'user_id' => $request->user()->id,
+                'auditable_type' => User::class,
+                'auditable_id' => $targetUser->id,
+                'old_values' => ['super_admin_id' => $request->user()->id],
+                'new_values' => ['impersonated_user_id' => $targetUser->id],
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+            $this->notificationEvents->record(
+                'account.impersonation_started', null, $request->user(),
+                ['recipient_user_ids' => [$request->user()->id, $targetUser->id], 'recipient_privacy_variant' => 'account'], 'user', $targetUser->id,
+                deduplicationKey: "impersonation-session:{$tokenInstance->accessToken->id}:started"
+            );
 
-        // Create ImpersonationSession mapping
-        ImpersonationSession::create([
-            'original_super_admin_id' => $request->user()->id,
-            'impersonated_user_id' => $targetUser->id,
-            'impersonation_token_id' => $tokenInstance->accessToken->id,
-            'started_at' => now(),
-            'expires_at' => $expiry,
-            'status' => 'active',
-            'started_ip' => $request->ip(),
-            'started_user_agent' => $request->userAgent(),
-        ]);
-
-        // Record start audit event
-        AuditLog::create([
-            'event' => 'impersonation_started',
-            'user_id' => $request->user()->id,
-            'auditable_type' => User::class,
-            'auditable_id' => $targetUser->id,
-            'old_values' => ['super_admin_id' => $request->user()->id],
-            'new_values' => ['impersonated_user_id' => $targetUser->id],
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-        ]);
+            return $tokenInstance;
+        });
 
         return response()->json([
             'access_token' => $tokenInstance->plainTextToken,
@@ -125,7 +132,7 @@ class ImpersonationController extends Controller
     {
         $accessToken = $request->user()->currentAccessToken();
 
-        if (!$accessToken || $accessToken->name !== 'impersonation_token') {
+        if (! $accessToken || $accessToken->name !== 'impersonation_token') {
             return response()->json(['message' => 'No active impersonation session found.'], 400);
         }
 
@@ -133,41 +140,42 @@ class ImpersonationController extends Controller
             ->where('status', 'active')
             ->first();
 
-        if (!$session) {
+        if (! $session) {
             return response()->json(['message' => 'No active impersonation session found.'], 400);
         }
 
         // Retrieve original Super Admin
         $superAdmin = User::find($session->original_super_admin_id);
-        if (!$superAdmin || !$superAdmin->email_verified_at) {
+        if (! $superAdmin || ! $superAdmin->email_verified_at) {
             return response()->json(['message' => 'Original Super Admin session could not be restored.'], 400);
         }
 
-        // Close ImpersonationSession
-        $session->update([
-            'status' => 'stopped',
-            'stopped_at' => now(),
-            'stopped_ip' => $request->ip(),
-            'stopped_user_agent' => $request->userAgent(),
-        ]);
+        $newTokenInstance = DB::transaction(function () use ($request, $session, $superAdmin, $accessToken) {
+            $session->update([
+                'status' => 'stopped',
+                'stopped_at' => now(),
+                'stopped_ip' => $request->ip(),
+                'stopped_user_agent' => $request->userAgent(),
+            ]);
+            AuditLog::create([
+                'event' => 'impersonation_stopped',
+                'user_id' => $superAdmin->id,
+                'auditable_type' => User::class,
+                'auditable_id' => $request->user()->id,
+                'old_values' => ['impersonated_user_id' => $request->user()->id],
+                'new_values' => ['super_admin_id' => $superAdmin->id],
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+            $this->notificationEvents->record(
+                'account.impersonation_stopped', null, $superAdmin,
+                ['recipient_user_ids' => [$superAdmin->id, $request->user()->id], 'recipient_privacy_variant' => 'account'], 'user', $request->user()->id,
+                deduplicationKey: "impersonation-session:{$session->id}:stopped"
+            );
+            $accessToken->delete();
 
-        // Record stop audit event
-        AuditLog::create([
-            'event' => 'impersonation_stopped',
-            'user_id' => $superAdmin->id,
-            'auditable_type' => User::class,
-            'auditable_id' => $request->user()->id,
-            'old_values' => ['impersonated_user_id' => $request->user()->id],
-            'new_values' => ['super_admin_id' => $superAdmin->id],
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-        ]);
-
-        // Revoke temporary token
-        $accessToken->delete();
-
-        // Issue new token for Super Admin
-        $newTokenInstance = $superAdmin->createToken('auth_token');
+            return $superAdmin->createToken('auth_token');
+        });
 
         return response()->json([
             'access_token' => $newTokenInstance->plainTextToken,
@@ -217,6 +225,7 @@ class ImpersonationController extends Controller
         foreach ($permissionNames as $pName) {
             $capabilities[$pName] = true;
         }
+
         return $capabilities;
     }
 }

@@ -162,7 +162,7 @@ trait ValidatesArticleSubmission
             'magazine_id' => "{$draftRequired}|integer|exists:magazines,id",
             'title' => "{$draftRequired}|string|max:255",
             'abstract' => "{$draftRequired}|string",
-            'pdf_file' => 'nullable|file|mimes:pdf,doc,docx|max:25600',
+            'pdf_file' => 'nullable|file|mimes:' . \App\Services\Media\UploadValidationService::extensionsRuleString() . '|max:25600',
             'pdf_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'revision_response_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
             'additional_file_ids' => 'nullable|array',
@@ -220,6 +220,19 @@ trait ValidatesArticleSubmission
     protected function articleAfterValidation(ValidationValidator $validator, bool $enforceSubmittingOwner = true): void
     {
         $authors = $this->normalizedAuthors;
+        $uploadIds = collect($this->input('additional_manuscript_files', []))
+            ->pluck('upload_id')
+            ->filter();
+        if ($uploadIds->count() !== $uploadIds->unique()->count()) {
+            $validator->errors()->add('additional_manuscript_files', 'The same upload session cannot be attached more than once.');
+        }
+        $articleFileIds = collect($this->input('additional_manuscript_files', []))
+            ->pluck('article_file_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id);
+        if ($articleFileIds->count() !== $articleFileIds->unique()->count()) {
+            $validator->errors()->add('additional_manuscript_files', 'The same article file cannot be attached more than once.');
+        }
         $isDraft = ArticleStatus::normalize($this->input('status')) === ArticleStatus::DRAFT;
         if ($isDraft && count($authors) === 0) {
             $this->validatePublicationDestination($validator);

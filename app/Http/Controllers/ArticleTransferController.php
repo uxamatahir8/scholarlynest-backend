@@ -171,7 +171,7 @@ class ArticleTransferController extends Controller
 
     private function canAuthorRespond(User $user, Article $article): bool
     {
-        if (ArticleStatus::normalize($article->status) !== ArticleStatus::IN_TRANSIT) {
+        if (!$user->hasRole('author') || ArticleStatus::normalize($article->status) !== ArticleStatus::IN_TRANSIT) {
             return false;
         }
 

@@ -14,14 +14,14 @@ class FrontendExposureAuditTest extends TestCase
 
         $forbiddenPattern = '/console\\.(log|error|warn|debug)|error\\.response|err\\.response\\.data|file_path|pdf_path|storage_path|606295156376/';
         $allowedArchiveFragments = [
-            DIRECTORY_SEPARATOR . '.context_old' . DIRECTORY_SEPARATOR,
-            DIRECTORY_SEPARATOR . '.components_old' . DIRECTORY_SEPARATOR,
+            DIRECTORY_SEPARATOR.'.context_old'.DIRECTORY_SEPARATOR,
+            DIRECTORY_SEPARATOR.'.components_old'.DIRECTORY_SEPARATOR,
         ];
 
         $violations = [];
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($frontendRoot));
         foreach ($iterator as $file) {
-            if (!$file->isFile() || !preg_match('/\\.(js|jsx|ts|tsx)$/', $file->getFilename())) {
+            if (! $file->isFile() || ! preg_match('/\\.(js|jsx|ts|tsx)$/', $file->getFilename())) {
                 continue;
             }
 
@@ -34,7 +34,7 @@ class FrontendExposureAuditTest extends TestCase
 
             $content = file_get_contents($path);
             if (preg_match($forbiddenPattern, $content, $match)) {
-                $violations[] = str_replace($frontendRoot . DIRECTORY_SEPARATOR, '', $path) . ': ' . $match[0];
+                $violations[] = str_replace($frontendRoot.DIRECTORY_SEPARATOR, '', $path).': '.$match[0];
             }
         }
 
@@ -52,19 +52,38 @@ class FrontendExposureAuditTest extends TestCase
         $this->assertStringNotContainsString('too_many_attempts', $content);
     }
 
+    public function test_flagged_frontend_flows_use_sanitized_error_handling(): void
+    {
+        $filesPanel = file_get_contents($this->frontendPath('src/components/admin/workflow/ArticleFilesPanel.js'));
+        $mfaPage = file_get_contents($this->frontendPath('src/app/verify-2fa/page.js'));
+        $sharedPages = file_get_contents($this->frontendPath('src/app/admin/shared-pages/page.js'));
+        $safeErrors = file_get_contents($this->frontendPath('src/utils/safeErrors.js'));
+
+        $this->assertStringContainsString("setOpenError(safeApiMessage(err, 'Unable to open this file. Please try again.', { strict: true }))", $filesPanel);
+        $this->assertStringContainsString('logError(err)', $filesPanel);
+        $this->assertStringContainsString('safeMfaChallengeState(err)', $mfaPage);
+        $this->assertStringContainsString("safeApiMessage(err, 'The authentication code is invalid or expired.', { strict: true })", $mfaPage);
+        $this->assertStringContainsString('safeApiValidationErrors(error, sharedPageFields)', $sharedPages);
+        $this->assertStringContainsString("safeApiMessage(error, 'Failed to save shared page.', { strict: true })", $sharedPages);
+        $this->assertStringContainsString("const MFA_METHODS = new Set(['email', 'totp', 'recovery_code'])", $safeErrors);
+        $this->assertStringContainsString("error?.['response']?.status !== 422", $safeErrors);
+        $this->assertStringContainsString('strict && Number.isFinite(status) && status >= 500', $safeErrors);
+    }
+
     public function test_legacy_app_old_frontend_directories_are_removed_from_routing_tree(): void
     {
         $frontendRoot = $this->frontendPath('src/app');
 
-        $this->assertDirectoryDoesNotExist($frontendRoot . '/_admin_old');
-        $this->assertDirectoryDoesNotExist($frontendRoot . '/_magazines_old');
+        $this->assertDirectoryDoesNotExist($frontendRoot.'/_admin_old');
+        $this->assertDirectoryDoesNotExist($frontendRoot.'/_magazines_old');
     }
+
     private function frontendPath(string $relative): string
     {
         foreach ([
-            base_path('../frontend-ui/' . $relative),
-            getcwd() . '/../frontend-ui/' . $relative,
-            '/home/developer/workspace/frontend-ui/' . $relative,
+            base_path('../frontend-ui/'.$relative),
+            getcwd().'/../frontend-ui/'.$relative,
+            '/home/developer/workspace/frontend-ui/'.$relative,
         ] as $candidate) {
             $path = realpath($candidate);
             if ($path !== false) {
@@ -72,6 +91,6 @@ class FrontendExposureAuditTest extends TestCase
             }
         }
 
-        $this->fail('frontend-ui/' . $relative . ' must exist for exposure scan.');
+        $this->fail('frontend-ui/'.$relative.' must exist for exposure scan.');
     }
 }

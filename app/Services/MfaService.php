@@ -234,9 +234,9 @@ class MfaService
         ];
     }
 
-    public function verifyTotpSetup(User $user, string $code): array
+    public function verifyTotpSetup(User $user, string $code, ?callable $afterSuccess = null): array
     {
-        $result = DB::transaction(function () use ($user, $code) {
+        $result = DB::transaction(function () use ($user, $code, $afterSuccess) {
             $method = UserMfaMethod::where('user_id', $user->id)->where('method', 'totp')->lockForUpdate()->first();
             if (! $method?->pending_secret_encrypted || ! $method->pending_expires_at || $method->pending_expires_at->isPast()) {
                 throw ValidationException::withMessages(['code' => ['The authenticator setup has expired. Start setup again.']]);
@@ -267,7 +267,12 @@ class MfaService
                 'last_verified_at' => now(),
             ]);
 
-            return $this->regenerateRecoveryCodes($user);
+            $codes = $this->regenerateRecoveryCodes($user);
+            if ($afterSuccess) {
+                $afterSuccess();
+            }
+
+            return $codes;
         });
         if ($result === null) {
             throw ValidationException::withMessages(['code' => ['The authenticator code is invalid.']]);

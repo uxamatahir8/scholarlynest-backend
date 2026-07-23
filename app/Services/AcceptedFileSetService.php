@@ -9,6 +9,7 @@ use App\Models\ArticleAcceptedFileSetItem;
 use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
 use App\Models\User;
+use App\Services\Notifications\NotificationEventRecorder;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 
@@ -26,22 +27,11 @@ class AcceptedFileSetService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$version) {
+            if (! $version) {
                 $this->fail('The article cannot be accepted because it has no submitted manuscript version.');
             }
 
-            $manuscript = ArticleFile::query()
-                ->where('article_id', $article->id)
-                ->where('article_version_id', $version->id)
-                ->where('file_type', ArticleFile::MANUSCRIPT)
-                ->where('scan_status', 'clean')
-                ->whereNull('assignment_type')
-                ->latest('id')
-                ->first();
-
-            if (!$manuscript) {
-                $this->fail('The current submitted version must contain a clean manuscript before it can be accepted.');
-            }
+            $manuscript = app(PrimaryManuscriptService::class)->validateAuthoritative($article, $version);
 
             $supporting = ArticleFile::query()
                 ->where('article_id', $article->id)
@@ -53,10 +43,11 @@ class AcceptedFileSetService
                 ->get()
                 ->values();
 
-            ArticleAcceptedFileSet::query()
+            $supersededIds = ArticleAcceptedFileSet::query()
                 ->where('article_id', $article->id)
                 ->whereNull('superseded_at')
-                ->update(['superseded_at' => now()]);
+                ->pluck('id');
+            ArticleAcceptedFileSet::query()->whereIn('id', $supersededIds)->update(['superseded_at' => now()]);
 
             $acceptedAt = now();
             $set = ArticleAcceptedFileSet::create([
@@ -80,6 +71,20 @@ class AcceptedFileSetService
                 'accepted_at' => $acceptedAt,
                 'accepted_by' => $acceptedBy->id,
             ]);
+
+            foreach ($supersededIds as $supersededId) {
+                app(NotificationEventRecorder::class)->record(
+                    'accepted_file_set.superseded', $article, $acceptedBy,
+                    ['accepted_file_set_id' => $supersededId], 'accepted_file_set', (int) $supersededId,
+                    deduplicationKey: "accepted-file-set:{$supersededId}:superseded"
+                );
+            }
+            app(NotificationEventRecorder::class)->record(
+                'accepted_file_set.created', $article, $acceptedBy,
+                ['accepted_file_set_id' => $set->id, 'article_version_id' => $version->id],
+                'accepted_file_set', $set->id,
+                deduplicationKey: "accepted-file-set:{$set->id}:created"
+            );
 
             return $set->fresh(['version', 'accepter:id,name', 'items.file.uploader:id,name', 'items.sourceVersion']);
         });

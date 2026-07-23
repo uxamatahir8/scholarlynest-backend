@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Listeners\SendArticleWorkflowNotifications;
+use App\Mail\GenericSystemMail;
 use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\NotificationLog;
@@ -14,7 +15,6 @@ use App\Models\Role;
 use App\Models\SubEditorAssignment;
 use App\Models\User;
 use App\Models\WorkflowDeadlineReminderLog;
-use App\Mail\GenericSystemMail;
 use App\Services\NotificationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -26,9 +26,13 @@ class WorkflowNotificationTest extends TestCase
     use RefreshDatabase;
 
     private Magazine $magazine;
+
     private Article $article;
+
     private User $admin;
+
     private User $editor;
+
     private User $author;
 
     protected function setUp(): void
@@ -257,17 +261,22 @@ class WorkflowNotificationTest extends TestCase
 
         $this->artisan('workflow:send-deadline-reminders')->assertExitCode(0);
 
-        $this->assertSame(3, WorkflowDeadlineReminderLog::count());
+        $this->assertSame(4, WorkflowDeadlineReminderLog::count());
         $this->assertDatabaseHas('workflow_deadline_reminder_logs', ['reminder_type' => 'due_in_3_days']);
         $this->assertDatabaseHas('workflow_deadline_reminder_logs', ['reminder_type' => 'due_today']);
         $this->assertDatabaseHas('workflow_deadline_reminder_logs', ['reminder_type' => 'overdue_3_days']);
 
         $this->artisan('workflow:send-deadline-reminders')->assertExitCode(0);
 
-        $this->assertSame(3, WorkflowDeadlineReminderLog::count());
+        $this->assertSame(4, WorkflowDeadlineReminderLog::count());
         $this->assertDatabaseHas('article_audit_logs', [
             'article_id' => $this->article->id,
-            'event' => 'deadline.overdue_reminder.sent',
+            'event' => 'deadline.overdue_reminder.recorded',
+        ]);
+        $this->assertDatabaseHas('workflow_deadline_reminder_logs', [
+            'recipient_user_id' => $this->editor->id,
+            'reminder_type' => 'overdue_3_days',
+            'escalated_to_user_id' => $this->editor->id,
         ]);
     }
 }

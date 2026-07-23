@@ -2,10 +2,19 @@
 
 namespace App\Providers;
 
+use App\Events\ArticleSubmitted;
+use App\Events\ArticleWorkflowEventOccurred;
 use App\Models\Article;
+use App\Models\ProductionAssignment;
+use App\Models\ReviewerAssignment;
+use App\Models\SubEditorAssignment;
+use App\Models\UserNotification;
+use App\Observers\WorkflowAssignmentObserver;
 use App\Policies\ArticlePolicy;
+use App\Policies\NotificationPolicy;
 use App\Services\Media\AntivirusScannerContract;
 use App\Services\Media\ClamAvScanner;
+use App\Services\Notifications\RecordArticleNotificationEvent;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
@@ -28,6 +37,14 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gate::policy(Article::class, ArticlePolicy::class);
+        Gate::policy(UserNotification::class, NotificationPolicy::class);
+
+        Event::listen(ArticleSubmitted::class, RecordArticleNotificationEvent::class);
+        Event::listen(ArticleWorkflowEventOccurred::class, RecordArticleNotificationEvent::class);
+
+        SubEditorAssignment::observe(WorkflowAssignmentObserver::class);
+        ReviewerAssignment::observe(WorkflowAssignmentObserver::class);
+        ProductionAssignment::observe(WorkflowAssignmentObserver::class);
 
         // Event listeners are auto-discovered by Laravel 11.
 

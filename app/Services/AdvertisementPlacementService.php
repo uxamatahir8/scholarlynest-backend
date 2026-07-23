@@ -43,15 +43,19 @@ class AdvertisementPlacementService
             ->whereHas('image', fn (Builder $q) => $q->where('scan_status', 'clean'))
             ->where(fn (Builder $q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', now()))
             ->where(fn (Builder $q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', now()))
-            ->whereHas('targets', $targetConstraint)->orderByDesc('priority')->orderByDesc('created_at')->get();
+            ->whereHas('targets', $targetConstraint)->orderByDesc('priority')->orderBy('created_at')->orderBy('id')->get()->unique('id');
 
-        return collect(Advertisement::PLACEMENTS)->mapWithKeys(fn ($placement) => [
+        $grouped = collect(Advertisement::PLACEMENTS)->mapWithKeys(fn ($placement) => [
             $placement => $ads->where('placement', $placement)->map->publicPayload()->values()->all(),
         ])->all();
+        $grouped['left_sidebar'] = $ads->where('placement', 'sidebar_sticky')->where('sidebar_side', 'left')->map->publicPayload()->values()->all();
+        $grouped['right_sidebar'] = $ads->where('placement', 'sidebar_sticky')->where('sidebar_side', 'right')->map->publicPayload()->values()->all();
+
+        return $grouped;
     }
 
     private function emptyPlacements(): array
     {
-        return collect(Advertisement::PLACEMENTS)->mapWithKeys(fn ($placement) => [$placement => []])->all();
+        return collect([...Advertisement::PLACEMENTS, 'left_sidebar', 'right_sidebar'])->mapWithKeys(fn ($placement) => [$placement => []])->all();
     }
 }

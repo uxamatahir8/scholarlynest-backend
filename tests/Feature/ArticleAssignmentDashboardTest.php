@@ -113,6 +113,33 @@ class ArticleAssignmentDashboardTest extends TestCase
             ->assertJsonPath('data.0.sub_editor_id', $this->subEditor->id);
     }
 
+    public function test_sub_editor_desk_handles_sub_editor_recommended_and_other_statuses(): void
+    {
+        $recArticle = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->admin->id,
+            'title' => 'Recommended Article',
+            'slug' => 'recommended-article',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'status' => ArticleStatus::SUB_EDITOR_RECOMMENDED,
+        ]);
+
+        SubEditorAssignment::create([
+            'article_id' => $recArticle->id,
+            'sub_editor_id' => $this->subEditor->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+            'due_date' => now()->addDays(2),
+        ]);
+
+        Sanctum::actingAs($this->subEditor);
+
+        $this->getJson('/api/admin/my-sub-editor-assignments')
+            ->assertOk()
+            ->assertJsonPath('data.0.primary_action', 'submit_recommendation');
+    }
+
     public function test_reviewer_assignment_dashboard_is_scoped_to_authenticated_reviewer(): void
     {
         ReviewerAssignment::create([

@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\ArticleFileController;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
 use App\Models\User;
+use App\Services\Notifications\NotificationEventRecorder;
 use Illuminate\Support\Facades\DB;
 
 class ArticleVersionService
@@ -34,14 +36,26 @@ class ArticleVersionService
             ]);
             if ($label === 'Revised Manuscript') {
                 $revision = max(1, $version->version_number - 1);
-                $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code . '-R' . $revision]);
+                $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code.'-R'.$revision]);
             }
 
             $this->linkFiles($article, $version, $linkFileIds);
 
+            app(PrimaryManuscriptService::class)->authoritativeForSubmission($article, $version);
+
             $version->update([
                 'file_snapshot' => $this->fileSnapshot($article, $version),
             ]);
+
+            app(NotificationEventRecorder::class)->record(
+                'article.version_created',
+                $article,
+                $user,
+                ['article_version_id' => $version->id, 'revision_number' => $version->revision_number],
+                'article_version',
+                $version->id,
+                deduplicationKey: "article-version:{$version->id}:created"
+            );
 
             return $version->fresh(['creator:id,name,email', 'files.uploader:id,name,email']);
         });
@@ -90,7 +104,7 @@ class ArticleVersionService
             'data_availability_statement' => $article->data_availability_statement,
             'author_contribution_statement' => $article->author_contribution_statement,
             'full_text' => $article->full_text,
-            'has_pdf' => !empty($article->pdf_path),
+            'has_pdf' => ! empty($article->pdf_path),
             'doi' => $article->doi,
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
@@ -125,9 +139,11 @@ class ArticleVersionService
     public function serializeVersion(ArticleVersion $version, ?User $viewer = null): array
     {
         $version->loadMissing(['creator:id,name', 'files.uploader:id,name']);
-        $fileController = app(\App\Http\Controllers\ArticleFileController::class);
+        $fileController = app(ArticleFileController::class);
         $visibleFiles = collect($version->files)
+            ->filter(fn (ArticleFile $file) => $fileController->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
+            ->reject(fn (ArticleFile $file) => $file->isPrimaryManuscript() && (int) $file->id !== (int) $version->manuscript_file_id)
             ->map(fn (ArticleFile $file) => $fileController->serializeFile($file))
             ->values()
             ->all();
@@ -135,6 +151,7 @@ class ArticleVersionService
         return [
             'id' => $version->id,
             'article_id' => $version->article_id,
+            'manuscript_file_id' => $version->manuscript_file_id,
             'version_number' => $version->version_number,
             'revision_number' => $version->revision_number,
             'revision_tracking_code' => $version->revision_tracking_code,
@@ -172,6 +189,7 @@ class ArticleVersionService
             $snapshot['authors'] = collect($snapshot['authors'])
                 ->map(function ($author) {
                     unset($author['email']);
+
                     return $author;
                 })
                 ->values()
@@ -183,18 +201,6 @@ class ArticleVersionService
 
     private function serializeFileSnapshot(ArticleFile $file): array
     {
-        return [
-            'id' => $file->id,
-            'file_type' => $file->file_type,
-            'file_title' => $file->file_title,
-            'visibility' => $file->visibility,
-            'original_name' => $file->original_name,
-            'mime_type' => $file->mime_type,
-            'size' => $file->size,
-            'uploaded_by' => $file->uploaded_by,
-            'uploader_name' => $file->uploader?->name,
-            'created_at' => $file->created_at,
-            'download_url' => "/api/articles/files/{$file->id}/download",
-        ];
+        return app(ArticleFileController::class)->serializeFile($file);
     }
 }

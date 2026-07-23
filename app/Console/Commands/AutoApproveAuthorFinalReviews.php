@@ -29,10 +29,10 @@ class AutoApproveAuthorFinalReviews extends Command
                 foreach ($articles as $candidate) {
                     $article = DB::transaction(function () use ($candidate): ?Article {
                         $article = Article::query()->lockForUpdate()->find($candidate->id);
-                        if (!$article
+                        if (! $article
                             || ArticleStatus::normalize($article->status) !== ArticleStatus::PROOFREADING
                             || $article->author_final_approved_at
-                            || !$article->author_final_review_due_at
+                            || ! $article->author_final_review_due_at
                             || $article->author_final_review_due_at->isFuture()) {
                             return null;
                         }
@@ -55,21 +55,23 @@ class AutoApproveAuthorFinalReviews extends Command
                             'payload' => ['response_window_days' => 14],
                         ]);
 
-                        return $article->fresh();
+                        $article = $article->fresh();
+                        event(new ArticleWorkflowEventOccurred($article, 'author.final_review_auto_approved', null, [
+                            'from_status' => ArticleStatus::PROOFREADING,
+                            'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
+                        ]));
+                        event(new ArticleWorkflowEventOccurred($article, 'article.ready_for_publication', null, [
+                            'from_status' => ArticleStatus::PROOFREADING,
+                            'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
+                        ]));
+
+                        return $article;
                     });
 
-                    if (!$article) {
+                    if (! $article) {
                         continue;
                     }
 
-                    event(new ArticleWorkflowEventOccurred($article, 'author.final_review_auto_approved', null, [
-                        'from_status' => ArticleStatus::PROOFREADING,
-                        'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
-                    ]));
-                    event(new ArticleWorkflowEventOccurred($article, 'article.ready_for_publication', null, [
-                        'from_status' => ArticleStatus::PROOFREADING,
-                        'to_status' => ArticleStatus::READY_FOR_PUBLICATION,
-                    ]));
                     $approved++;
                 }
             });

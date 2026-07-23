@@ -62,23 +62,23 @@ class ArticleTransferService
                 'editor_comments' => $comments,
             ]);
 
+            event(new ArticleWorkflowEventOccurred(
+                $article->fresh(['magazine', 'articleAuthors', 'user']),
+                'transfer.requested',
+                $requestedBy,
+                [
+                    'transfer_request_id' => $transferRequest->id,
+                    'from_status' => $oldStatus,
+                    'to_status' => ArticleStatus::IN_TRANSIT,
+                    'from_magazine_id' => $transferRequest->from_magazine_id,
+                    'to_magazine_id' => $transferRequest->to_magazine_id,
+                    'target_magazine' => $targetMagazine->title,
+                    'editor_comments' => $comments,
+                ]
+            ));
+
             return $transferRequest;
         });
-
-        event(new ArticleWorkflowEventOccurred(
-            $article->fresh(['magazine', 'articleAuthors', 'user']),
-            'transfer.requested',
-            $requestedBy,
-            [
-                'transfer_request_id' => $transferRequest->id,
-                'from_status' => $transferRequest->previous_article_status,
-                'to_status' => ArticleStatus::IN_TRANSIT,
-                'from_magazine_id' => $transferRequest->from_magazine_id,
-                'to_magazine_id' => $transferRequest->to_magazine_id,
-                'target_magazine' => $targetMagazine->title,
-                'editor_comments' => $comments,
-            ]
-        ));
 
         return $transferRequest->fresh(['fromMagazine:id,title,slug', 'toMagazine:id,title,slug', 'requestedBy:id,name,email']);
     }
@@ -88,7 +88,7 @@ class ArticleTransferService
         $this->assertPendingResponse($article, $transferRequest);
         $targetMagazine = Magazine::findOrFail($transferRequest->to_magazine_id);
 
-        if (!($targetMagazine->is_active ?? true)) {
+        if (! ($targetMagazine->is_active ?? true)) {
             throw ValidationException::withMessages([
                 'to_magazine_id' => ['The target magazine is no longer active.'],
             ]);
@@ -100,11 +100,15 @@ class ArticleTransferService
             $this->assertPendingResponse($article, $transferRequest);
 
             $oldMagazineId = $article->magazine_id;
+            $oldSlug = $article->slug;
+            $newSlug = app(SlugService::class)->articleSlug($targetMagazine->id, $article->title, $article->id);
             $article->update([
                 'magazine_id' => $targetMagazine->id,
+                'slug' => $newSlug,
                 'magazine_issue_id' => null,
                 'status' => ArticleStatus::SCREENING,
             ]);
+            app(SlugService::class)->recordRedirect('article', $article->id, $oldSlug, $newSlug, $oldMagazineId, true);
 
             $transferRequest->update([
                 'status' => ArticleTransferRequest::STATUS_ACCEPTED,
@@ -124,22 +128,22 @@ class ArticleTransferService
                 'to_magazine_id' => $targetMagazine->id,
             ]);
 
+            event(new ArticleWorkflowEventOccurred(
+                $article->fresh(['magazine', 'articleAuthors', 'user']),
+                'transfer.accepted',
+                $respondedBy,
+                [
+                    'transfer_request_id' => $transferRequest->id,
+                    'from_status' => ArticleStatus::IN_TRANSIT,
+                    'to_status' => ArticleStatus::SCREENING,
+                    'from_magazine_id' => $transferRequest->from_magazine_id,
+                    'to_magazine_id' => $transferRequest->to_magazine_id,
+                    'requested_by_user_id' => $transferRequest->requested_by_user_id,
+                ]
+            ));
+
             return $transferRequest;
         });
-
-        event(new ArticleWorkflowEventOccurred(
-            $article->fresh(['magazine', 'articleAuthors', 'user']),
-            'transfer.accepted',
-            $respondedBy,
-            [
-                'transfer_request_id' => $transferRequest->id,
-                'from_status' => ArticleStatus::IN_TRANSIT,
-                'to_status' => ArticleStatus::SCREENING,
-                'from_magazine_id' => $transferRequest->from_magazine_id,
-                'to_magazine_id' => $transferRequest->to_magazine_id,
-                'requested_by_user_id' => $transferRequest->requested_by_user_id,
-            ]
-        ));
 
         return $transferRequest->fresh(['fromMagazine:id,title,slug', 'toMagazine:id,title,slug', 'requestedBy:id,name,email', 'respondedBy:id,name,email']);
     }
@@ -170,30 +174,30 @@ class ArticleTransferService
                 'author_rejection_reason' => $reason,
             ]);
 
+            event(new ArticleWorkflowEventOccurred(
+                $article->fresh(['magazine', 'articleAuthors', 'user']),
+                'transfer.rejected',
+                $respondedBy,
+                [
+                    'transfer_request_id' => $transferRequest->id,
+                    'from_status' => ArticleStatus::IN_TRANSIT,
+                    'to_status' => ArticleStatus::SCREENING,
+                    'from_magazine_id' => $transferRequest->from_magazine_id,
+                    'to_magazine_id' => $transferRequest->to_magazine_id,
+                    'requested_by_user_id' => $transferRequest->requested_by_user_id,
+                    'author_rejection_reason' => $reason,
+                ]
+            ));
+
             return $transferRequest;
         });
-
-        event(new ArticleWorkflowEventOccurred(
-            $article->fresh(['magazine', 'articleAuthors', 'user']),
-            'transfer.rejected',
-            $respondedBy,
-            [
-                'transfer_request_id' => $transferRequest->id,
-                'from_status' => ArticleStatus::IN_TRANSIT,
-                'to_status' => ArticleStatus::SCREENING,
-                'from_magazine_id' => $transferRequest->from_magazine_id,
-                'to_magazine_id' => $transferRequest->to_magazine_id,
-                'requested_by_user_id' => $transferRequest->requested_by_user_id,
-                'author_rejection_reason' => $reason,
-            ]
-        ));
 
         return $transferRequest->fresh(['fromMagazine:id,title,slug', 'toMagazine:id,title,slug', 'requestedBy:id,name,email', 'respondedBy:id,name,email']);
     }
 
     private function assertCanCreate(Article $article, Magazine $targetMagazine): void
     {
-        if (!in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)) {
+        if (! in_array(ArticleStatus::normalize($article->status), [ArticleStatus::SUBMITTED, ArticleStatus::SCREENING], true)) {
             throw ValidationException::withMessages([
                 'article' => ['Article transfers can only be requested during Screening.'],
             ]);
@@ -212,7 +216,7 @@ class ArticleTransferService
             ]);
         }
 
-        if (!($targetMagazine->is_active ?? true)) {
+        if (! ($targetMagazine->is_active ?? true)) {
             throw ValidationException::withMessages([
                 'to_magazine_id' => ['The target magazine must be active.'],
             ]);

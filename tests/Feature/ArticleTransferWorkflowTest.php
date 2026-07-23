@@ -186,6 +186,41 @@ class ArticleTransferWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_author_workflow_exposes_only_the_pending_transfer_decision_to_authorized_authors(): void
+    {
+        $transferRequest = $this->createPendingTransfer();
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::IN_TRANSIT)
+            ->assertJsonPath('article.author_status', 'In Transit')
+            ->assertJsonPath('article.can_respond_transfer_request', true)
+            ->assertJsonPath('article.pending_transfer_request.id', $transferRequest->id)
+            ->assertJsonPath('article.pending_transfer_request.status', ArticleTransferRequest::STATUS_PENDING)
+            ->assertJsonPath('article.pending_transfer_request.from_magazine.title', 'Current Magazine')
+            ->assertJsonPath('article.pending_transfer_request.to_magazine.title', 'Target Magazine')
+            ->assertJsonPath('article.pending_transfer_request.requested_by.name', $this->editor->name)
+            ->assertJsonPath('article.pending_transfer_request.editor_comments', 'Better fit for the target magazine.');
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.can_respond_transfer_request', false)
+            ->assertJsonPath('article.pending_transfer_request.id', $transferRequest->id);
+
+        $this->article->update(['user_id' => $this->editor->id]);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.can_respond_transfer_request', false);
+        $this->postJson("/api/articles/{$this->article->id}/transfer-requests/{$transferRequest->id}/accept")
+            ->assertForbidden();
+
+        Sanctum::actingAs($this->outsider);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertForbidden();
+    }
+
     public function test_author_can_reject_pending_transfer_with_reason(): void
     {
         $transferRequest = $this->createPendingTransfer();

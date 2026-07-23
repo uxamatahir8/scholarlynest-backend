@@ -11,6 +11,7 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Services\Media\MediaStorageService;
 use App\Services\MfaService;
+use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -577,6 +578,7 @@ class RbacController extends Controller
         }
 
         $previousRole = $user->role;
+        $previousMagazineIds = $user->magazines()->pluck('magazines.id')->map(fn ($id) => (int) $id)->sort()->values()->all();
         $assignedRole = Role::find($request->role_id);
         if ($this->isInactiveRole($assignedRole)) {
             return response()->json(['message' => 'Proofreader is inactive and cannot be assigned to users.'], 422);
@@ -618,7 +620,7 @@ class RbacController extends Controller
                 throw new \Exception('Simulated database failure during update transaction');
             }
 
-            $updatedUser = DB::transaction(function () use ($request, $user, $isSubEditor, $previousRole, $assignedRole, $magazineIds) {
+            $updatedUser = DB::transaction(function () use ($request, $user, $isSubEditor, $previousRole, $assignedRole, $magazineIds, $previousMagazineIds) {
                 $updateData = [
                     'name' => $request->name,
                     'email' => $request->email,
@@ -647,6 +649,18 @@ class RbacController extends Controller
                     $magazineIds,
                     $request->user()?->id
                 );
+
+                $currentMagazineIds = $user->magazines()->pluck('magazines.id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+                if ((int) $previousRole?->id !== (int) $user->role_id || $previousMagazineIds !== $currentMagazineIds) {
+                    app(NotificationEventRecorder::class)->record(
+                        'account.role_or_scope_changed', null, $request->user(), [
+                            'recipient_user_id' => $user->id,
+                            'recipient_privacy_variant' => 'account',
+                        ],
+                        'user', $user->id,
+                        deduplicationKey: hash('sha256', "rbac-user:{$user->id}:{$user->updated_at?->format('Y-m-d H:i:s.u')}:{$user->role_id}:".implode(',', $currentMagazineIds))
+                    );
+                }
 
                 return $user;
             });
@@ -1416,7 +1430,7 @@ class RbacController extends Controller
 
     private function assignedEditorPayload(User $user): array
     {
-        if (!$user->relationLoaded('assignedEditors')) {
+        if (! $user->relationLoaded('assignedEditors')) {
             return [];
         }
 
@@ -1430,7 +1444,7 @@ class RbacController extends Controller
 
     private function assignedPublicationPayload(User $user): array
     {
-        if (!$user->relationLoaded('magazines')) {
+        if (! $user->relationLoaded('magazines')) {
             return [];
         }
 

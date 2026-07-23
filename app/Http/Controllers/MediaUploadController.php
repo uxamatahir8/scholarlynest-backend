@@ -12,8 +12,11 @@ use App\Services\Media\DirectS3UploadService;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\MediaUploadPolicy;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -29,6 +32,7 @@ class MediaUploadController extends Controller
     {
         $validated = $request->validate([
             'purpose' => ['required', 'string', Rule::in(array_keys(config('media_uploads.purposes')))],
+            'client_upload_id' => ['nullable', 'uuid'],
             'attachable_id' => ['nullable', 'integer', 'min:1'],
             'original_filename' => ['required', 'string', 'max:255'],
             'size_bytes' => ['required', 'integer', 'min:1'],
@@ -43,6 +47,37 @@ class MediaUploadController extends Controller
         $purposeConfig = $this->policy->configForPurpose($validated['purpose']);
         $attachable = $this->policy->resolveAttachable($validated['purpose'], $validated['attachable_id'] ?? null);
         $this->policy->authorizeInitiate($request->user(), $validated['purpose'], $attachable, $validated);
+
+        if (!empty($validated['client_upload_id'])) {
+            $existing = MediaUploadSession::query()
+                ->where('user_id', $request->user()->id)
+                ->where('purpose', $validated['purpose'])
+                ->where('client_upload_id', $validated['client_upload_id'])
+                ->first();
+
+            if ($existing) {
+                $sameLogicalUpload = $existing->attachable_type === ($attachable ? $attachable::class : null)
+                    && (int) ($existing->attachable_id ?? 0) === (int) ($attachable?->getKey() ?? 0)
+                    && $existing->original_filename === $validated['original_filename']
+                    && (int) $existing->expected_size_bytes === (int) $validated['size_bytes'];
+                if (!$sameLogicalUpload) {
+                    return response()->json(['message' => 'This upload identifier is already assigned to another file.'], 409);
+                }
+
+                Log::info('upload.initiation_duplicate', [
+                    'user_id' => $request->user()->id,
+                    'upload_session_id' => $existing->id,
+                    'purpose' => $existing->purpose,
+                    'status' => $existing->status,
+                ]);
+
+                return response()->json([
+                    'message' => 'The existing upload session was restored.',
+                    'upload' => $this->uploadPayload($existing),
+                    'reused' => true,
+                ]);
+            }
+        }
 
         if ($validated['size_bytes'] > (int) $purposeConfig['max_size_bytes']) {
             $limitMb = round(((int) $purposeConfig['max_size_bytes']) / 1024 / 1024, 1);
@@ -68,14 +103,27 @@ class MediaUploadController extends Controller
 
         $safeName = $this->policy->sanitizeFilename($validated['original_filename']);
         $extension = Str::lower(pathinfo($safeName, PATHINFO_EXTENSION));
-        if ($extension && !in_array($extension, $purposeConfig['extensions'] ?? [], true)) {
-            $allowed = collect($purposeConfig['extensions'] ?? [])->map(fn ($item) => strtoupper($item))->join(', ');
-            return response()->json(['message' => "Unsupported file type. Allowed: {$allowed}."], 422);
+        if ($extension) {
+            $isWorkflow = \App\Services\Media\UploadValidationService::isWorkflowPurpose($validated['purpose']);
+            $allowedList = $purposeConfig['extensions'] ?? [];
+            if (!in_array($extension, $allowedList, true)) {
+                if ($isWorkflow) {
+                    $errorPayload = \App\Services\Media\UploadValidationService::getStructuredError('EXTENSION_NOT_ALLOWED', $safeName, $allowedList);
+                    return response()->json([
+                        'message' => $errorPayload['message'],
+                        'code' => $errorPayload['code'],
+                        'details' => $errorPayload,
+                    ], 422);
+                }
+                $allowed = collect($allowedList)->map(fn ($item) => strtoupper($item))->join(', ');
+                return response()->json(['message' => "Unsupported file type. Allowed: {$allowed}."], 422);
+            }
         }
 
         $mode = $validated['size_bytes'] >= config('media_uploads.multipart_threshold_bytes') ? 'multipart' : 'single';
         $session = new MediaUploadSession([
             'user_id' => $request->user()->id,
+            'client_upload_id' => $validated['client_upload_id'] ?? null,
             'purpose' => $validated['purpose'],
             'attachable_type' => $attachable ? $attachable::class : null,
             'attachable_id' => $attachable?->getKey(),
@@ -101,7 +149,38 @@ class MediaUploadController extends Controller
             $session->s3_upload_id = 'pending';
         }
 
-        $session->save();
+        try {
+            $session->save();
+        } catch (QueryException $exception) {
+            if (!$session->client_upload_id || !str_contains((string) $exception->getCode(), '23')) {
+                throw $exception;
+            }
+            $existing = MediaUploadSession::query()
+                ->where('user_id', $request->user()->id)
+                ->where('purpose', $session->purpose)
+                ->where('client_upload_id', $session->client_upload_id)
+                ->firstOrFail();
+
+            Log::info('upload.initiation_duplicate', [
+                'user_id' => $request->user()->id,
+                'upload_session_id' => $existing->id,
+                'purpose' => $existing->purpose,
+                'status' => $existing->status,
+            ]);
+
+            return response()->json([
+                'message' => 'The existing upload session was restored.',
+                'upload' => $this->uploadPayload($existing),
+                'reused' => true,
+            ]);
+        }
+
+        Log::info('upload.initiated', [
+            'user_id' => $request->user()->id,
+            'upload_session_id' => $session->id,
+            'article_id' => $attachable instanceof Article ? $attachable->id : null,
+            'purpose' => $session->purpose,
+        ]);
 
         if ($mode === 'multipart') {
             $session->s3_upload_id = $this->s3->createMultipartUpload($session);
@@ -160,6 +239,11 @@ class MediaUploadController extends Controller
     {
         $this->authorizeSession($request, $upload);
         if (in_array($upload->status, [MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN, MediaUploadSession::STATUS_CLEAN], true)) {
+            Log::info('upload.completion_duplicate', [
+                'user_id' => $request->user()->id,
+                'upload_session_id' => $upload->id,
+                'purpose' => $upload->purpose,
+            ]);
             return response()->json([
                 'message' => 'This upload session is already complete.',
                 'upload' => $this->uploadPayload($upload),
@@ -206,8 +290,26 @@ class MediaUploadController extends Controller
             $upload->uploaded_part_manifest = $parts;
         }
 
-        $head = $this->s3->head($upload);
+        try {
+            $head = $this->s3->head($upload);
+        } catch (\Throwable $exception) {
+            $upload->forceFill([
+                'status' => MediaUploadSession::STATUS_SCAN_FAILED,
+                'failure_reason' => 'incoming_object_missing',
+            ])->save();
+            Log::warning('upload.missing_s3_object', [
+                'user_id' => $request->user()->id,
+                'upload_session_id' => $upload->id,
+                'purpose' => $upload->purpose,
+            ]);
+
+            return response()->json(['message' => 'The upload did not reach storage. Please retry.'], 422);
+        }
         if ((int) ($head['ContentLength'] ?? 0) !== (int) $upload->expected_size_bytes) {
+            $upload->forceFill([
+                'status' => MediaUploadSession::STATUS_SCAN_FAILED,
+                'failure_reason' => 'incoming_object_size_mismatch',
+            ])->save();
             return response()->json(['message' => 'The uploaded object size does not match the initiated upload.'], 422);
         }
 
@@ -227,6 +329,13 @@ class MediaUploadController extends Controller
         });
 
         $upload->refresh();
+        Log::info('upload.s3_completed', [
+            'user_id' => $request->user()->id,
+            'upload_session_id' => $upload->id,
+            'article_id' => $upload->attachable instanceof Article ? $upload->attachable->id : null,
+            'purpose' => $upload->purpose,
+            'article_file_id' => data_get($upload->metadata, 'article_file_id'),
+        ]);
         ScanPendingMedia::dispatch($upload->id);
 
         return response()->json([
@@ -240,12 +349,21 @@ class MediaUploadController extends Controller
         $this->authorizeSession($request, $upload);
         if ($upload->upload_mode === 'multipart' && !$upload->isTerminal()) {
             $this->s3->abortMultipart($upload);
+        } elseif (!$upload->isTerminal() && Storage::disk($upload->disk)->exists($upload->s3_incoming_key)) {
+            Storage::disk($upload->disk)->delete($upload->s3_incoming_key);
         }
 
         $upload->forceFill([
             'status' => MediaUploadSession::STATUS_ABORTED,
             'failure_reason' => 'aborted_by_user',
         ])->save();
+
+        Log::info('upload.cancelled', [
+            'user_id' => $request->user()->id,
+            'upload_session_id' => $upload->id,
+            'article_id' => $upload->attachable instanceof Article ? $upload->attachable->id : null,
+            'purpose' => $upload->purpose,
+        ]);
 
         return response()->json(['message' => 'Upload aborted.']);
     }

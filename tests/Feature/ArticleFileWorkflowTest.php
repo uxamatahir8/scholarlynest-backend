@@ -126,6 +126,10 @@ class ArticleFileWorkflowTest extends TestCase
         $this->getJson("/api/articles/files/{$file->id}/download")
             ->assertRedirect();
 
+        $this->getJson("/api/articles/files/{$file->id}/download?json=1")
+            ->assertStatus(200)
+            ->assertJsonStructure(['download_url', 'filename']);
+
         $unrelatedRole = Role::create(['name' => 'support_agent', 'display_name' => 'Support Agent']);
         $unrelatedUser = User::factory()->create(['role_id' => $unrelatedRole->id]);
         Sanctum::actingAs($unrelatedUser);
@@ -164,7 +168,7 @@ class ArticleFileWorkflowTest extends TestCase
             'attachable_id' => $this->article->id,
             'original_filename' => $filename,
             'safe_display_filename' => $filename,
-            'expected_size_bytes' => 16,
+            'expected_size_bytes' => strlen('clean test file'),
             'declared_mime_type' => str_ends_with($filename, '.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'disk' => 's3',
             's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,

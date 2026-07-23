@@ -413,7 +413,7 @@ class ArticleWorkflowCompletionTest extends TestCase
             'purpose' => 'publication_section_image',
             'original_filename' => 'section.webp',
             'safe_display_filename' => 'section.webp',
-            'expected_size_bytes' => 512,
+            'expected_size_bytes' => strlen('image-bytes'),
             'declared_mime_type' => 'image/webp',
             'detected_mime_type' => 'image/webp',
             'disk' => 's3',

@@ -98,6 +98,7 @@ class AdvertisementController extends Controller
             'redirect_url' => $advertisement->redirect_url,
             'open_in_new_tab' => $advertisement->open_in_new_tab,
             'placement' => $advertisement->placement,
+            'sidebar_side' => $advertisement->sidebar_side,
             'status' => $advertisement->status,
             'priority' => $advertisement->priority,
             'starts_at' => $advertisement->starts_at?->toISOString(),

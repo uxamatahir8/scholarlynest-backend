@@ -58,6 +58,7 @@ class ArticleStatusNormalizationTest extends TestCase
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'terms_accepted' => true,
+            'pdf_upload_id' => $this->cleanManuscriptUpload($this->author)->id,
         ])->assertStatus(211)
             ->assertJsonPath('article.status', ArticleStatus::SUBMITTED);
     }
@@ -171,8 +172,8 @@ class ArticleStatusNormalizationTest extends TestCase
             $article = $this->articleWithStatus("editable-{$status}", $status);
 
             $this->putJson("/api/admin/articles/{$article->id}", $this->updatePayload($article, "Updated {$status}"))
-                ->assertStatus(200)
-                ->assertJsonPath('article.status', $status);
+                ->assertStatus(422)
+                ->assertJsonPath('message', 'This manuscript cannot be edited at its current workflow stage.');
         }
     }
 
@@ -222,13 +223,21 @@ class ArticleStatusNormalizationTest extends TestCase
         ]);
     }
 
-    private function updatePayload(Article $article, string $title): array
+    private function updatePayload(Article $article, string $title, ?User $user = null): array
     {
-        return [
+        $payload = [
             'magazine_id' => $article->magazine_id,
             'title' => $title,
             'abstract' => $article->abstract,
             'full_text' => $article->full_text,
         ];
+
+        if (ArticleStatus::isRevisionRequired($article->status)) {
+            $uploader = $user ?: $this->author;
+            $payload['pdf_upload_id'] = $this->cleanManuscriptUpload($uploader, null, 'article_revision')->id;
+            $payload['revision_response_upload_id'] = $this->cleanManuscriptUpload($uploader, null, 'article_revision_response')->id;
+        }
+
+        return $payload;
     }
 }

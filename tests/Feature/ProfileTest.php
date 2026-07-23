@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\MediaUploadSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ProfileTest extends TestCase
@@ -70,6 +71,8 @@ class ProfileTest extends TestCase
     public function test_profile_image_requires_owned_clean_profile_upload(): void
     {
         Sanctum::actingAs($this->user);
+        Storage::fake('s3');
+        Storage::disk('s3')->put('clean/profiles/avatar.png', str_repeat('a', 1024));
 
         $upload = MediaUploadSession::create([
             'user_id' => $this->user->id,
