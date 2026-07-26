@@ -91,4 +91,9 @@ class ArticleVersion extends Model
     {
         return $this->belongsTo(User::class, 'accepted_by');
     }
+
+    public function threads(): HasMany
+    {
+        return $this->hasMany(ArticleThread::class);
+    }
 }

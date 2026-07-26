@@ -253,4 +253,9 @@ class User extends Authenticatable
     {
         return $this->hasMany(NotificationPreference::class);
     }
+
+    public function articleThreadParticipations(): HasMany
+    {
+        return $this->hasMany(ArticleThreadParticipant::class);
+    }
 }

@@ -294,6 +294,11 @@ class Article extends Model
         return $this->hasMany(ArticleAuditLog::class);
     }
 
+    public function threads(): HasMany
+    {
+        return $this->hasMany(ArticleThread::class);
+    }
+
     public function transferRequests(): HasMany
     {
         return $this->hasMany(ArticleTransferRequest::class);
