@@ -26,6 +26,7 @@
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_CONNECTION" value="sqlite" force="true"/>
         <env name="DB_HOST" value="sqlite-local" force="true"/>
+        <env name="DB_PORT" value="0" force="true"/>
         <env name="DB_DATABASE" value="/tmp/scholarlynest_testing" force="true"/>
         <env name="DB_USERNAME" value="sqlite-file-only" force="true"/>
         <env name="DB_URL" value="" force="true"/>
