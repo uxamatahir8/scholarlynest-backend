@@ -2,18 +2,18 @@
 
 namespace App\Models;
 
+use App\Services\Media\MediaStorageService;
+use App\Traits\Auditable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use App\Services\Media\MediaStorageService;
-use App\Traits\Auditable;
 
 class Article extends Model
 {
-    use HasFactory, Auditable;
+    use Auditable, HasFactory;
 
     protected $appends = [
         'featured_image_url',
@@ -53,6 +53,10 @@ class Article extends Model
         'abbreviations',
         'citation_text',
         'status',
+        'lifecycle_status',
+        'current_version_id',
+        'accepted_version_id',
+        'lifecycle_sequence',
         'terms_accepted_at',
         'terms_accepted_by',
         'terms_acceptance_ip',
@@ -100,7 +104,7 @@ class Article extends Model
     protected static function booted(): void
     {
         static::created(function (Article $article) {
-            if (!$article->tracking_code) {
+            if (! $article->tracking_code) {
                 $year = optional($article->created_at)->format('Y') ?: now()->format('Y');
                 $article->forceFill([
                     'tracking_code' => sprintf('SN-%s-%06d', $year, $article->id),
@@ -232,6 +236,31 @@ class Article extends Model
     public function latestVersion(): HasOne
     {
         return $this->hasOne(ArticleVersion::class)->ofMany('version_number', 'max');
+    }
+
+    public function currentVersion(): BelongsTo
+    {
+        return $this->belongsTo(ArticleVersion::class, 'current_version_id');
+    }
+
+    public function acceptedVersion(): BelongsTo
+    {
+        return $this->belongsTo(ArticleVersion::class, 'accepted_version_id');
+    }
+
+    public function proofRounds(): HasMany
+    {
+        return $this->hasMany(ProofRound::class);
+    }
+
+    public function publicationRecords(): HasMany
+    {
+        return $this->hasMany(PublicationRecord::class);
+    }
+
+    public function latestPublicationRecord(): HasOne
+    {
+        return $this->hasOne(PublicationRecord::class)->latestOfMany();
     }
 
     public function acceptedFileSets(): HasMany

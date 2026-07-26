@@ -28,6 +28,7 @@ use App\Models\MagazineIssue;
 use App\Models\MediaUploadSession;
 use App\Models\PostPublicationAction;
 use App\Models\ProductionAssignment;
+use App\Models\ProofRound;
 use App\Models\ReviewerAssignment;
 use App\Models\ReviewQuestion;
 use App\Models\ReviewQuestionnaire;
@@ -42,6 +43,7 @@ use App\Services\AcceptedFileSetService;
 use App\Services\ArticleVersionFileSectionResolver;
 use App\Services\ArticleVersionService;
 use App\Services\CitationService;
+use App\Services\LifecycleStatusProjector;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\UploadValidationService;
@@ -50,6 +52,7 @@ use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
 use App\Services\PdfGeneratorService;
 use App\Services\Security\HtmlSanitizer;
+use App\Services\WorkflowTabManifestService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -88,6 +91,11 @@ class ArticleWorkflowController extends Controller
             'auditLogs.actor:id,name',
             'versions.creator:id,name',
             'versions.files.uploader:id,name',
+            'currentVersion',
+            'proofRounds.sourceFile',
+            'proofRounds.authorFile',
+            'proofRounds.correctedFile',
+            'publicationRecords.files.file',
             'pendingTransferRequest.fromMagazine:id,title,slug',
             'pendingTransferRequest.toMagazine:id,title,slug',
             'pendingTransferRequest.requestedBy:id,name,email',
@@ -103,6 +111,8 @@ class ArticleWorkflowController extends Controller
             'capabilities' => $articlePayload['capabilities'] ?? [],
             'current_user_action' => $articlePayload['current_user_action'] ?? null,
             'unassigned_legacy_files' => $articlePayload['unassigned_legacy_files'] ?? [],
+            'workflow_manifest' => app(WorkflowTabManifestService::class)->manifest($article, $request->user()),
+            'status_projection' => app(LifecycleStatusProjector::class)->projection($article, $request->user()),
         ]);
     }
 
@@ -406,6 +416,34 @@ class ArticleWorkflowController extends Controller
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
             ]);
+            $version = $article->currentVersion()->lockForUpdate()->first()
+                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
+            if (! $version) {
+                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for screening.'], 409));
+            }
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            }
+            if ($version->screening_status !== 'pending') {
+                throw new HttpResponseException(response()->json(['message' => 'Screening has already been completed for this version.'], 409));
+            }
+            $version->update([
+                'screening_status' => $request->decision === 'reject' ? 'rejected' : 'passed',
+                'screened_at' => now(),
+                'screened_by' => $request->user()->id,
+            ]);
+            if ($request->decision === 'reject') {
+                EditorialDecision::create([
+                    'article_id' => $article->id,
+                    'article_version_id' => $version->id,
+                    'round_number' => 1,
+                    'decision_by' => $request->user()->id,
+                    'decision' => 'rejected',
+                    'decision_source' => 'screening',
+                    'decision_date' => now(),
+                    'comments_for_author' => $request->comments,
+                ]);
+            }
 
             $this->audit($article, $request->user()->id, 'article.screened', $oldStatus, $nextStatus, $request->validated());
             event(new ArticleWorkflowEventOccurred(
@@ -449,12 +487,20 @@ class ArticleWorkflowController extends Controller
         }
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus) {
-            $assignment = SubEditorAssignment::updateOrCreate(
+            $versionId = $article->current_version_id ?: $article->versions()->latest('version_number')->value('id');
+            if (! $versionId) {
+                throw new HttpResponseException(response()->json(['message' => 'A submitted article version is required.'], 409));
+            }
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $versionId])->saveQuietly();
+            }
+            SubEditorAssignment::query()->where('article_version_id', $versionId)->whereNull('revoked_at')->update(['status' => 'superseded', 'revoked_at' => now()]);
+            $assignment = SubEditorAssignment::create(
                 [
                     'article_id' => $article->id,
+                    'article_version_id' => $versionId,
+                    'round_number' => 1,
                     'sub_editor_id' => $request->sub_editor_id,
-                ],
-                [
                     'assigned_by' => $request->user()->id,
                     'status' => 'pending',
                     'due_date' => $request->due_date,
@@ -506,6 +552,16 @@ class ArticleWorkflowController extends Controller
         $inviteeName = $reviewer?->name ?: ($preference?->name ?: $request->input('name'));
         $inviteeEmail = strtolower(trim((string) ($reviewer?->email ?: ($preference?->email ?: $request->input('email')))));
         $this->assertReviewerInviteAllowed($article, $inviteeEmail);
+        $version = $article->currentVersion()->first() ?: $article->versions()->latest('version_number')->first();
+        if ($version && ! $article->current_version_id) {
+            $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+        }
+        if ($version && $version->screening_status === 'pending' && in_array(ArticleStatus::normalize($article->status), [ArticleStatus::UNDER_REVIEW, ArticleStatus::ASSIGNED_TO_SUB_EDITOR, ArticleStatus::SUB_EDITOR_RECOMMENDED, ArticleStatus::REVIEWER_ASSIGNED, ArticleStatus::REVIEW_IN_PROGRESS, ArticleStatus::RESUBMITTED], true)) {
+            $version->update(['screening_status' => 'passed', 'screened_at' => $article->screened_at ?: now(), 'screened_by' => $article->screened_by ?: $request->user()->id]);
+        }
+        if (! $version || $version->screening_status !== 'passed') {
+            return response()->json(['message' => 'Reviewer invitation is prohibited until the current version passes screening.'], 409);
+        }
 
         $existingReviewer = User::whereRaw('LOWER(email) = ?', [$inviteeEmail])->first();
         if ($existingReviewer && $existingReviewer->hasRole('reviewer')) {
@@ -514,6 +570,7 @@ class ArticleWorkflowController extends Controller
 
         $duplicate = ReviewerAssignment::query()
             ->where('article_id', $article->id)
+            ->where('article_version_id', $version->id)
             ->where(function ($query) use ($reviewer, $inviteeEmail) {
                 if ($reviewer) {
                     $query->where('reviewer_id', $reviewer->id);
@@ -530,6 +587,7 @@ class ArticleWorkflowController extends Controller
 
         $declinedAssignment = ReviewerAssignment::query()
             ->where('article_id', $article->id)
+            ->where('article_version_id', $version->id)
             ->where(function ($query) use ($reviewer, $inviteeEmail) {
                 if ($reviewer) {
                     $query->where('reviewer_id', $reviewer->id);
@@ -544,9 +602,11 @@ class ArticleWorkflowController extends Controller
 
         $rawToken = Str::random(48);
 
-        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $declinedAssignment) {
+        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $declinedAssignment, $version) {
             $assignmentData = [
                 'article_id' => $article->id,
+                'article_version_id' => $version->id,
+                'round_number' => 1,
                 'reviewer_id' => $reviewer?->id,
                 'invitee_name' => $inviteeName,
                 'invitee_email' => $inviteeEmail,
@@ -645,6 +705,8 @@ class ArticleWorkflowController extends Controller
                 'recommendation' => $request->recommendation,
                 'comments' => trim(($request->comments ?? '')."\n\nInternal notes:\n".($request->internal_notes ?? '')),
                 'completed_at' => now(),
+                'author_comments' => $request->comments,
+                'internal_comments' => $request->internal_notes,
             ]);
 
             $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
@@ -943,8 +1005,21 @@ class ArticleWorkflowController extends Controller
         };
 
         $decision = DB::transaction(function () use ($request, $article, $oldStatus, $decisionStatus, $decisionEvent) {
+            $version = $article->currentVersion()->lockForUpdate()->first()
+                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
+            if (! $version) {
+                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for an editorial decision.'], 409));
+            }
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            }
+            if ($article->editorialDecisions()->where('article_version_id', $version->id)->exists()) {
+                throw new HttpResponseException(response()->json(['message' => 'An editorial decision already exists for this version.'], 409));
+            }
             $decision = EditorialDecision::create([
                 'article_id' => $article->id,
+                'article_version_id' => $version->id,
+                'round_number' => 1,
                 'decision_by' => $request->user()->id,
                 'decision' => $request->decision,
                 'decision_source' => $request->decision_source,
@@ -955,6 +1030,7 @@ class ArticleWorkflowController extends Controller
 
             if ($decisionStatus === ArticleStatus::ACCEPTED) {
                 $this->acceptedFileSetService->createForCurrentSubmission($article, $request->user());
+                $article->accepted_version_id = $version->id;
             }
 
             $article->update([
@@ -1015,6 +1091,7 @@ class ArticleWorkflowController extends Controller
         $nextStatus = $isDenied ? ArticleStatus::COPY_EDITING : ArticleStatus::READY_FOR_PUBLICATION;
         DB::transaction(function () use ($article, $user, $oldStatus, $nextStatus, $isDenied, $validated) {
             Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            $proof = $article->proofRounds()->whereIn('status', ['awaiting_author', 'resent'])->latest('round_number')->lockForUpdate()->first();
 
             if ($isDenied) {
                 $article->update([
@@ -1031,6 +1108,7 @@ class ArticleWorkflowController extends Controller
                     ->latest('id')
                     ->limit(1)
                     ->update(['status' => 'pending', 'completed_at' => null]);
+                $proof?->update(['status' => 'corrections_requested', 'responded_at' => now(), 'author_comments' => $validated['reason']]);
             } else {
                 $article->update([
                     'status' => $nextStatus,
@@ -1040,6 +1118,7 @@ class ArticleWorkflowController extends Controller
                     'author_final_rejection_reason' => null,
                     'author_final_review_due_at' => null,
                 ]);
+                $proof?->update(['status' => 'approved', 'responded_at' => now(), 'approved_at' => now(), 'approved_by' => $user->id, 'active_marker' => null]);
             }
 
             $this->audit(
@@ -1087,13 +1166,15 @@ class ArticleWorkflowController extends Controller
         }
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $nextStatus) {
-            $assignment = ProductionAssignment::updateOrCreate(
+            $set = $article->activeAcceptedFileSet()->firstOrFail();
+            ProductionAssignment::query()->where('article_id', $article->id)->where('role', $request->role)->whereNull('revoked_at')->update(['status' => 'superseded', 'revoked_at' => now()]);
+            $assignment = ProductionAssignment::create(
                 [
                     'article_id' => $article->id,
+                    'article_version_id' => $set->article_version_id,
+                    'accepted_file_set_id' => $set->id,
                     'user_id' => $request->user_id,
                     'role' => $request->role,
-                ],
-                [
                     'assigned_by' => $request->user()->id,
                     'status' => 'pending',
                     'due_date' => $request->due_date,
@@ -1172,7 +1253,7 @@ class ArticleWorkflowController extends Controller
         }
 
         $reviewRequestedAt = now();
-        DB::transaction(function () use ($assignment, $user, $oldStatus, $reviewRequestedAt): void {
+        DB::transaction(function () use ($assignment, $user, $oldStatus, $reviewRequestedAt, $storedFile): void {
             $assignment->update([
                 'status' => 'completed',
                 'completed_at' => $reviewRequestedAt,
@@ -1188,6 +1269,23 @@ class ArticleWorkflowController extends Controller
                 'author_final_rejection_reason' => null,
                 'author_final_auto_approved_at' => null,
             ]);
+            $acceptedSet = $assignment->article->activeAcceptedFileSet()->first();
+            $sourceFileId = $storedFile?->id ?: $acceptedSet?->items()->where('accepted_role', 'manuscript')->value('article_file_id');
+            if ($acceptedSet && $sourceFileId) {
+                ProofRound::firstOrCreate([
+                    'article_id' => $assignment->article_id,
+                    'round_number' => ((int) $assignment->article->proofRounds()->max('round_number')) + 1,
+                ], [
+                    'article_version_id' => $acceptedSet->article_version_id,
+                    'accepted_file_set_id' => $acceptedSet->id,
+                    'production_assignment_id' => $assignment->id,
+                    'status' => 'awaiting_author',
+                    'source_file_id' => $sourceFileId,
+                    'requested_at' => $reviewRequestedAt,
+                    'due_at' => $reviewRequestedAt->copy()->addDays(14),
+                    'active_marker' => 1,
+                ]);
+            }
             $this->audit($assignment->article, $user->id, 'production.completed', $oldStatus, ArticleStatus::PROOFREADING, [
                 'production_assignment_id' => $assignment->id,
                 'author_review_due_at' => $reviewRequestedAt->copy()->addDays(14)->toIso8601String(),
@@ -2180,8 +2278,9 @@ class ArticleWorkflowController extends Controller
             'competing_interests_statement' => $article->competing_interests_statement,
             'abbreviations' => $article->abbreviations,
             'citation_text' => $article->citation_text,
-            'citation_text' => $article->citation_text,
             'status' => $article->status,
+            'lifecycle_status' => app(LifecycleStatusProjector::class)->canonical($article),
+            'status_projection' => app(LifecycleStatusProjector::class)->projection($article, request()->user()),
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
             'page_start' => $article->page_start,
@@ -2627,6 +2726,44 @@ class ArticleWorkflowController extends Controller
             'accepted_file_set' => $canViewAcceptedFiles
                 ? $this->acceptedFileSetPayload($article->activeAcceptedFileSet, $user)
                 : null,
+            'proof_rounds' => ($isAuthor || $canViewEditorial || $canViewProduction)
+                ? collect($article->proofRounds ?? [])->sortByDesc('round_number')->map(fn ($round) => [
+                    'id' => $round->id,
+                    'round_number' => $round->round_number,
+                    'label' => $round->status === 'approved' ? 'Final Proof' : 'Proof '.$round->round_number,
+                    'status' => $round->status,
+                    'source_file_id' => $round->source_file_id,
+                    'author_file_id' => $round->author_file_id,
+                    'corrected_file_id' => $round->corrected_file_id,
+                    'author_comments' => $round->author_comments,
+                    'production_notes' => $canViewEditorial || $canViewProduction ? $round->production_notes : null,
+                    'requested_at' => $round->requested_at,
+                    'due_at' => $round->due_at,
+                    'responded_at' => $round->responded_at,
+                    'approved_at' => $round->approved_at,
+                ])->values() : [],
+            'publication_records' => $canViewPublication
+                ? collect($article->publicationRecords ?? [])->sortByDesc('id')->map(fn ($record) => [
+                    'id' => $record->id,
+                    'article_version_id' => $record->article_version_id,
+                    'accepted_file_set_id' => $record->accepted_file_set_id,
+                    'proof_round_id' => $record->proof_round_id,
+                    'magazine_issue_id' => $record->magazine_issue_id,
+                    'status' => $record->status,
+                    'doi' => $record->doi,
+                    'page_start' => $record->page_start,
+                    'page_end' => $record->page_end,
+                    'scheduled_for' => $record->scheduled_for,
+                    'published_at' => $record->published_at,
+                    'unpublished_at' => $record->unpublished_at,
+                    'files' => $record->files->map(fn ($selection) => [
+                        'id' => $selection->id,
+                        'article_file_id' => $selection->article_file_id,
+                        'public_role' => $selection->public_role,
+                        'is_primary' => $selection->is_primary,
+                        'is_public' => $selection->is_public,
+                    ])->values(),
+                ])->values() : [],
             'can_author_final_review' => $this->canApproveAuthorFinalReview($user, $article)
                 && ArticleStatus::normalize($article->status) === ArticleStatus::PROOFREADING
                 && ! $article->author_final_approved_at,

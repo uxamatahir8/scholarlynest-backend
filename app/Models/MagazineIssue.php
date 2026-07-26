@@ -2,10 +2,10 @@
 
 namespace App\Models;
 
+use App\Services\Media\MediaStorageService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use App\Services\Media\MediaStorageService;
 
 class MagazineIssue extends Model
 {
@@ -40,6 +40,11 @@ class MagazineIssue extends Model
     public function articles(): HasMany
     {
         return $this->hasMany(Article::class);
+    }
+
+    public function publicationRecords(): HasMany
+    {
+        return $this->hasMany(PublicationRecord::class);
     }
 
     public function getCoverImageUrlAttribute(): ?string

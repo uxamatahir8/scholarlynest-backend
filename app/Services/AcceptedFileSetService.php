@@ -47,7 +47,8 @@ class AcceptedFileSetService
                 ->where('article_id', $article->id)
                 ->whereNull('superseded_at')
                 ->pluck('id');
-            ArticleAcceptedFileSet::query()->whereIn('id', $supersededIds)->update(['superseded_at' => now()]);
+            ArticleAcceptedFileSet::query()->whereIn('id', $supersededIds)->update(['superseded_at' => now(), 'active_marker' => null]);
+            ArticleVersion::query()->where('article_id', $article->id)->where('id', '!=', $version->id)->update(['accepted_at' => null, 'accepted_by' => null, 'accepted_marker' => null]);
 
             $acceptedAt = now();
             $set = ArticleAcceptedFileSet::create([
@@ -56,6 +57,7 @@ class AcceptedFileSetService
                 'accepted_by' => $acceptedBy->id,
                 'accepted_at' => $acceptedAt,
                 'selection_policy' => ArticleAcceptedFileSet::POLICY_VERSION_LOCAL,
+                'active_marker' => 1,
             ]);
 
             $this->addItem($set, $manuscript, ArticleAcceptedFileSetItem::ROLE_MANUSCRIPT);
@@ -70,7 +72,9 @@ class AcceptedFileSetService
             $version->update([
                 'accepted_at' => $acceptedAt,
                 'accepted_by' => $acceptedBy->id,
+                'accepted_marker' => 1,
             ]);
+            $article->forceFill(['accepted_version_id' => $version->id])->saveQuietly();
 
             foreach ($supersededIds as $supersededId) {
                 app(NotificationEventRecorder::class)->record(

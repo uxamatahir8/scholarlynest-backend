@@ -177,6 +177,7 @@ class SendWorkflowDeadlineReminders extends Command
                         'reviewer_assignment', $assignment->id, deduplicationKey: $key
                     );
                     if ($event?->wasRecentlyCreated) {
+                        $assignment->update(['status' => 'expired']);
                         $this->recorded++;
                     }
                 }

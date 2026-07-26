@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Admin\AdvertisementController;
 use App\Http\Controllers\Admin\ArticleCategoryController;
+use App\Http\Controllers\Admin\ArticleLifecycleController;
 use App\Http\Controllers\Admin\ArticleTypeController;
 use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\DeskObserverController;
@@ -359,6 +360,25 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/accepted-files', [ArticleWorkflowController::class, 'acceptedFiles'])->middleware('permission:articles.view-own');
+        Route::prefix('lifecycle')->middleware('throttle:30,1')->group(function () {
+            Route::post('/articles/{article}/screen', [ArticleLifecycleController::class, 'screen']);
+            Route::post('/articles/{article}/sub-editors', [ArticleLifecycleController::class, 'assignSubEditor']);
+            Route::post('/sub-editor-assignments/{assignment}/recommendation', [ArticleLifecycleController::class, 'recommend']);
+            Route::post('/articles/{article}/reviewer-invitations', [ArticleLifecycleController::class, 'inviteReviewer']);
+            Route::post('/reviewer-assignments/{assignment}/response', [ArticleLifecycleController::class, 'reviewResponse']);
+            Route::post('/reviewer-assignments/{assignment}/review', [ArticleLifecycleController::class, 'submitReview']);
+            Route::post('/reviewer-assignments/{assignment}/reopen', [ArticleLifecycleController::class, 'reopenReview']);
+            Route::post('/articles/{article}/editorial-decisions', [ArticleLifecycleController::class, 'editorialDecision']);
+            Route::post('/articles/{article}/copy-editor', [ArticleLifecycleController::class, 'assignCopyEditor']);
+            Route::post('/production-assignments/{assignment}/complete-copyediting', [ArticleLifecycleController::class, 'completeCopyediting']);
+            Route::post('/articles/{article}/proof-rounds', [ArticleLifecycleController::class, 'requestProof']);
+            Route::post('/proof-rounds/{proof}/author-response', [ArticleLifecycleController::class, 'proofResponse']);
+            Route::post('/proof-rounds/{proof}/correction', [ArticleLifecycleController::class, 'correctProof']);
+            Route::post('/articles/{article}/publication-records', [ArticleLifecycleController::class, 'preparePublication']);
+            Route::put('/publication-records/{publication}/files', [ArticleLifecycleController::class, 'selectPublicationFiles']);
+            Route::post('/publication-records/{publication}/publish', [ArticleLifecycleController::class, 'publish']);
+            Route::post('/publication-records/{publication}/unpublish', [ArticleLifecycleController::class, 'unpublish']);
+        });
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');

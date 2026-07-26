@@ -72,6 +72,10 @@ class NotificationRecipientResolver
             default => collect(),
         };
 
+        if ($event->actor_id && ! str_starts_with($event->event_type, 'account.')) {
+            $resolved = $resolved->reject(fn ($item) => (int) ($item['user']?->id ?? 0) === (int) $event->actor_id);
+        }
+
         return $this->dedupe($resolved);
     }
 

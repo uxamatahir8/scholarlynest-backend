@@ -10,6 +10,7 @@ use App\Listeners\SendArticleWorkflowNotifications;
 use App\Mail\GenericSystemMail;
 use App\Models\Article;
 use App\Models\ArticleAuthor;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\NotificationLog;
 use App\Models\ReviewerAssignment;
@@ -66,6 +67,15 @@ class NotificationBlockerResolutionTest extends TestCase
             'full_text' => 'Manuscript',
             'status' => ArticleStatus::SCREENING,
         ]);
+        $version = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'status_snapshot' => ArticleStatus::SCREENING,
+            'submitted_at' => now(),
+            'screening_status' => 'pending',
+        ]);
+        $this->article->update(['current_version_id' => $version->id]);
     }
 
     public function test_dead_registry_events_are_removed_and_screening_emits_only_concrete_outcome(): void
@@ -272,7 +282,7 @@ class NotificationBlockerResolutionTest extends TestCase
 
         $variants = UserNotification::where('notification_event_id', $event->id)->where('recipient_user_id', $this->editor->id)
             ->orderBy('privacy_variant')->pluck('privacy_variant')->all();
-        $this->assertSame(['author', 'editor'], $variants);
+        $this->assertSame([], $variants, 'The triggering actor must not receive their own workflow notification.');
 
         $invalid = app(NotificationEventRecorder::class)->record(
             'account.email_changed', null, $this->author,

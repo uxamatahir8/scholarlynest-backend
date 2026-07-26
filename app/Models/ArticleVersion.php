@@ -10,6 +10,7 @@ class ArticleVersion extends Model
 {
     protected $fillable = [
         'article_id',
+        'parent_version_id',
         'manuscript_file_id',
         'created_by',
         'version_number',
@@ -17,6 +18,12 @@ class ArticleVersion extends Model
         'revision_tracking_code',
         'label',
         'status_snapshot',
+        'screening_status',
+        'screened_at',
+        'screened_by',
+        'submitted_at',
+        'locked_at',
+        'accepted_marker',
         'accepted_at',
         'accepted_by',
         'metadata_snapshot',
@@ -27,6 +34,9 @@ class ArticleVersion extends Model
 
     protected $casts = [
         'accepted_at' => 'datetime',
+        'screened_at' => 'datetime',
+        'submitted_at' => 'datetime',
+        'locked_at' => 'datetime',
         'metadata_snapshot' => 'array',
         'file_snapshot' => 'array',
     ];
@@ -34,6 +44,16 @@ class ArticleVersion extends Model
     public function article(): BelongsTo
     {
         return $this->belongsTo(Article::class);
+    }
+
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'parent_version_id');
+    }
+
+    public function children(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_version_id');
     }
 
     public function creator(): BelongsTo
@@ -44,6 +64,21 @@ class ArticleVersion extends Model
     public function files(): HasMany
     {
         return $this->hasMany(ArticleFile::class);
+    }
+
+    public function subEditorAssignments(): HasMany
+    {
+        return $this->hasMany(SubEditorAssignment::class);
+    }
+
+    public function reviewerAssignments(): HasMany
+    {
+        return $this->hasMany(ReviewerAssignment::class);
+    }
+
+    public function editorialDecisions(): HasMany
+    {
+        return $this->hasMany(EditorialDecision::class);
     }
 
     public function manuscriptFile(): BelongsTo

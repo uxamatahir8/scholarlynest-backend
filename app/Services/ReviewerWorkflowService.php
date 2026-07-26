@@ -1,0 +1,104 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Article;
+use App\Models\ReviewerAssignment;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+class ReviewerWorkflowService
+{
+    public function invite(Article $article, User $actor, int $versionId, ?int $reviewerId, ?string $name, ?string $email, ?string $dueAt, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($article, $actor, 'invite-reviewer', $key, ['article_version_id' => $versionId, 'reviewer_id' => $reviewerId], 'reviewer.invited', 'reviewer.invited',
+            function (Article $locked) use ($actor, $versionId, $reviewerId, $name, $email, $dueAt, $key) {
+                $version = $locked->versions()->whereKey($versionId)->lockForUpdate()->first();
+                if (! $version || (int) $locked->current_version_id !== $versionId) {
+                    app(ArticleLifecycleService::class)->conflict('Reviewers can only be invited to the current article version.');
+                }
+                if ($version->screening_status !== 'passed') {
+                    app(ArticleLifecycleService::class)->conflict('Reviewer invitation is prohibited until this version passes screening.');
+                }
+                $normalizedEmail = strtolower(trim((string) ($email ?: User::find($reviewerId)?->email)));
+                if (! $reviewerId && ! $normalizedEmail) {
+                    app(ArticleLifecycleService::class)->conflict('A reviewer or invitation email is required.');
+                }
+                $duplicate = ReviewerAssignment::query()->where('article_version_id', $versionId)->where('round_number', 1)
+                    ->whereNull('revoked_at')->whereIn('status', ['pending', 'invited', 'accepted', 'in_progress'])
+                    ->where(function ($query) use ($reviewerId, $normalizedEmail) {
+                        if ($reviewerId) {
+                            $query->where('reviewer_id', $reviewerId);
+                        }
+                        if ($normalizedEmail) {
+                            $query->orWhere('invitee_email', $normalizedEmail);
+                        }
+                    })->exists();
+                if ($duplicate) {
+                    app(ArticleLifecycleService::class)->conflict('An active invitation already exists for this reviewer and version.');
+                }
+                $rawToken = Str::random(64);
+                $assignment = ReviewerAssignment::create([
+                    'article_id' => $locked->id, 'article_version_id' => $versionId, 'round_number' => 1,
+                    'reviewer_id' => $reviewerId, 'invitee_name' => $name ?: User::find($reviewerId)?->name,
+                    'invitee_email' => $normalizedEmail, 'invite_token_hash' => hash('sha256', $rawToken),
+                    'invited_at' => now(), 'invite_expires_at' => now()->addDays(14), 'assigned_by' => $actor->id,
+                    'status' => 'invited', 'due_date' => $dueAt, 'idempotency_key' => $key,
+                ]);
+                DB::afterCommit(fn () => app(ReviewerInvitationDeliveryService::class)->send($assignment->id, $rawToken));
+
+                return ['assignment_id' => $assignment->id, 'article_version_id' => $versionId];
+            });
+    }
+
+    public function respond(ReviewerAssignment $assignment, User $actor, bool $accept, ?string $reason, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, $accept ? 'accept-review' : 'decline-review', $key, ['assignment_id' => $assignment->id], $accept ? 'review.accepted' : 'review.declined', $accept ? 'review.accepted' : 'review.declined',
+            function () use ($assignment, $actor, $accept, $reason) {
+                $locked = ReviewerAssignment::query()->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+                if ((int) $locked->reviewer_id !== (int) $actor->id || $locked->revoked_at) {
+                    app(ArticleLifecycleService::class)->conflict('This review invitation is not active for the current user.');
+                }
+                if (! in_array($locked->status, ['pending', 'invited'], true)) {
+                    app(ArticleLifecycleService::class)->conflict('This invitation has already been answered.');
+                }
+                if ($locked->invite_expires_at?->isPast()) {
+                    app(ArticleLifecycleService::class)->conflict('This invitation has expired.');
+                }
+                $locked->update($accept ? ['status' => 'accepted', 'accepted_at' => now()] : ['status' => 'declined', 'declined_at' => now(), 'decline_reason' => $reason]);
+
+                return ['assignment_id' => $locked->id, 'status' => $locked->status];
+            });
+    }
+
+    public function submit(ReviewerAssignment $assignment, User $actor, string $recommendation, string $authorComments, ?string $confidentialComments, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'submit-review', $key, ['assignment_id' => $assignment->id, 'recommendation' => $recommendation], 'review.submitted', 'review.submitted',
+            function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments) {
+                $locked = ReviewerAssignment::query()->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+                if ((int) $locked->reviewer_id !== (int) $actor->id || $locked->revoked_at || ! in_array($locked->status, ['accepted', 'in_progress'], true)) {
+                    app(ArticleLifecycleService::class)->conflict('The review is not open for submission.');
+                }
+                if ($locked->completed_at) {
+                    app(ArticleLifecycleService::class)->conflict('A submitted review is immutable unless formally reopened.');
+                }
+                $locked->update(['status' => 'completed', 'completed_at' => now(), 'recommendation' => $recommendation, 'comments_for_author' => $authorComments, 'confidential_comments' => $confidentialComments]);
+
+                return ['assignment_id' => $locked->id, 'status' => 'completed'];
+            });
+    }
+
+    public function reopen(ReviewerAssignment $assignment, User $actor, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'reopen-review', $key, ['assignment_id' => $assignment->id], 'review.reopened', 'review.reopened', function () use ($assignment, $actor) {
+            $locked = ReviewerAssignment::query()->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+            if ($locked->status !== 'completed') {
+                app(ArticleLifecycleService::class)->conflict('Only a completed review can be reopened.');
+            }
+            $locked->update(['status' => 'in_progress', 'completed_at' => null, 'reopened_at' => now(), 'reopened_by' => $actor->id]);
+
+            return ['assignment_id' => $locked->id, 'status' => 'in_progress'];
+        });
+    }
+}

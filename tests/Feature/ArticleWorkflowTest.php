@@ -25,11 +25,17 @@ class ArticleWorkflowTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private User $editor;
+
     private User $subEditor;
+
     private User $reviewer;
+
     private User $author;
+
     private Magazine $magazine;
+
     private Article $article;
 
     protected function setUp(): void
@@ -82,6 +88,17 @@ class ArticleWorkflowTest extends TestCase
             'full_text' => 'Full text',
             'status' => ArticleStatus::SUBMITTED,
         ]);
+
+        $version = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'version_number' => 1,
+            'created_by' => $this->author->id,
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+            'submitted_at' => now(),
+            'screening_status' => 'passed',
+            'screened_at' => now(),
+        ]);
+        $this->article->update(['current_version_id' => $version->id]);
     }
 
     public function test_editor_can_assign_sub_editor_and_reviewer(): void
@@ -154,17 +171,17 @@ class ArticleWorkflowTest extends TestCase
         $this->article->update(['magazine_issue_id' => $issue->id, 'title' => 'Advanced Biomedical Methods']);
 
         Sanctum::actingAs($this->editor);
-        $this->getJson('/api/admin/articles?tracking_code=' . urlencode($this->article->tracking_code))
+        $this->getJson('/api/admin/articles?tracking_code='.urlencode($this->article->tracking_code))
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.tracking_code', $this->article->tracking_code);
-        $this->getJson('/api/admin/articles?tracking_code=' . urlencode(substr($this->article->tracking_code, 0, -1)))
+        $this->getJson('/api/admin/articles?tracking_code='.urlencode(substr($this->article->tracking_code, 0, -1)))
             ->assertOk()->assertJsonCount(0, 'data');
         $this->getJson('/api/admin/articles?title=Biomedical')
             ->assertOk()->assertJsonCount(1, 'data');
         $this->getJson('/api/admin/articles?issue=Clinical')
             ->assertOk()->assertJsonCount(1, 'data');
-        $this->getJson('/api/admin/articles?search=' . urlencode($this->article->tracking_code))
+        $this->getJson('/api/admin/articles?search='.urlencode($this->article->tracking_code))
             ->assertOk()->assertJsonCount(1, 'data');
         $this->getJson('/api/admin/articles?search=Biomedical')
             ->assertOk()->assertJsonCount(1, 'data');
@@ -186,13 +203,7 @@ class ArticleWorkflowTest extends TestCase
         $copyEditor = User::factory()->create(['role_id' => $copyEditorRole->id]);
         $publisher->magazines()->attach($this->magazine->id, ['role' => 'publisher']);
         $this->article->update(['status' => ArticleStatus::ACCEPTED]);
-        $version = ArticleVersion::create([
-            'article_id' => $this->article->id,
-            'created_by' => $this->author->id,
-            'version_number' => 1,
-            'label' => 'Initial Submission',
-            'status_snapshot' => ArticleStatus::SUBMITTED,
-        ]);
+        $version = $this->article->currentVersion;
         ArticleFile::create([
             'article_id' => $this->article->id,
             'article_version_id' => $version->id,
@@ -233,13 +244,7 @@ class ArticleWorkflowTest extends TestCase
             'comments_for_author' => 'Strong paper.',
         ])->assertStatus(200);
 
-        $version = ArticleVersion::create([
-            'article_id' => $this->article->id,
-            'created_by' => $this->author->id,
-            'version_number' => 1,
-            'label' => 'Initial Submission',
-            'status_snapshot' => ArticleStatus::SUBMITTED,
-        ]);
+        $version = $this->article->currentVersion;
         ArticleFile::create([
             'article_id' => $this->article->id,
             'article_version_id' => $version->id,
@@ -535,13 +540,13 @@ class ArticleWorkflowTest extends TestCase
             'reviewer_id' => $this->reviewer->id,
         ])->json('assignment.id');
 
-        $assignmentBefore = \App\Models\ReviewerAssignment::findOrFail($assignmentId);
+        $assignmentBefore = ReviewerAssignment::findOrFail($assignmentId);
         $oldHash = $assignmentBefore->invite_token_hash;
 
         $response = $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/remind");
         $response->assertStatus(200);
 
-        $assignmentAfter = \App\Models\ReviewerAssignment::findOrFail($assignmentId);
+        $assignmentAfter = ReviewerAssignment::findOrFail($assignmentId);
         $this->assertNotEmpty($assignmentAfter->invite_token_hash);
         $this->assertNotEquals($oldHash, $assignmentAfter->invite_token_hash);
     }

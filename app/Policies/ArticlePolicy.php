@@ -63,6 +63,8 @@ class ArticlePolicy
             $isAssignedReviewer = DB::table('reviewer_assignments')
                 ->where('article_id', $article->id)
                 ->where('reviewer_id', $user->id)
+                ->whereNull('revoked_at')
+                ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened'])
                 ->exists();
             if ($isAssignedReviewer) {
                 return true;
@@ -75,6 +77,8 @@ class ArticlePolicy
                 ->where('article_id', $article->id)
                 ->where('user_id', $user->id)
                 ->where('role', 'copy_editor')
+                ->whereNull('revoked_at')
+                ->whereIn('status', ['pending', 'in_progress', 'correction_required'])
                 ->exists();
             if ($isAssignedProduction) {
                 return true;

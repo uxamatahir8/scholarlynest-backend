@@ -9,6 +9,8 @@ class ReviewerAssignment extends Model
 {
     protected $fillable = [
         'article_id',
+        'article_version_id',
+        'round_number',
         'sub_editor_assignment_id',
         'reviewer_id',
         'invitee_name',
@@ -25,6 +27,12 @@ class ReviewerAssignment extends Model
         'account_created_at',
         'questionnaire_instance_id',
         'completed_at',
+        'reopened_at',
+        'reopened_by',
+        'revoked_at',
+        'reminder_count',
+        'last_reminded_at',
+        'idempotency_key',
         'recommendation',
         'comments_for_author',
         'confidential_comments',
@@ -38,6 +46,9 @@ class ReviewerAssignment extends Model
         'declined_at' => 'datetime',
         'account_created_at' => 'datetime',
         'completed_at' => 'datetime',
+        'reopened_at' => 'datetime',
+        'revoked_at' => 'datetime',
+        'last_reminded_at' => 'datetime',
     ];
 
     public function article(): BelongsTo
@@ -48,6 +59,16 @@ class ReviewerAssignment extends Model
     public function subEditorAssignment(): BelongsTo
     {
         return $this->belongsTo(SubEditorAssignment::class);
+    }
+
+    public function version(): BelongsTo
+    {
+        return $this->belongsTo(ArticleVersion::class, 'article_version_id');
+    }
+
+    public function reopener(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reopened_by');
     }
 
     public function reviewer(): BelongsTo

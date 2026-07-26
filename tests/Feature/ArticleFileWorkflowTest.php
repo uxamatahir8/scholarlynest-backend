@@ -5,13 +5,13 @@ namespace Tests\Feature;
 use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\MediaUploadSession;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -21,10 +21,15 @@ class ArticleFileWorkflowTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private User $editor;
+
     private User $reviewer;
+
     private User $author;
+
     private Magazine $magazine;
+
     private Article $article;
 
     protected function setUp(): void
@@ -71,6 +76,16 @@ class ArticleFileWorkflowTest extends TestCase
             'status' => ArticleStatus::SUBMITTED,
         ]);
 
+        $version = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'version_number' => 1,
+            'created_by' => $this->author->id,
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+            'submitted_at' => now(),
+            'screening_status' => 'pending',
+        ]);
+        $this->article->update(['current_version_id' => $version->id]);
+
         Storage::fake('public');
     }
 
@@ -98,9 +113,10 @@ class ArticleFileWorkflowTest extends TestCase
         $this->assertNull($this->article->plagiarism_report_path);
     }
 
-    public function test_clean_article_file_is_downloadable_by_any_authenticated_role(): void
+    public function test_completed_reviewer_access_is_revoked_but_author_and_editor_keep_access(): void
     {
         Sanctum::actingAs($this->editor);
+        $this->article->currentVersion()->update(['screening_status' => 'passed', 'screened_at' => now()]);
         $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
             'reviewer_id' => $this->reviewer->id,
         ])->json('assignment.id');
@@ -116,7 +132,7 @@ class ArticleFileWorkflowTest extends TestCase
         $file = ArticleFile::where('file_type', ArticleFile::REVIEWED_MANUSCRIPT)->firstOrFail();
 
         $this->getJson("/api/articles/files/{$file->id}/download")
-            ->assertRedirect();
+            ->assertForbidden();
 
         Sanctum::actingAs($this->author);
         $this->getJson("/api/articles/files/{$file->id}/download")
@@ -158,7 +174,7 @@ class ArticleFileWorkflowTest extends TestCase
 
     private function cleanUpload(User $user, string $purpose, string $filename): MediaUploadSession
     {
-        $key = 'dev/clean/test/' . $purpose . '/' . $filename;
+        $key = 'dev/clean/test/'.$purpose.'/'.$filename;
         Storage::disk('s3')->put($key, 'clean test file');
 
         return MediaUploadSession::create([
@@ -171,7 +187,7 @@ class ArticleFileWorkflowTest extends TestCase
             'expected_size_bytes' => strlen('clean test file'),
             'declared_mime_type' => str_ends_with($filename, '.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'disk' => 's3',
-            's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,
+            's3_incoming_key' => 'dev/incoming/test/'.$purpose.'/'.$filename,
             's3_clean_key' => $key,
             'upload_mode' => 'single',
             'status' => MediaUploadSession::STATUS_CLEAN,
