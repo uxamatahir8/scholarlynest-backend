@@ -5,13 +5,16 @@ namespace App\Providers;
 use App\Events\ArticleSubmitted;
 use App\Events\ArticleWorkflowEventOccurred;
 use App\Models\Article;
+use App\Models\ArticleThread;
 use App\Models\ProductionAssignment;
 use App\Models\ReviewerAssignment;
 use App\Models\SubEditorAssignment;
 use App\Models\UserNotification;
 use App\Observers\WorkflowAssignmentObserver;
 use App\Policies\ArticlePolicy;
+use App\Policies\ArticleThreadPolicy;
 use App\Policies\NotificationPolicy;
+use App\Services\ArticleThreadSystemEventService;
 use App\Services\Media\AntivirusScannerContract;
 use App\Services\Media\ClamAvScanner;
 use App\Services\Notifications\RecordArticleNotificationEvent;
@@ -51,10 +54,13 @@ class AppServiceProvider extends ServiceProvider
         }
 
         Gate::policy(Article::class, ArticlePolicy::class);
+        Gate::policy(ArticleThread::class, ArticleThreadPolicy::class);
         Gate::policy(UserNotification::class, NotificationPolicy::class);
 
         Event::listen(ArticleSubmitted::class, RecordArticleNotificationEvent::class);
         Event::listen(ArticleWorkflowEventOccurred::class, RecordArticleNotificationEvent::class);
+        Event::listen(ArticleSubmitted::class, ArticleThreadSystemEventService::class);
+        Event::listen(ArticleWorkflowEventOccurred::class, ArticleThreadSystemEventService::class);
 
         SubEditorAssignment::observe(WorkflowAssignmentObserver::class);
         ReviewerAssignment::observe(WorkflowAssignmentObserver::class);
@@ -69,6 +75,9 @@ class AppServiceProvider extends ServiceProvider
             'media-upload-read' => 60,
             'media-download' => 60,
             'direct-publication' => 30,
+            'article-thread-messages' => 30,
+            'article-thread-mutations' => 20,
+            'article-thread-search' => 30,
         ] as $name => $maxAttempts) {
             RateLimiter::for($name, function ($request) use ($maxAttempts) {
                 $userId = $request->user()?->id ?: 'guest';

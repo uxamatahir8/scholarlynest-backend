@@ -39,11 +39,11 @@ return [
     'priorities' => ['critical', 'high', 'normal', 'low'],
     'severities' => ['error', 'warning', 'success', 'info'],
     'privacy_variants' => ['author', 'co_author', 'reviewer', 'assignee', 'sub_editor', 'editor', 'publisher', 'admin', 'assigner', 'support_owner', 'support_staff', 'account'],
-    'subject_types' => ['article', 'sub_editor_assignment', 'reviewer_assignment', 'production_assignment', 'support_ticket', 'article_version', 'accepted_file_set', 'article_file', 'issue', 'user'],
+    'subject_types' => ['article', 'sub_editor_assignment', 'reviewer_assignment', 'production_assignment', 'support_ticket', 'article_version', 'accepted_file_set', 'article_file', 'issue', 'user', 'article_thread'],
     'routes' => [
         'article.workflow', 'article.edit', 'editor.desk', 'sub_editor.desk', 'reviewer.desk',
         'copy_editor.desk', 'publisher.desk', 'issue.manager', 'support.ticket', 'admin.support.ticket',
-        'account.settings', 'notifications.center', 'article.public', 'direct.publication',
+        'account.settings', 'notifications.center', 'article.public', 'direct.publication', 'article.thread',
     ],
     'preferences' => [
         'security' => ['in_app' => true, 'email' => 'immediate', 'locked' => false],
@@ -58,6 +58,8 @@ return [
         'system' => ['in_app' => true, 'email' => 'immediate', 'locked' => false],
     ],
     'templates' => [
+        'article_thread.message_posted' => $template('editorial', 'normal', 'info', 'New article thread message', 'A new message was posted for article {tracking_code}.', 'article.thread'),
+        'article_thread.mentioned' => $template('editorial', 'high', 'info', 'You were mentioned', 'You were mentioned in a discussion for article {tracking_code}.', 'article.thread', true),
         'direct_publication.created' => $template('publication', 'normal', 'info', 'Direct-publication draft created', 'Direct-publication draft {tracking_code} was created.', 'direct.publication'),
         'direct_publication.ready' => $template('publication', 'high', 'success', 'Direct publication ready', 'Article {tracking_code} is ready for direct publication.', 'direct.publication', true, true),
         'direct_publication.scheduled' => $template('publication', 'high', 'info', 'Direct publication scheduled', 'Article {tracking_code} was scheduled for publication.', 'direct.publication', true, true),

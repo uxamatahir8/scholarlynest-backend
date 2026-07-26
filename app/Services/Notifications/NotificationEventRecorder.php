@@ -21,7 +21,7 @@ class NotificationEventRecorder
         'accepted_file_set_id', 'article_file_id', 'issue_id', 'recipient_user_id', 'recipient_user_ids',
         'due_at', 'due_date', 'due_date_version', 'reminder_type', 'action_type', 'publication_type',
         'tracking_code', 'revision_number', 'status', 'previous_status', 'is_escalation',
-        'recipient_privacy_variant', 'publication_record_id',
+        'recipient_privacy_variant', 'publication_record_id', 'thread_id', 'message_id',
     ];
 
     public function __construct(private NotificationTemplateRegistry $templates) {}

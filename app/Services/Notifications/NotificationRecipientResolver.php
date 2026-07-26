@@ -217,6 +217,7 @@ class NotificationRecipientResolver
     private function compatibleTargetVariants(NotificationEvent $event): array
     {
         return match (true) {
+            str_starts_with($event->event_type, 'article_thread.') => ['author', 'reviewer', 'sub_editor', 'assignee', 'editor', 'publisher', 'admin'],
             str_starts_with($event->event_type, 'account.') => ['account'],
             str_starts_with($event->event_type, 'support.') => ['support_owner', 'support_staff'],
             in_array($event->event_type, ['reviewer.invited', 'review.invitation_reminded', 'review.invitation_expired', 'review.reopened'], true) => ['reviewer'],

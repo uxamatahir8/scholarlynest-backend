@@ -21,6 +21,7 @@ use App\Http\Controllers\AdvertisementEventController;
 use App\Http\Controllers\AdvertisementResolutionController;
 use App\Http\Controllers\ArticleAssetController;
 use App\Http\Controllers\ArticleController;
+use App\Http\Controllers\ArticleThreadController;
 use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\ArticleTransferController;
 use App\Http\Controllers\AuthController;
@@ -204,6 +205,32 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Article submissions
     Route::post('/articles', [ArticleController::class, 'store'])->middleware('permission:articles.create');
+    Route::get('/article-threads/unread-count', [ArticleThreadController::class, 'dashboardUnreadCount']);
+    Route::prefix('/articles/{article}/threads')->group(function () {
+        Route::get('/', [ArticleThreadController::class, 'index']);
+        Route::post('/', [ArticleThreadController::class, 'store'])->middleware('throttle:article-thread-mutations');
+        Route::get('/manifest', [ArticleThreadController::class, 'index']);
+        Route::get('/unread-count', [ArticleThreadController::class, 'unreadCount']);
+        Route::get('/search', [ArticleThreadController::class, 'search'])->middleware('throttle:article-thread-search');
+        Route::get('/{thread}', [ArticleThreadController::class, 'show']);
+        Route::patch('/{thread}', [ArticleThreadController::class, 'update'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/lock', [ArticleThreadController::class, 'lock'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/unlock', [ArticleThreadController::class, 'unlock'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/archive', [ArticleThreadController::class, 'archive'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/reopen', [ArticleThreadController::class, 'reopen'])->middleware('throttle:article-thread-mutations');
+        Route::get('/{thread}/participants', [ArticleThreadController::class, 'participants']);
+        Route::get('/{thread}/eligible-users', [ArticleThreadController::class, 'eligibleUsers']);
+        Route::post('/{thread}/participants', [ArticleThreadController::class, 'addParticipant'])->middleware('throttle:article-thread-mutations');
+        Route::delete('/{thread}/participants/{participant}', [ArticleThreadController::class, 'removeParticipant'])->middleware('throttle:article-thread-mutations');
+        Route::get('/{thread}/messages', [ArticleThreadController::class, 'messages']);
+        Route::post('/{thread}/messages', [ArticleThreadController::class, 'storeMessage'])->middleware('throttle:article-thread-messages');
+        Route::patch('/{thread}/messages/{message}', [ArticleThreadController::class, 'updateMessage'])->middleware('throttle:article-thread-messages');
+        Route::delete('/{thread}/messages/{message}', [ArticleThreadController::class, 'deleteMessage'])->middleware('throttle:article-thread-messages');
+        Route::get('/{thread}/messages/{message}/attachments/{attachment}/download', [ArticleThreadController::class, 'download'])->middleware('throttle:media-download');
+        Route::post('/{thread}/read', [ArticleThreadController::class, 'markRead']);
+        Route::get('/{thread}/mentionable-users', [ArticleThreadController::class, 'mentionable']);
+        Route::get('/{thread}/audit', [ArticleThreadController::class, 'audit']);
+    });
     Route::get('/articles/{article}/transfer-target-magazines', [ArticleTransferController::class, 'targetMagazines'])->middleware('permission:articles.view-own');
     Route::post('/articles/{article}/transfer-requests', [ArticleTransferController::class, 'store'])->middleware('permission:articles.approve');
     Route::get('/articles/{article}/transfer-request', [ArticleTransferController::class, 'show'])->middleware('permission:articles.view-own');

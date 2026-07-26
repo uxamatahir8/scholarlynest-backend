@@ -531,6 +531,7 @@ class DirectPublicationService
 
     private function notify(string $event, Article $article, User $actor, string $key): void
     {
+        app(ArticleThreadSystemEventService::class)->recordLifecycleEvent($article, $event, $actor, 'direct:'.$article->id.':'.$event.':'.$key);
         if (config("notification_system.templates.{$event}")) {
             $this->notifications->record($event, $article, $actor,
                 ['status' => $article->status], 'article', $article->id, deduplicationKey: "direct:{$article->id}:{$event}:{$key}");
