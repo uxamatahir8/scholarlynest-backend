@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use RuntimeException;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -36,6 +37,17 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        if ($this->app->environment('testing')) {
+            $connection = (string) config('database.default');
+            $driver = (string) config("database.connections.{$connection}.driver");
+
+            if ($driver !== 'sqlite') {
+                throw new RuntimeException(
+                    "Unsafe testing database [{$connection}/{$driver}]. ScholarlyNest tests may only run against SQLite."
+                );
+            }
+        }
+
         Gate::policy(Article::class, ArticlePolicy::class);
         Gate::policy(UserNotification::class, NotificationPolicy::class);
 
