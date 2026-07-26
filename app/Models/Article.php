@@ -53,6 +53,9 @@ class Article extends Model
         'abbreviations',
         'citation_text',
         'status',
+        'submission_mode',
+        'directly_created_by',
+        'direct_publication_ready_at',
         'lifecycle_status',
         'current_version_id',
         'accepted_version_id',
@@ -99,6 +102,7 @@ class Article extends Model
         'received_at' => 'date',
         'accepted_at' => 'date',
         'is_peer_reviewed' => 'boolean',
+        'direct_publication_ready_at' => 'datetime',
     ];
 
     protected static function booted(): void
@@ -127,6 +131,16 @@ class Article extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function directCreator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'directly_created_by');
+    }
+
+    public function isDirectPublication(): bool
+    {
+        return $this->submission_mode === 'direct_publication';
     }
 
     public function issue(): BelongsTo

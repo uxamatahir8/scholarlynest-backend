@@ -2415,6 +2415,7 @@ class ArticleWorkflowController extends Controller
     private function findAuthorizedArticle(Request $request, int $articleId, array $roles, bool $requireAssignedRole = true): Article
     {
         $article = Article::findOrFail($articleId);
+        abort_if($article->isDirectPublication(), 404);
         $user = $request->user();
 
         if ($this->isGlobal($user)) {

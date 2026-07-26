@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\ArticleLifecycleController;
 use App\Http\Controllers\Admin\ArticleTypeController;
 use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\DeskObserverController;
+use App\Http\Controllers\Admin\DirectPublicationController;
 use App\Http\Controllers\Admin\EditorSubEditorController;
 use App\Http\Controllers\Admin\FooterCategoryController;
 use App\Http\Controllers\Admin\FooterPageController;
@@ -252,6 +253,27 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
+        Route::prefix('direct-publications')->middleware('throttle:direct-publication')->group(function () {
+            Route::get('/options', [DirectPublicationController::class, 'options']);
+            Route::get('/', [DirectPublicationController::class, 'index']);
+            Route::post('/', [DirectPublicationController::class, 'store']);
+            Route::get('/{article}', [DirectPublicationController::class, 'show']);
+            Route::put('/{article}', [DirectPublicationController::class, 'update']);
+            Route::delete('/{article}', [DirectPublicationController::class, 'destroy']);
+            Route::post('/{article}/files', [DirectPublicationController::class, 'attachFile']);
+            Route::delete('/{article}/files/{file}', [DirectPublicationController::class, 'deleteFile']);
+            Route::get('/{article}/readiness', [DirectPublicationController::class, 'readiness']);
+            Route::post('/{article}/select-primary-file', [DirectPublicationController::class, 'selectPrimary']);
+            Route::post('/{article}/public-assets', [DirectPublicationController::class, 'publicAssets']);
+            Route::post('/{article}/assign-issue', [DirectPublicationController::class, 'assignIssue']);
+            Route::post('/{article}/mark-ready', [DirectPublicationController::class, 'markReady']);
+            Route::post('/{article}/move-to-draft', [DirectPublicationController::class, 'moveToDraft']);
+            Route::post('/{article}/schedule', [DirectPublicationController::class, 'schedule']);
+            Route::post('/{article}/unschedule', [DirectPublicationController::class, 'unschedule']);
+            Route::post('/{article}/publish', [DirectPublicationController::class, 'publish']);
+            Route::post('/{article}/correct-metadata', [DirectPublicationController::class, 'correctMetadata']);
+            Route::post('/{article}/unpublish', [DirectPublicationController::class, 'unpublish']);
+        });
         Route::get('/notification-deliveries', [NotificationDeliveryController::class, 'index'])->middleware('permission:notifications.delivery.manage');
         Route::get('/notification-deliveries/{notificationDelivery}', [NotificationDeliveryController::class, 'show'])->middleware('permission:notifications.delivery.manage');
         Route::post('/notification-deliveries/{notificationDelivery}/retry', [NotificationDeliveryController::class, 'retry'])->middleware('permission:notifications.delivery.manage');

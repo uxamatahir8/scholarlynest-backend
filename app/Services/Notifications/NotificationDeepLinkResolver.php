@@ -29,6 +29,7 @@ class NotificationDeepLinkResolver
             'admin.support.ticket' => $ticketId ? "/admin/support-tickets/{$ticketId}" : '/admin/support-tickets',
             'account.settings' => '/admin/settings',
             'notifications.center' => '/admin/notifications',
+            'direct.publication' => $articleId ? "/admin/direct-publications/{$articleId}" : '/admin/direct-publications',
             'article.public' => $articleSlug && $publicationSlug && in_array($publicationType, ['magazine', 'journal'], true)
                 ? '/'.($publicationType === 'journal' ? 'journals' : 'magazines')."/{$publicationSlug}/articles/{$articleSlug}"
                 : null,

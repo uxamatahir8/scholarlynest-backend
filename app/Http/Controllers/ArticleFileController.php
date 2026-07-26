@@ -336,6 +336,24 @@ class ArticleFileController extends Controller
             return false;
         }
 
+        if ($article->isDirectPublication()) {
+            $isSelectedPublic = DB::table('publication_file_selections as selections')
+                ->join('publication_records as publications', 'publications.id', '=', 'selections.publication_record_id')
+                ->where('publications.article_id', $article->id)
+                ->where('publications.publication_mode', 'direct')
+                ->where('publications.status', 'published')
+                ->where('selections.article_file_id', $file->id)
+                ->where('selections.is_public', true)->exists();
+            if (! $user) {
+                return $article->status === 'published' && $isSelectedPublic;
+            }
+            if ($user->hasRole('super_admin')) {
+                return true;
+            }
+
+            return $user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
+        }
+
         if ($this->isGlobal($user)) {
             return true;
         }
@@ -430,6 +448,20 @@ class ArticleFileController extends Controller
 
     private function canUpload($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
+        if (in_array($fileType, [
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE,
+        ], true)) {
+            $allowedStatus = in_array($article?->status, ['direct_publication_draft', 'direct_publication_ready'], true)
+                || ($article?->status === 'published' && $fileType === ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT);
+            if (! $user || ! $article?->isDirectPublication() || ! $allowedStatus) {
+                return false;
+            }
+
+            return $user->hasRole('super_admin') || ($user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']));
+        }
+
         if ($this->isGlobal($user)) {
             return true;
         }
@@ -499,6 +531,9 @@ class ArticleFileController extends Controller
     private function defaultVisibility(string $fileType): string
     {
         return match ($fileType) {
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE => 'internal',
             ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::ADDITIONAL_MANUSCRIPT_FILE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
             ArticleFile::REVIEWED_MANUSCRIPT => 'reviewer_editor',
             default => 'workflow',

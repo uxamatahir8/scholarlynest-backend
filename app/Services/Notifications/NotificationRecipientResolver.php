@@ -46,8 +46,15 @@ class NotificationRecipientResolver
         $production = $this->production($article, $event->subject_id);
         $publishers = $this->publishers($article);
         $actor = $event->actor ? collect([['user' => $event->actor, 'privacy_variant' => 'assigner']]) : collect();
+        $superAdmins = $this->recipients(User::query()->whereHas('role', fn ($query) => $query->where('name', 'super_admin'))->get(), 'admin');
+        $directAuthors = $this->recipients(User::query()->whereIn('id', $article->articleAuthors->pluck('user_id')->filter())->get(), 'author');
 
         $resolved = match ($event->event_type) {
+            'direct_publication.created' => $actor,
+            'direct_publication.ready' => $publishers->merge($superAdmins),
+            'direct_publication.scheduled' => $actor->merge($publishers)->merge($superAdmins),
+            'direct_publication.published', 'direct_publication.unpublished' => $directAuthors->merge($publishers)->merge($superAdmins),
+            'direct_publication.file_replaced', 'direct_publication.metadata_corrected' => $publishers->merge($superAdmins),
             'article.submitted' => $authors->merge($editors)->merge($admins),
             'article.desk_rejected', 'article.under_review' => $authors->merge($editors)->merge($admins),
             'transfer.requested', 'transfer.accepted', 'transfer.rejected' => $authors->merge($editors)->merge($admins),
@@ -72,7 +79,7 @@ class NotificationRecipientResolver
             default => collect(),
         };
 
-        if ($event->actor_id && ! str_starts_with($event->event_type, 'account.')) {
+        if ($event->actor_id && ! str_starts_with($event->event_type, 'account.') && ! str_starts_with($event->event_type, 'direct_publication.')) {
             $resolved = $resolved->reject(fn ($item) => (int) ($item['user']?->id ?? 0) === (int) $event->actor_id);
         }
 

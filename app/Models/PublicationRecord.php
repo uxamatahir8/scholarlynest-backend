@@ -9,19 +9,31 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class PublicationRecord extends Model
 {
     protected $fillable = [
-        'article_id', 'article_version_id', 'accepted_file_set_id', 'proof_round_id',
-        'magazine_issue_id', 'status', 'doi', 'page_start', 'page_end', 'scheduled_for',
-        'published_at', 'unpublished_at', 'unpublish_reason', 'created_by', 'published_by',
-        'idempotency_key',
+        'article_id', 'magazine_id', 'article_version_id', 'accepted_file_set_id', 'proof_round_id',
+        'publication_mode', 'primary_publication_file_id', 'magazine_issue_id', 'status', 'active_marker',
+        'doi', 'page_start', 'page_end', 'online_publication_date', 'print_publication_date', 'scheduled_for',
+        'published_at', 'unpublished_at', 'unpublished_by', 'unpublish_reason', 'created_by', 'updated_by', 'published_by',
+        'publication_failed_at', 'publication_failure_code', 'publication_failure_message', 'idempotency_key',
     ];
 
     protected $casts = [
-        'scheduled_for' => 'datetime', 'published_at' => 'datetime', 'unpublished_at' => 'datetime',
+        'online_publication_date' => 'date', 'print_publication_date' => 'date',
+        'scheduled_for' => 'datetime', 'published_at' => 'datetime', 'unpublished_at' => 'datetime', 'publication_failed_at' => 'datetime',
     ];
 
     public function article(): BelongsTo
     {
         return $this->belongsTo(Article::class);
+    }
+
+    public function magazine(): BelongsTo
+    {
+        return $this->belongsTo(Magazine::class);
+    }
+
+    public function primaryFile(): BelongsTo
+    {
+        return $this->belongsTo(ArticleFile::class, 'primary_publication_file_id');
     }
 
     public function version(): BelongsTo

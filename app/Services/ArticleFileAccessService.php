@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\ArticleFile;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 class ArticleFileAccessService
 {
@@ -13,6 +14,14 @@ class ArticleFileAccessService
             return false;
         }
         $article = $file->article;
+        if ($article->isDirectPublication()) {
+            if ($user->hasRole('super_admin')) {
+                return true;
+            }
+
+            return $user->hasRole('publisher') && DB::table('magazine_user')->where('user_id', $user->id)
+                ->where('magazine_id', $article->magazine_id)->where(fn ($q) => $q->where('role', 'publisher')->orWhereNull('role'))->exists();
+        }
         if ($user->hasRole(['super_admin', 'admin']) || $user->can('approve', $article)) {
             return true;
         }

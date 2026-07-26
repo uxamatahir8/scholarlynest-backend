@@ -40,10 +40,12 @@ class AppServiceProvider extends ServiceProvider
         if ($this->app->environment('testing')) {
             $connection = (string) config('database.default');
             $driver = (string) config("database.connections.{$connection}.driver");
+            $database = (string) config("database.connections.{$connection}.database");
+            $allowDestructive = filter_var(env('ALLOW_DESTRUCTIVE_TEST_DATABASE', false), FILTER_VALIDATE_BOOL);
 
-            if ($driver !== 'sqlite') {
+            if ($driver !== 'sqlite' || ! preg_match('/_(test|testing)$/', basename($database)) || ! $allowDestructive) {
                 throw new RuntimeException(
-                    "Unsafe testing database [{$connection}/{$driver}]. ScholarlyNest tests may only run against SQLite."
+                    "Unsafe testing database [{$connection}/{$driver}/{$database}]. Tests require APP_ENV=testing, dedicated SQLite *_test or *_testing, and ALLOW_DESTRUCTIVE_TEST_DATABASE=true."
                 );
             }
         }
@@ -66,6 +68,7 @@ class AppServiceProvider extends ServiceProvider
             'media-upload-complete' => 20,
             'media-upload-read' => 60,
             'media-download' => 60,
+            'direct-publication' => 30,
         ] as $name => $maxAttempts) {
             RateLimiter::for($name, function ($request) use ($maxAttempts) {
                 $userId = $request->user()?->id ?: 'guest';

@@ -31,7 +31,39 @@ return [
         'temporary' => 'temporary/',
     ],
 
+    'direct_publication_purposes' => [
+        'direct_publication_manuscript' => 'direct_publication_manuscript',
+        'direct_publication_figure' => 'direct_publication_figure',
+        'direct_publication_supplementary' => 'direct_publication_supplementary',
+        'direct_publication_cover' => 'direct_publication_cover',
+        'direct_publication_source' => 'direct_publication_source',
+    ],
     'purposes' => [
+        'direct_publication_manuscript' => [
+            'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_manuscript',
+            'clean_prefix' => 'clean/articles/direct/manuscripts/', 'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => ['application/pdf'], 'extensions' => ['pdf'], 'scan_required' => true,
+        ],
+        'direct_publication_figure' => [
+            'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_figure',
+            'clean_prefix' => 'clean/articles/direct/figures/', 'max_size_bytes' => 10 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'], 'extensions' => ['png', 'jpg', 'jpeg', 'webp'], 'scan_required' => true,
+        ],
+        'direct_publication_supplementary' => [
+            'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_supplementary',
+            'clean_prefix' => 'clean/articles/direct/supplementary/', 'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => $workflowMimes, 'extensions' => $workflowExtensions, 'scan_required' => true,
+        ],
+        'direct_publication_cover' => [
+            'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_cover',
+            'clean_prefix' => 'clean/articles/direct/covers/', 'max_size_bytes' => 5 * 1024 * 1024,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'], 'extensions' => ['png', 'jpg', 'jpeg', 'webp'], 'scan_required' => true,
+        ],
+        'direct_publication_source' => [
+            'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_source',
+            'clean_prefix' => 'clean/articles/direct/sources/', 'max_size_bytes' => 25 * 1024 * 1024,
+            'detected_mime_types' => $workflowMimes, 'extensions' => $workflowExtensions, 'scan_required' => true,
+        ],
         'advertisement_image' => [
             'target' => 'media',
             'clean_prefix' => 'clean/advertisements/',

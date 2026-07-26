@@ -43,7 +43,7 @@ return [
     'routes' => [
         'article.workflow', 'article.edit', 'editor.desk', 'sub_editor.desk', 'reviewer.desk',
         'copy_editor.desk', 'publisher.desk', 'issue.manager', 'support.ticket', 'admin.support.ticket',
-        'account.settings', 'notifications.center', 'article.public',
+        'account.settings', 'notifications.center', 'article.public', 'direct.publication',
     ],
     'preferences' => [
         'security' => ['in_app' => true, 'email' => 'immediate', 'locked' => false],
@@ -58,6 +58,13 @@ return [
         'system' => ['in_app' => true, 'email' => 'immediate', 'locked' => false],
     ],
     'templates' => [
+        'direct_publication.created' => $template('publication', 'normal', 'info', 'Direct-publication draft created', 'Direct-publication draft {tracking_code} was created.', 'direct.publication'),
+        'direct_publication.ready' => $template('publication', 'high', 'success', 'Direct publication ready', 'Article {tracking_code} is ready for direct publication.', 'direct.publication', true, true),
+        'direct_publication.scheduled' => $template('publication', 'high', 'info', 'Direct publication scheduled', 'Article {tracking_code} was scheduled for publication.', 'direct.publication', true, true),
+        'direct_publication.published' => $template('publication', 'high', 'success', 'Article published', 'Article {tracking_code} has been published.', 'article.public', false, true),
+        'direct_publication.unpublished' => $template('publication', 'critical', 'warning', 'Article unpublished', 'Article {tracking_code} has been unpublished.', 'direct.publication', true, true),
+        'direct_publication.file_replaced' => $template('files', 'high', 'warning', 'Public file replaced', 'A public file for article {tracking_code} was replaced.', 'direct.publication', true),
+        'direct_publication.metadata_corrected' => $template('publication', 'normal', 'info', 'Publication metadata corrected', 'Publication metadata for article {tracking_code} was corrected.', 'direct.publication'),
         'article.submitted' => $template('editorial', 'high', 'info', 'Manuscript submitted', 'Manuscript {tracking_code} has been submitted to {publication}.', 'article.workflow', false, true, true),
         'article.desk_rejected' => $template('editorial', 'high', 'warning', 'Editorial decision recorded', 'A desk decision has been recorded for manuscript {tracking_code}.', 'article.workflow', false, true),
         'article.under_review' => $template('editorial', 'normal', 'info', 'Manuscript under review', 'Manuscript {tracking_code} has entered editorial review.', 'article.workflow', false, false, true),

@@ -154,6 +154,7 @@ class ArticleLifecycleController extends Controller
 
     private function authorizeEditorial(LifecycleCommandRequest $request, Article $article, bool $superAdminOnly = false): void
     {
+        abort_if($article->isDirectPublication(), 404);
         if ($superAdminOnly ? ! $request->user()->hasRole(['super_admin', 'admin']) : $request->user()->cannot('approve', $article)) {
             abort(403);
         }
@@ -161,6 +162,7 @@ class ArticleLifecycleController extends Controller
 
     private function authorizePublisher(LifecycleCommandRequest $request, Article $article): void
     {
+        abort_if($article->isDirectPublication(), 404);
         $user = $request->user();
         if ($user->hasRole(['super_admin', 'admin'])) {
             return;

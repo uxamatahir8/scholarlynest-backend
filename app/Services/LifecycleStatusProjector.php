@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Constants\ArticleStatus;
+use App\Constants\DirectPublicationStatus;
 use App\Constants\LifecycleStatus;
 use App\Models\Article;
 use App\Models\User;
@@ -11,6 +12,9 @@ class LifecycleStatusProjector
 {
     public function canonical(Article $article): string
     {
+        if ($article->isDirectPublication()) {
+            return $article->status;
+        }
         $article->loadMissing([
             'pendingTransferRequest',
             'currentVersion',
@@ -114,6 +118,17 @@ class LifecycleStatusProjector
     public function projection(Article $article, ?User $viewer): array
     {
         $canonical = $this->canonical($article);
+        if ($article->isDirectPublication()) {
+            return [
+                'canonical' => $canonical,
+                'canonical_label' => DirectPublicationStatus::label($canonical),
+                'role' => $viewer?->role?->name,
+                'label' => DirectPublicationStatus::label($canonical),
+                'action_required' => false,
+                'action' => null,
+                'publication_type' => 'Direct Publication',
+            ];
+        }
         $roles = collect([$viewer?->role?->name])->filter()->map(fn ($role) => str_replace('-', '_', $role));
         $role = $roles->first(fn ($candidate) => in_array($candidate, ['author', 'editor', 'sub_editor', 'reviewer', 'copy_editor', 'proofreader', 'publisher', 'super_admin', 'admin'], true)) ?? 'author';
         $action = match (true) {

@@ -27,6 +27,11 @@ class ArticlePolicy
             return false;
         }
 
+        if ($article->isDirectPublication()) {
+            return $user->hasRole('super_admin')
+                || ($user->hasRole('publisher') && $this->isAssignedMagazineRole($user, $article, ['publisher']));
+        }
+
         // Super admins and legacy admins can view any article.
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
@@ -100,6 +105,9 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
+        if ($article->isDirectPublication()) {
+            return false;
+        }
         if (! ArticleStatus::isEditableStatus($article->status)) {
             return false;
         }
@@ -130,6 +138,9 @@ class ArticlePolicy
      */
     public function approve(User $user, Article $article): bool
     {
+        if ($article->isDirectPublication()) {
+            return false;
+        }
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }

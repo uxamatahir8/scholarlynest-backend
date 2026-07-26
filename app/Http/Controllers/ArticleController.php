@@ -223,7 +223,6 @@ class ArticleController extends Controller
         if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
-
         $article->increment('clicks');
 
         return response()->json([
@@ -242,7 +241,6 @@ class ArticleController extends Controller
         if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
-
         $validated = $request->validate([
             'platform' => 'required|string|max:50',
         ]);
@@ -381,6 +379,7 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser)
+            ->where('submission_mode', 'editorial_workflow')
             ->with([
                 'magazine:id,title,slug,cover_image,publication_type', 'user:id,name', 'tags:id,name', 'shareClicks', 'latestVersion',
                 'pendingTransferRequest', 'currentVersion.reviewerAssignments', 'currentVersion.subEditorAssignments',
@@ -413,6 +412,7 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser);
+        $query->where('submission_mode', 'editorial_workflow');
         $this->applyAdminArticleFilters($query, $request, false);
 
         $order = array_flip(ArticleStatus::ALL);
@@ -452,6 +452,7 @@ class ArticleController extends Controller
         $observedUser = DeskObserverController::resolveObservedUser($request, ['editor']);
         $scopeUser = $observedUser ?: $user;
         $query = $this->scopedAdminArticleQuery($user, $scopeUser, $observedUser);
+        $query->where('submission_mode', 'editorial_workflow');
 
         if ($request->filled('magazine_id') && $request->query('magazine_id') !== 'all') {
             $query->where('magazine_id', $request->query('magazine_id'));
@@ -604,6 +605,9 @@ class ArticleController extends Controller
         if (! $article) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
+        if ($article->isDirectPublication()) {
+            return response()->json(['message' => 'Article not found.'], 404);
+        }
 
         // Authorize via ArticlePolicy
         if ($user->cannot('view', $article)) {
@@ -670,6 +674,9 @@ class ArticleController extends Controller
 
         $article = Article::find($id);
         if (! $article) {
+            return response()->json(['message' => 'Article not found.'], 404);
+        }
+        if ($article->isDirectPublication()) {
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
@@ -1158,7 +1165,7 @@ class ArticleController extends Controller
                 : $this->assignedMagazineIds($scopeUser, ['editor']);
         }
 
-        $query = Article::query();
+        $query = Article::query()->where('submission_mode', 'editorial_workflow');
         if ($magazineIds !== null) {
             $query->whereIn('magazine_id', $magazineIds);
         }
@@ -1191,6 +1198,7 @@ class ArticleController extends Controller
 
         // Top articles by engagement
         $topArticles = Article::with(['magazine:id,title,slug,cover_image,publication_type', 'user:id,name'])
+            ->where('submission_mode', 'editorial_workflow')
             ->when($magazineIds !== null, function ($q) use ($magazineIds) {
                 $q->whereIn('magazine_id', $magazineIds);
             })

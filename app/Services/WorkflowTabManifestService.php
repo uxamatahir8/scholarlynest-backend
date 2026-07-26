@@ -10,6 +10,15 @@ class WorkflowTabManifestService
 {
     public function manifest(Article $article, User $viewer): array
     {
+        if ($article->isDirectPublication()) {
+            return [
+                'selected_version_id' => $article->current_version_id,
+                'status' => app(LifecycleStatusProjector::class)->projection($article, $viewer),
+                'tabs' => [],
+                'capabilities' => array_fill_keys(['screen', 'transfer', 'desk_reject', 'assign_sub_editor', 'invite_reviewer', 'decide', 'submit_revision', 'proof_respond', 'prepare_publication'], false),
+                'direct_publication_route' => '/admin/direct-publications/'.$article->id,
+            ];
+        }
         $projection = app(LifecycleStatusProjector::class)->projection($article, $viewer);
         $article->loadMissing(['versions.files', 'reviewerAssignments', 'subEditorAssignments', 'editorialDecisions', 'proofRounds', 'publicationRecords', 'activeAcceptedFileSet.items']);
         $editorial = $viewer->can('approve', $article) || $viewer->hasRole(['super_admin', 'admin']);

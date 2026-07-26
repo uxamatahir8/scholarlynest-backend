@@ -17,6 +17,7 @@ class ArticleVersion extends Model
         'revision_number',
         'revision_tracking_code',
         'label',
+        'source',
         'status_snapshot',
         'screening_status',
         'screened_at',
