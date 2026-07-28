@@ -249,6 +249,33 @@ class ArticleWorkflowController extends Controller
         ]);
     }
 
+    public function acceptedManuscript(Request $request, int $articleId): JsonResponse
+    {
+        $article = Article::with([
+            'magazine:id,title,slug',
+            'activeAcceptedFileSet.version',
+            'activeAcceptedFileSet.accepter:id,name',
+            'activeAcceptedFileSet.items.file.uploader:id,name',
+            'activeAcceptedFileSet.items.sourceVersion',
+        ])->findOrFail($articleId);
+        $viewer = $request->user();
+        $manifestService = app(ArticleWorkspaceManifestService::class);
+
+        if (! $viewer || ! $manifestService->canAccessAcceptedManuscript($article, $viewer)) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $acceptedVersionId = $article->activeAcceptedFileSet?->article_version_id ?: $article->accepted_version_id;
+        $version = $article->versions()->whereKey($acceptedVersionId)->first();
+        if (! $version) {
+            return response()->json(['message' => 'Accepted manuscript is not yet available.'], 409);
+        }
+
+        return response()->json([
+            'data' => $this->acceptedManuscriptPayload($article, $version, $viewer),
+        ]);
+    }
+
     public function assignees(Request $request): JsonResponse
     {
         $request->validate([
@@ -2554,8 +2581,12 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if (in_array('copy_editor', $roles, true) && $this->hasProductionAssignment($user, $article, 'copy_editor')) {
+        if (in_array('copy_editor', $roles, true)
+            && app(ArticleWorkspaceManifestService::class)->canAccessAcceptedManuscript($article, $user)) {
             return $article;
+        }
+        if (in_array('copy_editor', $roles, true) && $user->hasRole('copy_editor')) {
+            throw new HttpResponseException(response()->json(['message' => 'Forbidden. Active Copy Editor assignment required.'], 403));
         }
 
         if (in_array('publisher', $roles, true)
@@ -3148,6 +3179,63 @@ class ArticleWorkflowController extends Controller
                     ] : null,
                     'file' => $fileController->serializeFile($item->file),
                 ])->values(),
+        ];
+    }
+
+    private function acceptedManuscriptPayload(Article $article, $version, User $viewer): array
+    {
+        $metadata = collect($version->metadata_snapshot ?? []);
+        $acceptedFileSet = $this->acceptedFileSetPayload($article->activeAcceptedFileSet, $viewer);
+        $acceptedItems = collect($acceptedFileSet['items'] ?? []);
+
+        return [
+            'article' => [
+                'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
+                'title' => $metadata->get('title'),
+                'abstract' => $metadata->get('abstract'),
+            ],
+            'publication' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'name' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+            ] : null,
+            'accepted_version' => [
+                'id' => $version->id,
+                'identifier' => $version->revision_tracking_code ?: ($version->label ?: 'Version '.$version->version_number),
+                'label' => $version->label,
+                'version_number' => $version->version_number,
+                'revision_number' => $version->revision_number,
+                'accepted_at' => $version->accepted_at ?: $article->activeAcceptedFileSet?->accepted_at,
+                'change_summary' => $version->change_summary,
+                'revision_response' => $version->author_response,
+            ],
+            'metadata' => [
+                'keywords' => $metadata->get('keywords', []),
+                'article_type' => $metadata->get('article_type'),
+                'classification' => $metadata->get('article_category'),
+                'subject_area' => $metadata->get('subject_area'),
+                'language' => $metadata->get('language'),
+            ],
+            'authors' => collect($metadata->get('authors', []))->map(fn ($author) => [
+                'name' => $author['name'] ?? null,
+                'affiliation' => $author['affiliation'] ?? null,
+                'is_corresponding' => (bool) ($author['is_corresponding'] ?? false),
+                'author_order' => $author['author_order'] ?? null,
+            ])->sortBy('author_order')->values(),
+            'declarations' => [
+                'ethical_approval_statement' => $metadata->get('ethical_approval_statement'),
+                'conflict_of_interest_statement' => $metadata->get('conflict_of_interest_statement'),
+                'funding_statement' => $metadata->get('funding_statement'),
+                'data_availability_statement' => $metadata->get('data_availability_statement'),
+                'author_contribution_statement' => $metadata->get('author_contribution_statement'),
+            ],
+            'files' => [
+                'manuscript' => $acceptedItems->where('accepted_role', 'manuscript')->values(),
+                'additional' => $acceptedItems->where('accepted_role', 'additional')->values(),
+                'supplementary' => $acceptedItems->where('accepted_role', 'supplementary')->values(),
+                'accepted_file_set' => $acceptedFileSet,
+            ],
         ];
     }
 

@@ -8,6 +8,7 @@ use App\Models\Article;
 use App\Models\ArticleThreadMessage;
 use App\Models\User;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ArticleWorkspaceManifestService
@@ -29,6 +30,11 @@ class ArticleWorkspaceManifestService
         $projection = app(LifecycleStatusProjector::class)->projection($article, $viewer);
         $roles = $this->roles($article, $viewer);
         $acceptedVersionId = $article->activeAcceptedFileSet?->article_version_id ?: $article->accepted_version_id;
+
+        if (! $article->isDirectPublication() && $roles['copy_editor']) {
+            return $this->copyEditorManifest($article, $viewer, $projection, $acceptedVersionId);
+        }
+
         $versions = $this->visibleVersions($article, $viewer, $roles, $acceptedVersionId);
 
         $tabs = $versions->map(fn ($version, int $index) => $this->versionTab(
@@ -79,6 +85,73 @@ class ArticleWorkspaceManifestService
         ]));
 
         return $this->response($article, $projection, $acceptedVersionId, $tabs, $versions);
+    }
+
+    public function canAccessAcceptedManuscript(Article $article, User $viewer): bool
+    {
+        if ($article->isDirectPublication() || ! $viewer->hasRole('copy_editor')) {
+            return false;
+        }
+
+        $acceptedVersionId = $article->activeAcceptedFileSet?->article_version_id ?: $article->accepted_version_id;
+        if (! $acceptedVersionId || ! $article->versions()->whereKey($acceptedVersionId)->exists()) {
+            return false;
+        }
+
+        $hasActiveAssignment = $article->productionAssignments()
+            ->where('user_id', $viewer->id)
+            ->where('role', 'copy_editor')
+            ->whereNull('revoked_at')
+            ->whereNull('completed_at')
+            ->whereIn('status', ['assigned', 'pending', 'in_progress', 'correction_required'])
+            ->exists();
+
+        if (! $hasActiveAssignment) {
+            return false;
+        }
+
+        return DB::table('magazine_user')
+            ->where('user_id', $viewer->id)
+            ->where('magazine_id', $article->magazine_id)
+            ->where(fn ($query) => $query->where('role', 'copy_editor')->orWhereNull('role'))
+            ->exists();
+    }
+
+    private function copyEditorManifest(Article $article, User $viewer, array $projection, ?int $acceptedVersionId): array
+    {
+        if (! $this->canAccessAcceptedManuscript($article, $viewer)) {
+            return $this->response($article, $projection, $acceptedVersionId, collect(), collect());
+        }
+
+        $tabs = collect([
+            $this->articleTab('copyeditor-manuscript', 'accepted_manuscript', 'Manuscript Information', [], [
+                'accepted_version_id' => $acceptedVersionId,
+                'capabilities' => [
+                    'view' => true,
+                    'download_files' => true,
+                ],
+            ]),
+            $this->articleTab('copy-editing', 'copy_editing', 'Copy Editing',
+                $this->copyEditingActions($article, $viewer, $this->roles($article, $viewer))),
+        ]);
+
+        if ($article->proofRounds->isNotEmpty()) {
+            $tabs->push($this->articleTab('proofreading', 'proofreading', 'Proofreading',
+                $this->proofreadingActions($article, $this->roles($article, $viewer)), [
+                    'rounds' => $article->proofRounds->sortBy('round_number')->map(fn ($round) => [
+                        'id' => $round->id,
+                        'round_number' => $round->round_number,
+                        'status' => $round->status,
+                    ])->values()->all(),
+                ]));
+        }
+
+        $tabs->push($this->articleTab('workflow-history', 'workflow_history', 'Workflow History', []));
+        $tabs->push($this->articleTab('communication', 'communication', 'Communication', [], [
+            'unread_count' => $this->communicationUnreadCount($article, $viewer),
+        ]));
+
+        return $this->response($article, $projection, $acceptedVersionId, $tabs, collect());
     }
 
     private function response(Article $article, array $projection, ?int $acceptedVersionId, Collection $tabs, Collection $versions): array

@@ -3,9 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\Article;
+use App\Models\ArticleAcceptedFileSet;
+use App\Models\ArticleAcceptedFileSetItem;
+use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
+use App\Models\EditorialDecision;
 use App\Models\Magazine;
 use App\Models\Permission;
+use App\Models\ProductionAssignment;
 use App\Models\ReviewerAssignment;
 use App\Models\Role;
 use App\Models\User;
@@ -88,6 +93,118 @@ class ArticleWorkspaceManifestTest extends TestCase
         $this->assertNotContains('final_editorial_decision', $types);
         $this->assertNotContains('copy_editing', $types);
         $this->assertNotContains('proofreading', $types);
+    }
+
+    public function test_assigned_copy_editor_receives_only_the_safe_accepted_manuscript_workspace(): void
+    {
+        [$article, $editor, $reviewer] = $this->workspaceFixture();
+        $copyRole = Role::create(['name' => 'copy_editor', 'display_name' => 'Copy Editor', 'is_system' => true]);
+        $copyRole->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
+        $copyEditor = User::factory()->create(['role_id' => $copyRole->id]);
+        $otherCopyEditor = User::factory()->create(['role_id' => $copyRole->id]);
+        $outsideCopyEditor = User::factory()->create(['role_id' => $copyRole->id]);
+        $copyEditor->magazines()->attach($article->magazine_id, ['role' => 'copy_editor']);
+        $otherCopyEditor->magazines()->attach($article->magazine_id, ['role' => 'copy_editor']);
+
+        $otherMagazine = Magazine::create(['title' => 'Other Journal', 'slug' => 'other-journal', 'description' => 'Test']);
+        $outsideCopyEditor->magazines()->attach($otherMagazine->id, ['role' => 'copy_editor']);
+
+        $initial = ArticleVersion::create([
+            'article_id' => $article->id, 'created_by' => $article->user_id, 'version_number' => 1,
+            'label' => 'Initial Submission', 'status_snapshot' => 'submitted',
+            'metadata_snapshot' => ['title' => 'Initial private title', 'abstract' => 'Initial abstract'],
+        ]);
+        $accepted = ArticleVersion::create([
+            'article_id' => $article->id, 'created_by' => $article->user_id, 'version_number' => 2,
+            'revision_number' => 1, 'revision_tracking_code' => 'ART-2026-001-R1', 'label' => 'Revised Manuscript',
+            'status_snapshot' => 'under_review', 'accepted_marker' => 1, 'accepted_at' => now(),
+            'change_summary' => 'Accepted revision changes.', 'author_response' => 'Production-safe response.',
+            'metadata_snapshot' => [
+                'title' => 'Accepted version title',
+                'abstract' => 'Accepted version abstract',
+                'keywords' => ['copyediting', 'production'],
+                'article_type' => 'Research Article',
+                'article_category' => 'Original Research',
+                'subject_area' => 'Computer Science',
+                'language' => 'English',
+                'funding_statement' => 'No external funding.',
+                'authors' => [['name' => 'Accepted Author', 'affiliation' => 'Manifest University', 'is_corresponding' => true, 'author_order' => 1]],
+            ],
+        ]);
+        $article->update([
+            'title' => 'Later mutable article title', 'abstract' => 'Later mutable abstract',
+            'current_version_id' => $accepted->id, 'accepted_version_id' => $accepted->id, 'status' => 'accepted',
+        ]);
+        $file = ArticleFile::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'uploaded_by' => $article->user_id,
+            'file_type' => ArticleFile::MANUSCRIPT, 'visibility' => 'workflow', 'disk' => 'local',
+            'file_path' => 'articles/accepted.docx', 'storage_key' => 'articles/accepted.docx',
+            'original_name' => 'accepted.docx', 'mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'size' => 1024, 'scan_status' => 'clean',
+        ]);
+        $set = ArticleAcceptedFileSet::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'accepted_by' => $editor->id,
+            'accepted_at' => now(), 'selection_policy' => ArticleAcceptedFileSet::POLICY_VERSION_LOCAL, 'active_marker' => 1,
+        ]);
+        ArticleAcceptedFileSetItem::create([
+            'accepted_file_set_id' => $set->id, 'article_file_id' => $file->id,
+            'source_version_id' => $accepted->id, 'accepted_role' => 'manuscript',
+        ]);
+        ReviewerAssignment::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'round_number' => 1,
+            'reviewer_id' => $reviewer->id, 'assigned_by' => $editor->id, 'status' => 'completed',
+            'completed_at' => now(), 'confidential_comments' => 'Never expose this review.',
+        ]);
+        EditorialDecision::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'decision_by' => $editor->id,
+            'decision' => 'accepted', 'decision_source' => 'editor', 'decision_date' => now(),
+            'internal_notes' => 'Never expose this editorial note.',
+        ]);
+        $assignment = ProductionAssignment::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'accepted_file_set_id' => $set->id,
+            'user_id' => $copyEditor->id, 'role' => 'copy_editor', 'assigned_by' => $editor->id, 'status' => 'pending',
+        ]);
+        ProductionAssignment::create([
+            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'accepted_file_set_id' => $set->id,
+            'user_id' => $outsideCopyEditor->id, 'role' => 'copy_editor', 'assigned_by' => $editor->id, 'status' => 'pending',
+        ]);
+
+        $manifest = app(ArticleWorkspaceManifestService::class)->manifest($article->fresh(), $copyEditor);
+        $this->assertSame(['accepted_manuscript', 'copy_editing', 'workflow_history', 'communication'], collect($manifest['tabs'])->pluck('type')->all());
+        $this->assertSame('copyeditor-manuscript', $manifest['tabs'][0]['key']);
+        $this->assertSame($accepted->id, $manifest['tabs'][0]['accepted_version_id']);
+        $this->assertEmpty(collect($manifest['tabs'])->where('type', 'article_version'));
+
+        Sanctum::actingAs($copyEditor);
+        $workflow = $this->getJson("/api/admin/articles/{$article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('workflow_manifest.tabs.0.type', 'accepted_manuscript')
+            ->assertJsonCount(0, 'article.versions');
+        $this->assertStringNotContainsString('Initial private title', $workflow->getContent());
+
+        $acceptedResponse = $this->getJson("/api/admin/articles/{$article->id}/accepted-manuscript")
+            ->assertOk()
+            ->assertJsonPath('data.article.title', 'Accepted version title')
+            ->assertJsonPath('data.article.abstract', 'Accepted version abstract')
+            ->assertJsonPath('data.accepted_version.id', $accepted->id)
+            ->assertJsonPath('data.files.manuscript.0.file.original_name', 'accepted.docx')
+            ->assertJsonMissingPath('data.reviewer_assignments')
+            ->assertJsonMissingPath('data.editorial_decisions');
+        $this->assertStringNotContainsString('Later mutable article title', $acceptedResponse->getContent());
+        $this->assertStringNotContainsString('Never expose this review', $acceptedResponse->getContent());
+        $this->assertStringNotContainsString('Never expose this editorial note', $acceptedResponse->getContent());
+
+        Sanctum::actingAs($otherCopyEditor);
+        $this->getJson("/api/admin/articles/{$article->id}/accepted-manuscript")->assertForbidden();
+        $this->getJson("/api/admin/articles/{$article->id}/workflow")->assertForbidden();
+
+        Sanctum::actingAs($outsideCopyEditor);
+        $this->getJson("/api/admin/articles/{$article->id}/accepted-manuscript")->assertForbidden();
+        $this->getJson("/api/admin/articles/{$article->id}/workflow")->assertForbidden();
+
+        $assignment->update(['status' => 'completed', 'completed_at' => now()]);
+        Sanctum::actingAs($copyEditor);
+        $this->getJson("/api/admin/articles/{$article->id}/accepted-manuscript")->assertForbidden();
     }
 
     public function test_direct_publication_workspace_rejects_non_publisher_editorial_roles(): void

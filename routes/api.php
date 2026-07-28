@@ -411,6 +411,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/articles/{id}/versions/{versionId}/reviewers', [ArticleWorkflowController::class, 'versionReviewers'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/accepted-files', [ArticleWorkflowController::class, 'acceptedFiles'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/accepted-manuscript', [ArticleWorkflowController::class, 'acceptedManuscript'])->middleware('permission:articles.view-own');
         Route::prefix('lifecycle')->middleware('throttle:30,1')->group(function () {
             Route::post('/articles/{article}/screen', [ArticleLifecycleController::class, 'screen']);
             Route::post('/articles/{article}/sub-editors', [ArticleLifecycleController::class, 'assignSubEditor']);

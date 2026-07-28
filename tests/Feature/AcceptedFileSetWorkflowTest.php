@@ -50,6 +50,7 @@ class AcceptedFileSetWorkflowTest extends TestCase
         $this->reviewer = User::factory()->create(['role_id' => $reviewerRole->id]);
         $this->magazine = Magazine::create(['title' => 'Accepted Files Journal', 'slug' => 'accepted-files-journal']);
         $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+        $this->copyEditor->magazines()->attach($this->magazine->id, ['role' => 'copy_editor']);
     }
 
     public function test_accepting_r1_includes_only_r1_files_and_copy_editor_uses_them(): void
