@@ -8,7 +8,6 @@ use App\Models\Article;
 use App\Models\ArticleThreadMessage;
 use App\Models\User;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ArticleWorkspaceManifestService
@@ -106,15 +105,7 @@ class ArticleWorkspaceManifestService
             ->whereIn('status', ['assigned', 'pending', 'in_progress', 'correction_required'])
             ->exists();
 
-        if (! $hasActiveAssignment) {
-            return false;
-        }
-
-        return DB::table('magazine_user')
-            ->where('user_id', $viewer->id)
-            ->where('magazine_id', $article->magazine_id)
-            ->where(fn ($query) => $query->where('role', 'copy_editor')->orWhereNull('role'))
-            ->exists();
+        return $hasActiveAssignment;
     }
 
     private function copyEditorManifest(Article $article, User $viewer, array $projection, ?int $acceptedVersionId): array

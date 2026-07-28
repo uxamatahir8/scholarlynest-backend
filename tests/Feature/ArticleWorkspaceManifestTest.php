@@ -103,7 +103,6 @@ class ArticleWorkspaceManifestTest extends TestCase
         $copyEditor = User::factory()->create(['role_id' => $copyRole->id]);
         $otherCopyEditor = User::factory()->create(['role_id' => $copyRole->id]);
         $outsideCopyEditor = User::factory()->create(['role_id' => $copyRole->id]);
-        $copyEditor->magazines()->attach($article->magazine_id, ['role' => 'copy_editor']);
         $otherCopyEditor->magazines()->attach($article->magazine_id, ['role' => 'copy_editor']);
 
         $otherMagazine = Magazine::create(['title' => 'Other Journal', 'slug' => 'other-journal', 'description' => 'Test']);
@@ -164,11 +163,7 @@ class ArticleWorkspaceManifestTest extends TestCase
             'article_id' => $article->id, 'article_version_id' => $accepted->id, 'accepted_file_set_id' => $set->id,
             'user_id' => $copyEditor->id, 'role' => 'copy_editor', 'assigned_by' => $editor->id, 'status' => 'pending',
         ]);
-        ProductionAssignment::create([
-            'article_id' => $article->id, 'article_version_id' => $accepted->id, 'accepted_file_set_id' => $set->id,
-            'user_id' => $outsideCopyEditor->id, 'role' => 'copy_editor', 'assigned_by' => $editor->id, 'status' => 'pending',
-        ]);
-
+        $this->assertFalse($copyEditor->magazines()->whereKey($article->magazine_id)->exists());
         $manifest = app(ArticleWorkspaceManifestService::class)->manifest($article->fresh(), $copyEditor);
         $this->assertSame(['accepted_manuscript', 'copy_editing', 'workflow_history', 'communication'], collect($manifest['tabs'])->pluck('type')->all());
         $this->assertSame('copyeditor-manuscript', $manifest['tabs'][0]['key']);
