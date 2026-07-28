@@ -46,7 +46,7 @@ class DirectPublicationController extends Controller
         $magazines = Magazine::query()->where('is_active', true)
             ->when(! $request->user()->hasRole('super_admin'), fn ($q) => $q->whereIn('id', $this->publisherMagazineIds($request)))
             ->orderBy('title')->get(['id', 'title', 'publication_type']);
-        $issues = MagazineIssue::query()->whereIn('magazine_id', $magazines->pluck('id'))->where('is_published', false)
+        $issues = MagazineIssue::query()->whereIn('magazine_id', $magazines->pluck('id'))
             ->orderByDesc('issue_year')->orderByDesc('issue_number')->get(['id', 'magazine_id', 'volume_number', 'issue_number', 'special_title', 'status']);
 
         return response()->json(['data' => ['magazines' => $magazines, 'issues' => $issues,

@@ -66,8 +66,12 @@ class DirectPublicationTest extends TestCase
 
     public function test_readiness_publish_and_unpublish_use_only_explicit_public_files(): void
     {
-        $issue = MagazineIssue::create(['magazine_id' => $this->magazine->id, 'volume_number' => 4, 'issue_number' => 2, 'issue_year' => now()->year, 'status' => 'draft', 'is_published' => false]);
+        $issue = MagazineIssue::create(['magazine_id' => $this->magazine->id, 'volume_number' => 4, 'issue_number' => 2, 'issue_year' => now()->year, 'status' => 'published', 'is_published' => true, 'published_at' => now()]);
         Sanctum::actingAs($this->superAdmin);
+        $this->getJson('/api/admin/direct-publications/options')
+            ->assertOk()
+            ->assertJsonPath('data.issues.0.id', $issue->id)
+            ->assertJsonPath('data.issues.0.status', 'published');
         $payload = $this->payload($this->magazine) + ['magazine_issue_id' => $issue->id, 'doi' => '10.5555/direct.1', 'page_start' => 1, 'page_end' => 8, 'online_publication_date' => now()->toDateString(),
             'publication_sections' => [
                 ['section_key' => 'abstract', 'title' => 'Summary', 'content_html' => '<p>Direct summary.</p>', 'sort_order' => 1],

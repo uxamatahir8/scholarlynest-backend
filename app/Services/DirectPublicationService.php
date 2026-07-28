@@ -254,8 +254,8 @@ class DirectPublicationService
         }
         if (! $record->magazine_issue_id) {
             $errors['magazine_issue_id'][] = 'An issue must be selected.';
-        } elseif (! $record->issue || (int) $record->issue->magazine_id !== (int) $article->magazine_id || $record->issue->is_published) {
-            $errors['magazine_issue_id'][] = 'The issue must belong to this publication and remain open.';
+        } elseif (! $record->issue || (int) $record->issue->magazine_id !== (int) $article->magazine_id) {
+            $errors['magazine_issue_id'][] = 'The issue must belong to this publication.';
         }
         if (blank($record->doi)) {
             $errors['doi'][] = 'DOI is required.';
