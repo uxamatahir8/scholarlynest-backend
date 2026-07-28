@@ -53,6 +53,7 @@ use App\Services\PasswordSetupService;
 use App\Services\PdfGeneratorService;
 use App\Services\Security\HtmlSanitizer;
 use App\Services\WorkflowTabManifestService;
+use App\Services\ArticleWorkspaceManifestService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -73,6 +74,9 @@ class ArticleWorkflowController extends Controller
     public function context(Request $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
+        if ($article->isDirectPublication() && ! $request->user()->hasRole(['super_admin', 'admin', 'publisher'])) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
 
         $article->load([
             'issue',
@@ -127,6 +131,18 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'data' => $this->serializedVersions($article, $request->user()),
+        ]);
+    }
+
+    public function workspaceManifest(Request $request, int $articleId): JsonResponse
+    {
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
+        if ($article->isDirectPublication() && ! $request->user()->hasRole(['super_admin', 'admin', 'publisher'])) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        return response()->json([
+            'data' => app(ArticleWorkspaceManifestService::class)->manifest($article, $request->user()),
         ]);
     }
 
@@ -2247,6 +2263,9 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $article->id,
             'tracking_code' => $article->tracking_code,
+            'current_version_id' => $article->current_version_id,
+            'accepted_version_id' => $article->accepted_version_id,
+            'submission_mode' => $article->submission_mode,
             'magazine_id' => $article->magazine_id,
             'magazine_issue_id' => $article->magazine_issue_id,
             'magazine' => $article->magazine ? [
@@ -2730,6 +2749,7 @@ class ArticleWorkflowController extends Controller
             'proof_rounds' => ($isAuthor || $canViewEditorial || $canViewProduction)
                 ? collect($article->proofRounds ?? [])->sortByDesc('round_number')->map(fn ($round) => [
                     'id' => $round->id,
+                    'article_version_id' => $round->article_version_id,
                     'round_number' => $round->round_number,
                     'label' => $round->status === 'approved' ? 'Final Proof' : 'Proof '.$round->round_number,
                     'status' => $round->status,
@@ -2822,16 +2842,22 @@ class ArticleWorkflowController extends Controller
             : [];
 
         $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
-            ? collect($article->auditLogs ?? [])->map(fn ($log) => [
-                'id' => $log->id,
-                'article_id' => $log->article_id,
-                'event' => $log->event,
-                'from_status' => $log->from_status,
-                'to_status' => $log->to_status,
-                'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
-                'payload' => $log->payload,
-                'created_at' => $log->created_at,
-            ])->values()
+            ? collect($article->auditLogs ?? [])->map(function ($log) {
+                $payload = is_array($log->payload) ? $log->payload : [];
+
+                return [
+                    'id' => $log->id,
+                    'article_id' => $log->article_id,
+                    'event' => $log->event,
+                    'display_event' => $log->event === 'notification.sent' ? ($payload['workflow_event'] ?? $log->event) : $log->event,
+                    'from_status' => $log->from_status,
+                    'to_status' => $log->to_status,
+                    'article_version_id' => $payload['article_version_id'] ?? null,
+                    'workflow_stage' => $payload['workflow_stage'] ?? $log->to_status ?? $log->from_status,
+                    'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
+                    'created_at' => $log->created_at,
+                ];
+            })->values()
             : [];
 
         $data['capabilities'] = [
@@ -2882,6 +2908,7 @@ class ArticleWorkflowController extends Controller
         $payload = [
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
+            'article_version_id' => $assignment->article_version_id,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
             'completed_at' => $assignment->completed_at,
@@ -3032,6 +3059,7 @@ class ArticleWorkflowController extends Controller
         $payload = [
             'id' => $decision->id,
             'article_id' => $decision->article_id,
+            'article_version_id' => $decision->article_version_id,
             'decision' => $decision->decision,
             'decision_source' => $decision->decision_source,
             'decision_date' => $decision->decision_date,
