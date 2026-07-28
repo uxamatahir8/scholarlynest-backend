@@ -115,6 +115,9 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         // Verify payload does NOT expose heavy full_text, files, or audit logs
         $item = $response->json('data.0');
         $this->assertArrayHasKey('primary_action', $item);
+        $this->assertSame($this->subEditorA->name, $item['assignee']['name']);
+        $this->assertNotEmpty($item['article']['tracking_code']);
+        $this->assertNotNull($item['due_date']);
         $this->assertArrayNotHasKey('full_text', $item);
         $this->assertArrayNotHasKey('files', $item);
         $this->assertArrayNotHasKey('audit_logs', $item);
@@ -152,6 +155,9 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
 
         $item = $response->json('data.0');
         $this->assertEquals('accept_decline', $item['primary_action']);
+        $this->assertSame($this->reviewerA->name, $item['assignee']['name']);
+        $this->assertNotEmpty($item['article']['tracking_code']);
+        $this->assertNotNull($item['due_date']);
         $this->assertArrayNotHasKey('full_text', $item);
     }
 

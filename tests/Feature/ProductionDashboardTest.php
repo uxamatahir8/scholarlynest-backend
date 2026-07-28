@@ -14,8 +14,8 @@ use App\Models\Role;
 use App\Models\User;
 use App\Services\AcceptedFileSetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class ProductionDashboardTest extends TestCase
@@ -23,12 +23,19 @@ class ProductionDashboardTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private User $publisher;
+
     private User $copyEditor;
+
     private User $otherCopyEditor;
+
     private User $proofreader;
+
     private User $author;
+
     private Magazine $magazine;
+
     private Magazine $otherMagazine;
 
     protected function setUp(): void
@@ -105,7 +112,7 @@ class ProductionDashboardTest extends TestCase
 
         Sanctum::actingAs($this->copyEditor);
 
-        $this->getJson('/api/admin/my-production-assignments?role=copy_editor')
+        $response = $this->getJson('/api/admin/my-production-assignments?role=copy_editor')
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.article.title', 'Copy Edited Article')
@@ -114,6 +121,10 @@ class ProductionDashboardTest extends TestCase
             ->assertJsonMissingPath('data.0.user')
             ->assertJsonMissingPath('data.0.files')
             ->assertJsonPath('data.0.is_overdue', true);
+
+        $this->assertSame($this->copyEditor->name, $response->json('data.0.assignee.name'));
+        $this->assertNotEmpty($response->json('data.0.article.tracking_code'));
+        $this->assertNotNull($response->json('data.0.due_date'));
     }
 
     public function test_copy_editor_sees_only_files_from_latest_accepted_submission(): void
@@ -400,7 +411,7 @@ class ProductionDashboardTest extends TestCase
             'magazine_id' => $magazine->id,
             'user_id' => $this->author->id,
             'title' => $title,
-            'slug' => Str::slug($title) . '-' . uniqid(),
+            'slug' => Str::slug($title).'-'.uniqid(),
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'status' => $status,

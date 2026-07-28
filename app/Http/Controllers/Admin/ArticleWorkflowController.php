@@ -316,8 +316,9 @@ class ArticleWorkflowController extends Controller
 
         $query = SubEditorAssignment::query()
             ->with([
-                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
                 'article.magazine:id,title,slug',
+                'subEditor:id,name',
             ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $deskUser->id))
             ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
@@ -358,8 +359,9 @@ class ArticleWorkflowController extends Controller
 
         $query = ReviewerAssignment::query()
             ->with([
-                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
                 'article.magazine:id,title,slug',
+                'reviewer:id,name',
             ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
             ->where(fn ($q) => $q->whereNotNull('accepted_at')->orWhereNull('invite_token_hash'))
@@ -418,7 +420,11 @@ class ArticleWorkflowController extends Controller
         }
 
         $query = ProductionAssignment::query()
-            ->with(['article:id,magazine_id,title,status,created_at,updated_at', 'article.magazine:id,title,slug'])
+            ->with([
+                'article:id,magazine_id,tracking_code,title,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+                'user:id,name',
+            ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('user_id', $deskUser->id))
             ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
             ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
@@ -3238,6 +3244,10 @@ class ArticleWorkflowController extends Controller
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
             'sub_editor_id' => $assignment->sub_editor_id,
+            'assignee' => $assignment->subEditor ? [
+                'id' => $assignment->subEditor->id,
+                'name' => $assignment->subEditor->name,
+            ] : null,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
             'completed_at' => $assignment->completed_at,
@@ -3250,6 +3260,7 @@ class ArticleWorkflowController extends Controller
             'primary_action' => $primaryAction,
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'slug' => $article->slug,
                 'status' => $article->status,
@@ -3281,6 +3292,10 @@ class ArticleWorkflowController extends Controller
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
             'reviewer_id' => $assignment->reviewer_id,
+            'assignee' => $assignment->reviewer || $assignment->invitee_name ? [
+                'id' => $assignment->reviewer?->id,
+                'name' => $assignment->reviewer?->name ?: $assignment->invitee_name,
+            ] : null,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
             'accepted_at' => $assignment->accepted_at,
@@ -3293,6 +3308,7 @@ class ArticleWorkflowController extends Controller
             'primary_action' => $primaryAction,
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'slug' => $article->slug,
                 'status' => $article->status,
@@ -3314,6 +3330,10 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
+            'assignee' => $assignment->user ? [
+                'id' => $assignment->user->id,
+                'name' => $assignment->user->name,
+            ] : null,
             'role' => $assignment->role,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
@@ -3325,6 +3345,7 @@ class ArticleWorkflowController extends Controller
                 && ! in_array($assignment->status, ['completed'], true),
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'status' => $article->status,
                 'created_at' => $article->created_at,
