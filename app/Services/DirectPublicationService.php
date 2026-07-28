@@ -232,12 +232,6 @@ class DirectPublicationService
                 $errors[$field][] = ucfirst(str_replace('_', ' ', $field)).' is required.';
             }
         }
-        if (blank($article->keywords) || count((array) $article->keywords) === 0) {
-            $errors['keywords'][] = 'At least one keyword is required.';
-        }
-        if (blank($article->article_category) && blank($article->subject_area)) {
-            $errors['category'][] = 'An article category or subject area is required.';
-        }
         if ($article->articleAuthors->isEmpty()) {
             $errors['authors'][] = 'At least one author is required.';
         }
@@ -246,11 +240,6 @@ class DirectPublicationService
         }
         if ($article->articleAuthors->contains(fn ($author) => blank($author->affiliation))) {
             $errors['affiliations'][] = 'Every author must have an affiliation.';
-        }
-        foreach (['ethical_approval_statement', 'conflict_of_interest_statement', 'funding_statement', 'data_availability_statement', 'author_contribution_statement', 'license_statement'] as $field) {
-            if (blank($article->{$field})) {
-                $errors[$field][] = ucfirst(str_replace('_', ' ', $field)).' is required.';
-            }
         }
         if (! $record->magazine_issue_id) {
             $errors['magazine_issue_id'][] = 'An issue must be selected.';

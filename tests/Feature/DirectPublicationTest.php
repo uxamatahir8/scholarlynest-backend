@@ -64,7 +64,7 @@ class DirectPublicationTest extends TestCase
         $this->assertDatabaseCount('production_assignments', 0);
     }
 
-    public function test_readiness_publish_and_unpublish_use_only_explicit_public_files(): void
+    public function test_readiness_allows_optional_metadata_and_uses_only_explicit_public_files(): void
     {
         $issue = MagazineIssue::create(['magazine_id' => $this->magazine->id, 'volume_number' => 4, 'issue_number' => 2, 'issue_year' => now()->year, 'status' => 'published', 'is_published' => true, 'published_at' => now()]);
         Sanctum::actingAs($this->superAdmin);
@@ -109,10 +109,8 @@ class DirectPublicationTest extends TestCase
 
     private function payload(Magazine $magazine): array
     {
-        return ['magazine_id' => $magazine->id, 'title' => 'A Directly Published Study', 'abstract' => 'A complete abstract.', 'keywords' => ['direct', 'publication'],
-            'article_type' => 'Research Article', 'article_category' => 'Research', 'language' => 'English',
-            'ethical_approval_statement' => 'Not applicable.', 'conflict_of_interest_statement' => 'None declared.', 'funding_statement' => 'No external funding.',
-            'data_availability_statement' => 'Data are available on request.', 'author_contribution_statement' => 'All authors contributed.', 'license_statement' => 'CC BY 4.0',
+        return ['magazine_id' => $magazine->id, 'title' => 'A Directly Published Study', 'abstract' => 'A complete abstract.',
+            'article_type' => 'Research Article', 'language' => 'English',
             'authors' => [['name' => 'Ada Researcher', 'email' => 'ada@example.test', 'affiliation' => 'Scholarly Institute', 'is_corresponding' => true]]];
     }
 }
