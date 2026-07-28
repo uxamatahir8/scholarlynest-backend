@@ -2,12 +2,13 @@
 
 namespace App\Services;
 
+use App\Constants\ArticleStatus;
 use App\Constants\LifecycleStatus;
 use App\Models\Article;
 use App\Models\ArticleThreadMessage;
 use App\Models\User;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class ArticleWorkspaceManifestService
 {
@@ -133,10 +134,12 @@ class ArticleWorkspaceManifestService
         if ($roles['reviewer']) {
             $ids = $article->reviewerAssignments->where('reviewer_id', $viewer->id)->whereNull('revoked_at')
                 ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened', 'completed'])->pluck('article_version_id')->unique();
+
             return $versions->whereIn('id', $ids)->values();
         }
         if ($roles['sub_editor'] && ! $roles['editorial']) {
             $ids = $article->subEditorAssignments->where('sub_editor_id', $viewer->id)->whereNull('revoked_at')->pluck('article_version_id')->unique();
+
             return $versions->whereIn('id', $ids)->values();
         }
         if (($roles['copy_editor'] || $roles['publisher']) && ! $roles['editorial']) {
@@ -162,7 +165,7 @@ class ArticleWorkspaceManifestService
             'available_actions' => [],
         ]];
 
-        if (! $article->isDirectPublication() && ! $roles['reviewer'] && ! $roles['copy_editor'] && ! $roles['publisher']) {
+        if (! $article->isDirectPublication() && ($roles['editorial'] || $roles['sub_editor'])) {
             $sidebar[] = ['key' => 'editorial-decision', 'label' => 'Editorial Decision', 'visible' => true,
                 'available_actions' => $this->editorialActions($roles, $projection, $version, $article)];
             $sidebar[] = ['key' => 'sub-editor-recommendation', 'label' => 'Sub Editor Recommendation', 'visible' => true,
@@ -180,16 +183,24 @@ class ArticleWorkspaceManifestService
             ];
         }
 
+        $snapshotStatus = ArticleStatus::normalize($version->status_snapshot) ?: ArticleStatus::SUBMITTED;
+        $versionStatus = $accepted
+            ? ArticleStatus::ACCEPTED
+            : ($snapshotStatus === ArticleStatus::ACCEPTED ? ArticleStatus::SUBMITTED : $snapshotStatus);
+
         return [
             'key' => 'version-'.$versionId,
             'type' => 'article_version',
             'label' => $this->versionLabel($article, $version, $index, $accepted),
             'version_id' => $versionId,
             'accepted' => $accepted,
+            'is_accepted' => $accepted,
             'status' => [
-                'code' => $version->status_snapshot ?: ($versionId === (int) $article->current_version_id ? $projection['canonical'] : 'submitted'),
+                'code' => $versionStatus,
+                'label' => ArticleStatus::AUTHOR_VISIBLE[$versionStatus] ?? Str::headline($versionStatus),
                 'screening' => $version->screening_status,
             ],
+            'submitted_at' => $version->submitted_at?->toISOString() ?? $version->created_at?->toISOString(),
             'review_round' => (int) ($article->reviewerAssignments->where('article_version_id', $versionId)->max('round_number') ?: 1),
             'review_status' => $this->reviewStatus($article->reviewerAssignments->where('article_version_id', $versionId)),
             'assignment_state' => $article->subEditorAssignments->where('article_version_id', $versionId)->sortByDesc('id')->first()?->status,
@@ -237,7 +248,9 @@ class ArticleWorkspaceManifestService
 
     private function reviewerActions(Article $article, array $roles, $version): array
     {
-        return ($roles['editorial'] || $roles['sub_editor']) && $version->screening_status === 'passed'
+        return ($roles['editorial'] || $roles['sub_editor'])
+            && (int) $version->id === (int) $article->current_version_id
+            && $version->screening_status === 'passed'
             ? ['invite_reviewer', 'resend_invitation', 'reinvite_reviewer', 'invite_for_revision_review']
             : [];
     }

@@ -173,6 +173,7 @@ class ArticleVersionService
                 'id' => $version->creator->id,
                 'name' => $version->creator->name,
             ] : null,
+            'submitted_at' => $version->submitted_at,
             'created_at' => $version->created_at,
         ];
     }

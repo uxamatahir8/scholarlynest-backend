@@ -31,12 +31,12 @@ class ArticleWorkspaceManifestTest extends TestCase
             'submitted_at' => now(), 'accepted_marker' => 1, 'accepted_at' => now(),
         ]);
         $article->update(['current_version_id' => $revision->id, 'accepted_version_id' => $revision->id, 'status' => 'accepted']);
-        ReviewerAssignment::create([
+        $initialReview = ReviewerAssignment::create([
             'article_id' => $article->id, 'article_version_id' => $initial->id, 'round_number' => 1,
             'reviewer_id' => $reviewer->id, 'assigned_by' => $editor->id, 'status' => 'completed',
             'completed_at' => now(), 'recommendation' => 'minor_revision',
         ]);
-        ReviewerAssignment::create([
+        $revisionReview = ReviewerAssignment::create([
             'article_id' => $article->id, 'article_version_id' => $revision->id, 'round_number' => 1,
             'reviewer_id' => $reviewer->id, 'assigned_by' => $editor->id, 'status' => 'accepted',
             'accepted_at' => now(),
@@ -47,10 +47,26 @@ class ArticleWorkspaceManifestTest extends TestCase
 
         $this->assertSame('Initial Submission (ART-2026-001)', $versionTabs[0]['label']);
         $this->assertSame('ART-2026-001 – R2 (Accepted)', $versionTabs[1]['label']);
+        $this->assertSame(['code' => 'submitted', 'label' => 'Submitted', 'screening' => 'passed'], $versionTabs[0]['status']);
+        $this->assertSame(['code' => 'accepted', 'label' => 'Accepted', 'screening' => 'passed'], $versionTabs[1]['status']);
+        $this->assertFalse($versionTabs[0]['is_accepted']);
+        $this->assertTrue($versionTabs[1]['is_accepted']);
         $this->assertSame($revision->id, $manifest['accepted_version_id']);
         $this->assertContains('Reviewer 1 Review', collect($versionTabs[0]['sidebar'])->pluck('label'));
         $this->assertNotContains('Reviewer 1 Review', collect($versionTabs[1]['sidebar'])->pluck('label'));
         $this->assertArrayNotHasKey('next_action', $manifest);
+
+        Sanctum::actingAs($editor);
+        $this->getJson("/api/admin/articles/{$article->id}/versions/{$initial->id}/reviewers?review_round=1")
+            ->assertOk()
+            ->assertJsonPath('data.version_id', $initial->id)
+            ->assertJsonCount(1, 'data.reviewer_assignments')
+            ->assertJsonPath('data.reviewer_assignments.0.id', $initialReview->id);
+        $this->getJson("/api/admin/articles/{$article->id}/versions/{$revision->id}/reviewers?review_round=1")
+            ->assertOk()
+            ->assertJsonPath('data.version_id', $revision->id)
+            ->assertJsonCount(1, 'data.reviewer_assignments')
+            ->assertJsonPath('data.reviewer_assignments.0.id', $revisionReview->id);
     }
 
     public function test_direct_publication_manifest_has_no_editorial_or_reviewer_tabs(): void

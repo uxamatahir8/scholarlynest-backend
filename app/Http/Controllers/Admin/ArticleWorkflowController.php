@@ -42,6 +42,7 @@ use App\Models\User;
 use App\Services\AcceptedFileSetService;
 use App\Services\ArticleVersionFileSectionResolver;
 use App\Services\ArticleVersionService;
+use App\Services\ArticleWorkspaceManifestService;
 use App\Services\CitationService;
 use App\Services\LifecycleStatusProjector;
 use App\Services\Media\CleanUploadResolver;
@@ -53,7 +54,6 @@ use App\Services\PasswordSetupService;
 use App\Services\PdfGeneratorService;
 use App\Services\Security\HtmlSanitizer;
 use App\Services\WorkflowTabManifestService;
-use App\Services\ArticleWorkspaceManifestService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -144,6 +144,97 @@ class ArticleWorkflowController extends Controller
         return response()->json([
             'data' => app(ArticleWorkspaceManifestService::class)->manifest($article, $request->user()),
         ]);
+    }
+
+    public function versionReviewers(Request $request, int $articleId, int $versionId): JsonResponse
+    {
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'sub_editor'], false);
+        $version = $article->versions()->whereKey($versionId)->firstOrFail();
+        $viewer = $request->user();
+        $isVersionSubEditor = $article->subEditorAssignments()
+            ->where('article_version_id', $version->id)
+            ->where('sub_editor_id', $viewer->id)
+            ->whereNull('revoked_at')
+            ->exists();
+        if (! $this->isGlobal($viewer)
+            && ! $this->isAssignedToMagazine($viewer, $article->magazine_id, ['editor'])
+            && ! $isVersionSubEditor) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $request->validate(['review_round' => 'nullable|integer|min:1']);
+        $round = $request->integer('review_round') ?: ((int) $article->reviewerAssignments()
+            ->where('article_version_id', $version->id)->max('round_number') ?: 1);
+        $article->load([
+            'reviewerPreferences',
+            'reviewerAssignments' => fn ($query) => $query
+                ->where('article_version_id', $version->id)
+                ->where('round_number', $round)
+                ->with(['reviewer:id,name,email,university_name', 'questionnaireInstance.version.questions.options', 'questionnaireInstance.responses']),
+        ]);
+        $priorCompleted = ReviewerAssignment::query()
+            ->where('article_id', $article->id)
+            ->where('article_version_id', '!=', $version->id)
+            ->where('status', 'completed')
+            ->with('reviewer:id,name,email,university_name')
+            ->get();
+        $completedEmails = $priorCompleted->map(fn ($assignment) => strtolower((string) ($assignment->invitee_email ?: $assignment->reviewer?->email)))
+            ->filter()->unique()->values()->all();
+        $preferences = $article->reviewerPreferences->groupBy('type')->map(fn ($items) => $items->map(function ($item) use ($completedEmails) {
+            return [
+                'id' => $item->id,
+                'type' => $item->type,
+                'name' => $item->name,
+                'email' => $item->email,
+                'affiliation' => $item->affiliation,
+                'designation' => $item->designation,
+                'reason' => $item->reason,
+                'previously_completed_review' => in_array(strtolower((string) $item->email), $completedEmails, true),
+            ];
+        })->values())->union(['suggested' => collect(), 'opposed' => collect()]);
+        $suggestedEmails = collect($preferences['suggested'])->pluck('email')->map(fn ($email) => strtolower((string) $email));
+        $priorCompleted->each(function ($assignment) use ($preferences, $suggestedEmails) {
+            $email = $assignment->invitee_email ?: $assignment->reviewer?->email;
+            if (! $email || $suggestedEmails->contains(strtolower((string) $email))) {
+                return;
+            }
+            $preferences['suggested']->push([
+                'id' => 'previous-'.$assignment->id,
+                'type' => 'suggested',
+                'name' => $assignment->invitee_name ?: $assignment->reviewer?->name,
+                'email' => $email,
+                'affiliation' => $assignment->reviewer?->university_name,
+                'designation' => null,
+                'reason' => null,
+                'previously_completed_review' => true,
+            ]);
+            $suggestedEmails->push(strtolower((string) $email));
+        });
+        $canManage = (int) $article->current_version_id === (int) $version->id
+            && $version->screening_status === 'passed'
+            && in_array(ArticleStatus::normalize($article->status), [
+                ArticleStatus::UNDER_REVIEW,
+                ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
+                ArticleStatus::REVIEWER_ASSIGNED,
+                ArticleStatus::REVIEW_IN_PROGRESS,
+                ArticleStatus::RESUBMITTED,
+            ], true);
+
+        return response()->json(['data' => [
+            'article_id' => $article->id,
+            'version_id' => $version->id,
+            'review_round' => $round,
+            'reviewer_preferences' => $preferences,
+            'reviewer_assignments' => $article->reviewerAssignments
+                ->map(fn ($assignment) => $this->reviewerAssignmentPayload($assignment, $viewer, true))->values(),
+            'capabilities' => [
+                'manage' => $canManage,
+                'invite' => $canManage,
+                'resend' => $canManage,
+                'reinvite' => $canManage,
+                'invite_for_revision_review' => $canManage && (int) $version->version_number > 1,
+            ],
+        ]]);
     }
 
     public function acceptedFiles(Request $request, int $articleId): JsonResponse

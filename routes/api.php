@@ -408,6 +408,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/workspace-manifest', [ArticleWorkflowController::class, 'workspaceManifest'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/versions/{versionId}/reviewers', [ArticleWorkflowController::class, 'versionReviewers'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/accepted-files', [ArticleWorkflowController::class, 'acceptedFiles'])->middleware('permission:articles.view-own');
         Route::prefix('lifecycle')->middleware('throttle:30,1')->group(function () {
