@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Models\Article;
 use App\Models\ArticleReviewRound;
+use App\Models\ArticleAuditLog;
 use App\Models\ReviewerAssignment;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use App\Services\Notifications\NotificationEventRecorder;
 
 class ReviewerWorkflowService
 {
@@ -107,7 +109,7 @@ class ReviewerWorkflowService
     public function submit(ReviewerAssignment $assignment, User $actor, string $recommendation, string $authorComments, ?string $confidentialComments, string $key): array
     {
         return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'submit-review', $key, ['assignment_id' => $assignment->id, 'recommendation' => $recommendation], 'review.submitted', 'review.submitted',
-            function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments) {
+            function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments, $key) {
                 $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
                 if ((int) $locked->reviewer_id !== (int) $actor->id || ! app(ReviewerQuestionnaireService::class)->canAccess($locked)) {
                     app(ArticleLifecycleService::class)->conflict('The review is not open for submission.');
@@ -121,9 +123,58 @@ class ReviewerWorkflowService
                 }
                 $decisionExists = $locked->article->editorialDecisions()->where('article_version_id', $locked->article_version_id)->exists();
                 $locked->update(['status' => 'completed', 'completed_at' => now(), 'recommendation' => $recommendation, 'comments_for_author' => $authorComments, 'confidential_comments' => $confidentialComments, 'submitted_after_decision' => $decisionExists, 'editorial_decision_existed_at_submission' => $decisionExists]);
+                if ($decisionExists) {
+                    $audit = ArticleAuditLog::create([
+                        'article_id' => $locked->article_id,
+                        'actor_id' => $actor->id,
+                        'event' => 'review.submitted_after_decision',
+                        'from_status' => $locked->article->status,
+                        'to_status' => $locked->article->status,
+                        'payload' => ['article_version_id' => $locked->article_version_id, 'review_round_id' => $locked->review_round_id, 'reviewer_assignment_id' => $locked->id],
+                    ]);
+                    app(NotificationEventRecorder::class)->record(
+                        'review.submitted_after_decision', $locked->article, $actor,
+                        ['article_version_id' => $locked->article_version_id, 'review_round_id' => $locked->review_round_id, 'assignment_id' => $locked->id],
+                        'reviewer_assignment', $locked->id,
+                        deduplicationKey: "review-submitted-after-decision:{$locked->id}:{$key}",
+                        articleAuditLogId: $audit->id,
+                    );
+                }
 
                 return ['assignment_id' => $locked->id, 'status' => 'completed'];
             });
+    }
+
+    public function start(ReviewerAssignment $assignment, User $actor, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'start-review', $key, ['assignment_id' => $assignment->id], 'review.started', 'review.started', function () use ($assignment, $actor) {
+            $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+            $this->assertAccessibleAssignment($locked, $actor, ['accepted', 'in_progress', 'review_in_progress', 'reopened']);
+            if ($locked->status === 'accepted') {
+                $locked->update(['status' => 'in_progress', 'started_at' => $locked->started_at ?: now()]);
+            }
+            app(ReviewerQuestionnaireService::class)->ensure($locked->fresh());
+
+            return ['assignment_id' => $locked->id, 'status' => $locked->fresh()->status];
+        });
+    }
+
+    public function saveDraft(ReviewerAssignment $assignment, User $actor, ?string $recommendation, ?string $authorComments, ?string $confidentialComments, array $responses, string $key): array
+    {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'save-review-draft', $key, ['assignment_id' => $assignment->id], 'review.draft_saved', 'review.draft_saved', function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments, $responses) {
+            $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+            $this->assertAccessibleAssignment($locked, $actor, ['accepted', 'in_progress', 'review_in_progress', 'reopened']);
+            $locked->update([
+                'status' => 'in_progress',
+                'started_at' => $locked->started_at ?: now(),
+                'recommendation' => $recommendation,
+                'comments_for_author' => $authorComments,
+                'confidential_comments' => $confidentialComments,
+            ]);
+            app(ReviewerQuestionnaireService::class)->saveDraftResponses($locked->fresh(), $responses);
+
+            return ['assignment_id' => $locked->id, 'status' => 'in_progress'];
+        });
     }
 
     public function reopen(ReviewerAssignment $assignment, User $actor, string $key): array
@@ -137,5 +188,17 @@ class ReviewerWorkflowService
 
             return ['assignment_id' => $locked->id, 'status' => 'in_progress'];
         });
+    }
+
+    private function assertAccessibleAssignment(ReviewerAssignment $assignment, User $actor, array $statuses): void
+    {
+        if ((int) $assignment->reviewer_id !== (int) $actor->id || $assignment->revoked_at || $assignment->closed_at || ! in_array($assignment->status, $statuses, true)) {
+            app(ArticleLifecycleService::class)->conflict('The review assignment is not available to the current reviewer.');
+        }
+        if (! $assignment->version || ! $assignment->reviewRound
+            || (int) $assignment->reviewRound->article_version_id !== (int) $assignment->article_version_id
+            || (int) $assignment->reviewRound->article_id !== (int) $assignment->article_id) {
+            app(ArticleLifecycleService::class)->conflict('The review assignment version or review round is invalid.');
+        }
     }
 }

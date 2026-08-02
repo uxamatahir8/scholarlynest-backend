@@ -79,6 +79,8 @@ return [
         'reviewer.assigned' => $template('assignment', 'normal', 'info', 'Reviewer invitation created', 'A reviewer invitation was created for manuscript {tracking_code}.', 'article.workflow', false, false, true),
         'review.accepted' => $template('assignment', 'high', 'success', 'Review invitation accepted', 'A review invitation for manuscript {tracking_code} was accepted.', 'article.workflow', false, true, true),
         'review.declined' => $template('assignment', 'high', 'warning', 'Review invitation declined', 'A review invitation for manuscript {tracking_code} was declined.', 'article.workflow', true, true, true),
+        'review.started' => $template('assignment', 'normal', 'info', 'Review started', 'A reviewer started work on manuscript {tracking_code}.', 'article.workflow', false, false, true),
+        'review.draft_saved' => $template('assignment', 'normal', 'info', 'Review draft saved', 'A review draft was saved for manuscript {tracking_code}.', 'article.workflow', false, false, true),
         'review.invitation_reminded' => $template('deadline', 'normal', 'info', 'Review invitation reminder sent', 'The review invitation for manuscript {tracking_code} is still awaiting a response.', 'reviewer.desk', true, false, true),
         'review.invitation_expired' => $template('deadline', 'high', 'warning', 'Review invitation expired', 'A review invitation for manuscript {tracking_code} expired.', 'article.workflow', true, true),
         'review.submitted' => $template('editorial', 'high', 'success', 'Review submitted', 'A review is ready for manuscript {tracking_code}.', 'article.workflow', true, true, true),

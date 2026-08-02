@@ -418,6 +418,8 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
             Route::post('/sub-editor-assignments/{assignment}/recommendation', [ArticleLifecycleController::class, 'recommend']);
             Route::post('/articles/{article}/reviewer-invitations', [ArticleLifecycleController::class, 'inviteReviewer']);
             Route::post('/reviewer-assignments/{assignment}/response', [ArticleLifecycleController::class, 'reviewResponse']);
+            Route::post('/reviewer-assignments/{assignment}/start', [ArticleLifecycleController::class, 'startReview']);
+            Route::put('/reviewer-assignments/{assignment}/draft', [ArticleLifecycleController::class, 'saveReviewDraft']);
             Route::post('/reviewer-assignments/{assignment}/review', [ArticleLifecycleController::class, 'submitReview']);
             Route::post('/reviewer-assignments/{assignment}/reopen', [ArticleLifecycleController::class, 'reopenReview']);
             Route::post('/articles/{article}/editorial-decisions', [ArticleLifecycleController::class, 'editorialDecision']);

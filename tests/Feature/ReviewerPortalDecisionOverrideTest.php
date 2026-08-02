@@ -105,6 +105,20 @@ class ReviewerPortalDecisionOverrideTest extends TestCase
             ->assertOk()->assertHeader('Idempotent-Replay', 'true');
         $this->assertNotNull($initialInvite->fresh()->questionnaire_instance_id);
         $this->assertSame('invited', $revisionInvite->fresh()->status);
+        $this->getJson("/api/admin/my-reviewer-assignments/{$initialInvite->id}")
+            ->assertOk()
+            ->assertJsonPath('data.version_label', 'Initial Submission')
+            ->assertJsonPath('data.capabilities.start_review', true);
+        $this->withHeader('Idempotency-Key', 'start-initial')->postJson("/api/admin/lifecycle/reviewer-assignments/{$initialInvite->id}/start")
+            ->assertOk()->assertJsonPath('result.status', 'in_progress');
+        $this->withHeader('Idempotency-Key', 'draft-initial')->putJson("/api/admin/lifecycle/reviewer-assignments/{$initialInvite->id}/draft", [
+            'recommendation' => 'minor_revision',
+            'author_comments' => 'Draft comments.',
+            'questionnaire_responses' => [],
+        ])->assertOk()->assertJsonPath('result.status', 'in_progress');
+        $this->assertNotNull($initialInvite->fresh()->started_at);
+        $this->assertDatabaseHas('article_audit_logs', ['article_id' => $this->article->id, 'event' => 'review.draft_saved']);
+        $this->assertDatabaseHas('notification_events', ['article_id' => $this->article->id, 'event_type' => 'review.draft_saved']);
 
         $this->withHeader('Idempotency-Key', 'decline-revision')->postJson("/api/admin/lifecycle/reviewer-assignments/{$revisionInvite->id}/response", [
             'decision' => 'decline', 'reason' => 'Outside my expertise.',
@@ -112,7 +126,7 @@ class ReviewerPortalDecisionOverrideTest extends TestCase
         $this->withHeader('Idempotency-Key', 'decline-revision')->postJson("/api/admin/lifecycle/reviewer-assignments/{$revisionInvite->id}/response", [
             'decision' => 'decline', 'reason' => 'Outside my expertise.',
         ])->assertOk()->assertHeader('Idempotent-Replay', 'true');
-        $this->assertSame('accepted', $initialInvite->fresh()->status);
+        $this->assertSame('in_progress', $initialInvite->fresh()->status);
         $this->assertDatabaseHas('reviewer_assignments', ['id' => $revisionInvite->id, 'status' => 'declined', 'decline_reason' => 'Outside my expertise.']);
     }
 

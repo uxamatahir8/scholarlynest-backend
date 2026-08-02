@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\ReviewQuestionnaireInstance;
 use App\Models\ReviewQuestionnaireVersion;
+use App\Models\ReviewQuestionResponse;
 use App\Models\ReviewerAssignment;
 
 class ReviewerQuestionnaireService
@@ -53,5 +54,31 @@ class ReviewerQuestionnaireService
         return ! $assignment->revoked_at
             && ! $assignment->closed_at
             && in_array($assignment->status, self::ACCESSIBLE_STATUSES, true);
+    }
+
+    public function saveDraftResponses(ReviewerAssignment $assignment, array $responses): void
+    {
+        $instance = $this->ensure($assignment);
+        if (! $instance) {
+            return;
+        }
+        $instance->loadMissing('version.questions');
+        $allowed = $instance->version->questions->pluck('id')->map(fn ($id) => (int) $id);
+        foreach ($responses as $row) {
+            $questionId = (int) ($row['question_id'] ?? 0);
+            if (! $questionId || ! $allowed->contains($questionId)) {
+                app(ArticleLifecycleService::class)->conflict('One or more questionnaire responses do not belong to this review assignment.');
+            }
+            ReviewQuestionResponse::updateOrCreate(
+                [
+                    'review_questionnaire_instance_id' => $instance->id,
+                    'review_question_id' => $questionId,
+                ],
+                [
+                    'answer' => $row['answer'] ?? null,
+                    'comment' => isset($row['comment']) ? trim((string) $row['comment']) ?: null : null,
+                ]
+            );
+        }
     }
 }

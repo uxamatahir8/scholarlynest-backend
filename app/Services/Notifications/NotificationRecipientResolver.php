@@ -62,7 +62,7 @@ class NotificationRecipientResolver
             'sub_editor.recommendation_submitted' => $editors->merge($admins),
             'reviewer.invited', 'review.invitation_reminded' => $reviewers,
             'reviewer.assigned' => $authors->merge($actor)->merge($admins),
-            'review.accepted', 'review.declined', 'review.submitted', 'review.submitted_after_decision' => $editors->merge($subEditors)->merge($admins),
+            'review.accepted', 'review.declined', 'review.started', 'review.draft_saved', 'review.submitted', 'review.submitted_after_decision' => $editors->merge($subEditors)->merge($admins),
             'review.decision_proceeded_open', 'review.closed_without_review' => $reviewers,
             'editorial_decision.pending_reviews' => $editors->merge($subEditors)->merge($admins),
             'review.invitation_expired' => $reviewers->merge($editors)->merge($subEditors)->merge($admins),

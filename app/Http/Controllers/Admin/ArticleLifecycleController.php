@@ -69,6 +69,32 @@ class ArticleLifecycleController extends Controller
         return $this->result($service->submit($assignment, $request->user(), $request->string('recommendation')->toString(), $request->string('author_comments')->toString(), $request->input('confidential_comments'), $request->idempotencyKey()));
     }
 
+    public function startReview(LifecycleCommandRequest $request, ReviewerAssignment $assignment, ReviewerWorkflowService $service): JsonResponse
+    {
+        if ((int) $assignment->reviewer_id !== (int) $request->user()->id) {
+            abort(403);
+        }
+
+        return $this->result($service->start($assignment, $request->user(), $request->idempotencyKey()));
+    }
+
+    public function saveReviewDraft(LifecycleCommandRequest $request, ReviewerAssignment $assignment, ReviewerWorkflowService $service): JsonResponse
+    {
+        if ((int) $assignment->reviewer_id !== (int) $request->user()->id) {
+            abort(403);
+        }
+
+        return $this->result($service->saveDraft(
+            $assignment,
+            $request->user(),
+            $request->input('recommendation'),
+            $request->input('author_comments'),
+            $request->input('confidential_comments'),
+            $request->input('questionnaire_responses', []),
+            $request->idempotencyKey()
+        ));
+    }
+
     public function reopenReview(LifecycleCommandRequest $request, ReviewerAssignment $assignment, ReviewerWorkflowService $service): JsonResponse
     {
         $this->authorizeEditorial($request, $assignment->article);
