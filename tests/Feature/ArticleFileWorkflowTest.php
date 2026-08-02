@@ -122,6 +122,8 @@ class ArticleFileWorkflowTest extends TestCase
         ])->json('assignment.id');
 
         Sanctum::actingAs($this->reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/accept")
+            ->assertOk();
         $this->postJson("/api/admin/reviewer-assignments/{$assignmentId}/submit-review", [
             'recommendation' => 'minor_revision',
             'comments_for_author' => 'Please revise.',
