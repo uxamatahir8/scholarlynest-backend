@@ -15,7 +15,9 @@ class ReviewerWorkflowService
 {
     public function invite(Article $article, User $actor, int $versionId, int $reviewRoundId, int $roundNumber, ?int $reviewerId, ?string $name, ?string $email, ?string $dueAt, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($article, $actor, 'invite-reviewer', $key, ['article_version_id' => $versionId, 'review_round_id' => $reviewRoundId, 'round_number' => $roundNumber, 'reviewer_id' => $reviewerId], 'reviewer.invited', 'reviewer.invited',
+        $versionLabel = $article->versions()->whereKey($versionId)->first();
+        $versionLabel = $versionLabel ? app(PendingReviewDecisionService::class)->versionLabel($versionLabel) : null;
+        return app(ArticleLifecycleService::class)->command($article, $actor, 'invite-reviewer', $key, ['article_version_id' => $versionId, 'review_round_id' => $reviewRoundId, 'round_number' => $roundNumber, 'reviewer_id' => $reviewerId, 'version_label' => $versionLabel], 'reviewer.invited', 'reviewer.invited',
             function (Article $locked) use ($actor, $versionId, $reviewRoundId, $roundNumber, $reviewerId, $name, $email, $dueAt, $key) {
                 $version = $locked->versions()->whereKey($versionId)->lockForUpdate()->first();
                 if (! $version || (int) $locked->current_version_id !== $versionId) {
@@ -70,7 +72,8 @@ class ReviewerWorkflowService
 
     public function respond(ReviewerAssignment $assignment, User $actor, bool $accept, ?string $reason, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, $accept ? 'accept-review' : 'decline-review', $key, ['assignment_id' => $assignment->id], $accept ? 'review.accepted' : 'review.declined', $accept ? 'review.accepted' : 'review.declined',
+        $scope = $this->scopePayload($assignment);
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, $accept ? 'accept-review' : 'decline-review', $key, $scope, $accept ? 'review.accepted' : 'review.declined', $accept ? 'review.accepted' : 'review.declined',
             function () use ($assignment, $actor, $accept, $reason) {
                 $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
                 if ((int) $locked->reviewer_id !== (int) $actor->id || $locked->revoked_at) {
@@ -108,7 +111,7 @@ class ReviewerWorkflowService
 
     public function submit(ReviewerAssignment $assignment, User $actor, string $recommendation, string $authorComments, ?string $confidentialComments, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'submit-review', $key, ['assignment_id' => $assignment->id, 'recommendation' => $recommendation], 'review.submitted', 'review.submitted',
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'submit-review', $key, $this->scopePayload($assignment) + ['recommendation' => $recommendation], 'review.submitted', 'review.submitted',
             function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments, $key) {
                 $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
                 if ((int) $locked->reviewer_id !== (int) $actor->id || ! app(ReviewerQuestionnaireService::class)->canAccess($locked)) {
@@ -147,7 +150,7 @@ class ReviewerWorkflowService
 
     public function start(ReviewerAssignment $assignment, User $actor, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'start-review', $key, ['assignment_id' => $assignment->id], 'review.started', 'review.started', function () use ($assignment, $actor) {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'start-review', $key, $this->scopePayload($assignment), 'review.started', 'review.started', function () use ($assignment, $actor) {
             $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
             $this->assertAccessibleAssignment($locked, $actor, ['accepted', 'in_progress', 'review_in_progress', 'reopened']);
             if ($locked->status === 'accepted') {
@@ -161,7 +164,7 @@ class ReviewerWorkflowService
 
     public function saveDraft(ReviewerAssignment $assignment, User $actor, ?string $recommendation, ?string $authorComments, ?string $confidentialComments, array $responses, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'save-review-draft', $key, ['assignment_id' => $assignment->id], 'review.draft_saved', 'review.draft_saved', function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments, $responses) {
+        return app(ArticleLifecycleService::class)->command($assignment->article, $actor, 'save-review-draft', $key, $this->scopePayload($assignment), 'review.draft_saved', 'review.draft_saved', function () use ($assignment, $actor, $recommendation, $authorComments, $confidentialComments, $responses) {
             $locked = ReviewerAssignment::query()->with(['version', 'reviewRound'])->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
             $this->assertAccessibleAssignment($locked, $actor, ['accepted', 'in_progress', 'review_in_progress', 'reopened']);
             $locked->update([
@@ -200,5 +203,20 @@ class ReviewerWorkflowService
             || (int) $assignment->reviewRound->article_id !== (int) $assignment->article_id) {
             app(ArticleLifecycleService::class)->conflict('The review assignment version or review round is invalid.');
         }
+    }
+
+    private function scopePayload(ReviewerAssignment $assignment): array
+    {
+        $assignment->loadMissing('version');
+
+        return [
+            'assignment_id' => $assignment->id,
+            'article_version_id' => $assignment->article_version_id,
+            'review_round_id' => $assignment->review_round_id,
+            'round_number' => $assignment->round_number,
+            'version_label' => $assignment->version
+                ? app(PendingReviewDecisionService::class)->versionLabel($assignment->version)
+                : null,
+        ];
     }
 }

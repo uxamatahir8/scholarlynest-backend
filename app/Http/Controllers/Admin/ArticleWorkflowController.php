@@ -882,6 +882,10 @@ class ArticleWorkflowController extends Controller
                     'recipient_user_id' => $assignment->reviewer_id,
                     'recipient_privacy_variant' => 'reviewer',
                     'due_at' => $assignment->invite_expires_at?->toISOString(),
+                    'article_version_id' => $assignment->article_version_id,
+                    'review_round_id' => $assignment->review_round_id,
+                    'round_number' => $assignment->round_number,
+                    'version_label' => app(\App\Services\PendingReviewDecisionService::class)->versionLabel($version),
                 ]),
                 'reviewer_assignment', $assignment->id,
                 deduplicationKey: "reviewer-invitation:{$assignment->id}:{$assignment->invited_at?->timestamp}"
@@ -1240,6 +1244,7 @@ class ArticleWorkflowController extends Controller
 
         $rawToken = Str::random(48);
         DB::transaction(function () use ($assignment, $article, $request, $rawToken) {
+            $assignment->loadMissing('version');
             $assignment->update([
                 'invite_token_hash' => hash('sha256', $rawToken),
                 'invite_expires_at' => now()->addDays(21),
@@ -1253,6 +1258,12 @@ class ArticleWorkflowController extends Controller
                     'recipient_user_id' => $assignment->reviewer_id,
                     'recipient_privacy_variant' => 'reviewer',
                     'due_at' => $assignment->invite_expires_at?->toISOString(),
+                    'article_version_id' => $assignment->article_version_id,
+                    'review_round_id' => $assignment->review_round_id,
+                    'round_number' => $assignment->round_number,
+                    'version_label' => $assignment->version
+                        ? app(\App\Services\PendingReviewDecisionService::class)->versionLabel($assignment->version)
+                        : null,
                 ]),
                 'reviewer_assignment', $assignment->id,
                 deduplicationKey: "reviewer-invitation:{$assignment->id}:reminded:{$assignment->invite_expires_at?->timestamp}"

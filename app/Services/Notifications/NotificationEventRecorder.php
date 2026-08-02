@@ -21,7 +21,7 @@ class NotificationEventRecorder
         'accepted_file_set_id', 'article_file_id', 'issue_id', 'recipient_user_id', 'recipient_user_ids',
         'due_at', 'due_date', 'due_date_version', 'reminder_type', 'action_type', 'publication_type',
         'tracking_code', 'revision_number', 'status', 'previous_status', 'is_escalation',
-        'review_round_id', 'version_label', 'pending_review_count',
+        'review_round_id', 'round_number', 'version_label', 'pending_review_count',
         'recipient_privacy_variant', 'publication_record_id', 'thread_id', 'message_id',
     ];
 
