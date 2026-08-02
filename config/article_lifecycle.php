@@ -17,7 +17,7 @@ return [
         'invite-reviewer' => ['from' => ['revision_submitted', 'screening_completed', 'awaiting_sub_editor_assignment', 'awaiting_reviewer_invitation', 'reviewer_invitations_pending', 'under_review', 'reviews_partially_completed']],
         'accept-review' => ['from' => ['reviewer_invitations_pending', 'under_review']],
         'decline-review' => ['from' => ['reviewer_invitations_pending', 'under_review']],
-        'submit-review' => ['from' => ['under_review', 'reviews_partially_completed']],
+        'submit-review' => ['from' => ['under_review', 'reviews_partially_completed', 'minor_revision_requested', 'major_revision_requested', 'awaiting_author_revision', 'accepted', 'rejected']],
         'reopen-review' => ['from' => ['reviews_completed', 'awaiting_sub_editor_recommendation', 'awaiting_editorial_decision']],
         'editorial-decision' => ['from' => ['awaiting_reviewer_invitation', 'reviewer_invitations_pending', 'under_review', 'reviews_partially_completed', 'reviews_completed', 'awaiting_sub_editor_recommendation', 'awaiting_editorial_decision']],
         'assign-copy-editor' => ['from' => ['accepted', 'awaiting_copy_editor_assignment']],

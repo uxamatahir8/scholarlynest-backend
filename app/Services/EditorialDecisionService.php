@@ -9,14 +9,19 @@ use App\Models\User;
 
 class EditorialDecisionService
 {
-    public function submit(Article $article, User $actor, int $versionId, string $decision, string $source, ?string $authorComments, ?string $internalNotes, ?string $dueAt, string $key): array
+    public function submit(Article $article, User $actor, int $versionId, string $decision, string $source, ?string $authorComments, ?string $internalNotes, ?string $dueAt, string $key, ?string $pendingReviewPolicy = null, ?string $overrideReason = null): array
     {
         $event = match ($decision) {
             'accepted' => 'article.accepted', 'rejected' => 'article.rejected', default => 'revision.requested'
         };
 
-        return app(ArticleLifecycleService::class)->command($article, $actor, 'editorial-decision', $key, ['article_version_id' => $versionId, 'decision' => $decision], 'editorial_decision.submitted', $event,
-            function (Article $locked) use ($actor, $versionId, $decision, $source, $authorComments, $internalNotes, $dueAt, $key) {
+        $version = $article->versions()->whereKey($versionId)->first();
+        if ($version) {
+            app(PendingReviewDecisionService::class)->requireConfirmationWhenNeeded($article, $version, $pendingReviewPolicy, $overrideReason, $actor, $key);
+        }
+
+        return app(ArticleLifecycleService::class)->command($article, $actor, 'editorial-decision', $key, ['article_version_id' => $versionId, 'decision' => $decision, 'pending_review_policy' => $pendingReviewPolicy, 'pending_review_override_reason' => $overrideReason], 'editorial_decision.submitted', $event,
+            function (Article $locked) use ($actor, $versionId, $decision, $source, $authorComments, $internalNotes, $dueAt, $key, $pendingReviewPolicy, $overrideReason) {
                 $version = $locked->versions()->whereKey($versionId)->lockForUpdate()->first();
                 if (! $version || (int) $locked->current_version_id !== $versionId) {
                     app(ArticleLifecycleService::class)->conflict('The editorial decision must target the current version.');
@@ -27,7 +32,8 @@ class EditorialDecisionService
                 if (EditorialDecision::query()->where('article_version_id', $versionId)->whereNull('corrects_decision_id')->exists()) {
                     app(ArticleLifecycleService::class)->conflict('An editorial decision already exists for this version.');
                 }
-                $record = EditorialDecision::create(['article_id' => $locked->id, 'article_version_id' => $versionId, 'round_number' => 1, 'decision_by' => $actor->id, 'decision' => $decision, 'decision_source' => $source, 'decision_date' => now(), 'comments_for_author' => $authorComments, 'internal_notes' => $internalNotes, 'revision_due_at' => $dueAt, 'idempotency_key' => $key]);
+                $override = app(PendingReviewDecisionService::class)->apply($locked, $version, $actor, $pendingReviewPolicy, $overrideReason);
+                $record = EditorialDecision::create(['article_id' => $locked->id, 'article_version_id' => $versionId, 'round_number' => 1, 'decision_by' => $actor->id, 'decision' => $decision, 'decision_source' => $source, 'decision_date' => now(), 'comments_for_author' => $authorComments, 'internal_notes' => $internalNotes, 'revision_due_at' => $dueAt, 'idempotency_key' => $key, 'pending_review_policy' => $override['policy'], 'pending_review_override_reason' => $override['policy'] ? trim((string) $overrideReason) : null, 'pending_review_count' => $override['count'], 'pending_review_assignment_ids' => $override['ids']]);
                 $status = match ($decision) {
                     'accepted' => ArticleStatus::ACCEPTED, 'rejected' => ArticleStatus::REJECTED, 'minor_revision' => ArticleStatus::MINOR_REVISION_REQUIRED, default => ArticleStatus::MAJOR_REVISION_REQUIRED
                 };

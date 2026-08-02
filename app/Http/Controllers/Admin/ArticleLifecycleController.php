@@ -80,7 +80,7 @@ class ArticleLifecycleController extends Controller
     {
         $this->authorizeEditorial($request, $article);
 
-        return $this->result($service->submit($article, $request->user(), $request->integer('article_version_id'), $request->string('decision')->toString(), $request->string('decision_source')->toString(), $request->input('author_comments'), $request->input('internal_notes'), $request->input('revision_due_at'), $request->idempotencyKey()));
+        return $this->result($service->submit($article, $request->user(), $request->integer('article_version_id'), $request->string('decision')->toString(), $request->string('decision_source')->toString(), $request->input('author_comments'), $request->input('internal_notes'), $request->input('revision_due_at'), $request->idempotencyKey(), $request->input('pending_review_policy'), $request->input('pending_review_override_reason')));
     }
 
     public function assignCopyEditor(LifecycleCommandRequest $request, Article $article, ProductionWorkflowService $service): JsonResponse

@@ -62,7 +62,9 @@ class NotificationRecipientResolver
             'sub_editor.recommendation_submitted' => $editors->merge($admins),
             'reviewer.invited', 'review.invitation_reminded' => $reviewers,
             'reviewer.assigned' => $authors->merge($actor)->merge($admins),
-            'review.accepted', 'review.declined', 'review.submitted' => $editors->merge($subEditors)->merge($admins),
+            'review.accepted', 'review.declined', 'review.submitted', 'review.submitted_after_decision' => $editors->merge($subEditors)->merge($admins),
+            'review.decision_proceeded_open', 'review.closed_without_review' => $reviewers,
+            'editorial_decision.pending_reviews' => $editors->merge($subEditors)->merge($admins),
             'review.invitation_expired' => $reviewers->merge($editors)->merge($subEditors)->merge($admins),
             'review.reopened' => $reviewers->merge($editors)->merge($admins),
             'revision.requested' => $authors,
@@ -193,7 +195,7 @@ class NotificationRecipientResolver
         $variant = $explicit ?: match (true) {
             str_starts_with($event->event_type, 'account.') => 'account',
             str_starts_with($event->event_type, 'support.') => $this->supportTargetVariant($event, $user),
-            in_array($event->event_type, ['reviewer.invited', 'review.invitation_reminded', 'review.invitation_expired', 'review.reopened'], true) => 'reviewer',
+            in_array($event->event_type, ['reviewer.invited', 'review.invitation_reminded', 'review.invitation_expired', 'review.reopened', 'review.decision_proceeded_open', 'review.closed_without_review'], true) => 'reviewer',
             in_array($event->event_type, ['author.final_review_requested', 'author.final_review_reminder'], true) => 'author',
             str_starts_with($event->event_type, 'deadline.') => match ($event->subject_type) {
                 'reviewer_assignment' => 'reviewer',
@@ -220,7 +222,7 @@ class NotificationRecipientResolver
             str_starts_with($event->event_type, 'article_thread.') => ['author', 'reviewer', 'sub_editor', 'assignee', 'editor', 'publisher', 'admin'],
             str_starts_with($event->event_type, 'account.') => ['account'],
             str_starts_with($event->event_type, 'support.') => ['support_owner', 'support_staff'],
-            in_array($event->event_type, ['reviewer.invited', 'review.invitation_reminded', 'review.invitation_expired', 'review.reopened'], true) => ['reviewer'],
+            in_array($event->event_type, ['reviewer.invited', 'review.invitation_reminded', 'review.invitation_expired', 'review.reopened', 'review.decision_proceeded_open', 'review.closed_without_review'], true) => ['reviewer'],
             in_array($event->event_type, ['author.final_review_requested', 'author.final_review_reminder'], true) => ['author'],
             str_starts_with($event->event_type, 'deadline.') => ['reviewer', 'sub_editor', 'assignee', 'editor'],
             $event->event_type === 'article_file.rejected' => ['assignee'],

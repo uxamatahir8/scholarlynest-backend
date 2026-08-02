@@ -17,6 +17,10 @@ class EditorialDecision extends Model
         'decision_date',
         'comments_for_author',
         'internal_notes',
+        'pending_review_policy',
+        'pending_review_override_reason',
+        'pending_review_count',
+        'pending_review_assignment_ids',
         'revision_due_at',
         'idempotency_key',
         'corrects_decision_id',
@@ -25,6 +29,8 @@ class EditorialDecision extends Model
     protected $casts = [
         'decision_date' => 'datetime',
         'revision_due_at' => 'datetime',
+        'pending_review_count' => 'integer',
+        'pending_review_assignment_ids' => 'array',
     ];
 
     public function article(): BelongsTo

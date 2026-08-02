@@ -220,7 +220,12 @@ class ArticleWorkspaceManifestService
         $reviews = $article->reviewerAssignments->where('article_version_id', $versionId)->where('status', 'completed')
             ->sortBy(['round_number', 'id'])->values();
         if ($roles['reviewer']) {
-            $reviews = $reviews->where('reviewer_id', $viewer->id)->values();
+            $reviews = $article->reviewerAssignments
+                ->where('article_version_id', $versionId)
+                ->where('reviewer_id', $viewer->id)
+                ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened', 'completed'])
+                ->whereNull('revoked_at')
+                ->values();
         }
         $sidebar = [[
             'key' => 'manuscript-information',
@@ -240,7 +245,7 @@ class ArticleWorkspaceManifestService
         foreach ($reviews as $reviewIndex => $review) {
             $sidebar[] = [
                 'key' => 'review-'.$review->id,
-                'label' => 'Reviewer '.($reviewIndex + 1).' Review',
+                'label' => $roles['reviewer'] ? 'My Review' : 'Reviewer '.($reviewIndex + 1).' Review',
                 'visible' => true,
                 'review_id' => $review->id,
                 'available_actions' => [],

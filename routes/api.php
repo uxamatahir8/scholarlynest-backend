@@ -434,6 +434,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');
+        Route::get('/my-reviewer-assignments/{assignmentId}', [ArticleWorkflowController::class, 'myReviewerAssignment'])->middleware('permission:articles.view-own');
         Route::get('/my-production-assignments', [ArticleWorkflowController::class, 'myProductionAssignments'])->middleware('permission:articles.view-own');
         Route::get('/publisher-dashboard', [ArticleWorkflowController::class, 'publisherDashboard'])->middleware('permission:articles.view-own');
 
