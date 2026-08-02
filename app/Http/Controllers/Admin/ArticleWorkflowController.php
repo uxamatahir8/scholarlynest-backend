@@ -2903,11 +2903,7 @@ class ArticleWorkflowController extends Controller
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $isAuthor = (int) $article->user_id === (int) ($user?->id ?? 0)
             || $this->isArticleAuthorRecord($user, $article);
-        $canAuthorViewReviews = $isAuthor && in_array(ArticleStatus::normalize($article->status), [
-            ArticleStatus::REVISION_REQUIRED,
-            ArticleStatus::MINOR_REVISION_REQUIRED,
-            ArticleStatus::MAJOR_REVISION_REQUIRED,
-        ], true);
+        $canAuthorViewReviews = $isAuthor;
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         $canViewProduction = $canViewPublication
             || $this->hasProductionAssignment($user, $article, 'copy_editor');

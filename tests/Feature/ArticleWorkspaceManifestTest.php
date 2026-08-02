@@ -25,7 +25,7 @@ class ArticleWorkspaceManifestTest extends TestCase
 
     public function test_editor_manifest_names_versions_marks_backend_accepted_version_and_scopes_reviews(): void
     {
-        [$article, $editor, $reviewer] = $this->workspaceFixture();
+        [$article, $editor, $reviewer, $author] = $this->workspaceFixture();
         $initial = ArticleVersion::create([
             'article_id' => $article->id, 'created_by' => $article->user_id, 'version_number' => 1,
             'revision_number' => 0,
@@ -76,8 +76,8 @@ class ArticleWorkspaceManifestTest extends TestCase
         $this->assertFalse($versionTabs[1]['is_accepted']);
         $this->assertTrue($versionTabs[2]['is_accepted']);
         $this->assertSame($secondRevision->id, $manifest['accepted_version_id']);
-        $this->assertContains('Reviewer 1 Review', collect($versionTabs[0]['sidebar'])->pluck('label'));
-        $this->assertNotContains('Reviewer 1 Review', collect($versionTabs[1]['sidebar'])->pluck('label'));
+        $this->assertContains($reviewer->name.' Review', collect($versionTabs[0]['sidebar'])->pluck('label'));
+        $this->assertNotContains($reviewer->name.' Review', collect($versionTabs[1]['sidebar'])->pluck('label'));
         $this->assertStringNotContainsString('(Accepted)', $versionTabs[0]['label']);
         $this->assertStringNotContainsString('(Accepted)', $versionTabs[1]['label']);
         $this->assertArrayNotHasKey('next_action', $manifest);
@@ -93,6 +93,11 @@ class ArticleWorkspaceManifestTest extends TestCase
             ->assertJsonPath('data.version_id', $revision->id)
             ->assertJsonCount(1, 'data.reviewer_assignments')
             ->assertJsonPath('data.reviewer_assignments.0.id', $revisionReview->id);
+
+        $authorManifest = app(ArticleWorkspaceManifestService::class)->manifest($article->fresh(), $author);
+        $authorInitialSidebar = collect($authorManifest['tabs'])->firstWhere('version_id', $initial->id)['sidebar'];
+        $this->assertContains('Reviewer 1 Review', collect($authorInitialSidebar)->pluck('label'));
+        $this->assertNotContains($reviewer->name.' Review', collect($authorInitialSidebar)->pluck('label'));
     }
 
     public function test_direct_publication_manifest_has_no_editorial_or_reviewer_tabs(): void
@@ -253,6 +258,6 @@ class ArticleWorkspaceManifestTest extends TestCase
             'full_text' => 'Text', 'status' => 'submitted',
         ]);
 
-        return [$article, $editor, $reviewer];
+        return [$article, $editor, $reviewer, $author];
     }
 }

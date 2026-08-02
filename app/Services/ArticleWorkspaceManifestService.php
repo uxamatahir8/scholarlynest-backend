@@ -21,6 +21,7 @@ class ArticleWorkspaceManifestService
             'activeAcceptedFileSet',
             'subEditorAssignments:id,article_id,article_version_id,sub_editor_id,status,accepted_at,declined_at,completed_at,revoked_at,recommendation',
             'reviewerAssignments:id,article_id,article_version_id,round_number,reviewer_id,invitee_name,invitee_email,status,invited_at,accepted_at,declined_at,completed_at,revoked_at,recommendation',
+            'reviewerAssignments.reviewer:id,name',
             'editorialDecisions:id,article_id,article_version_id,decision,decision_source,decision_date',
             'productionAssignments:id,article_id,article_version_id,user_id,role,status,due_date,completed_at,revoked_at',
             'proofRounds:id,article_id,article_version_id,round_number,status,requested_at,due_at,responded_at,approved_at',
@@ -243,9 +244,14 @@ class ArticleWorkspaceManifestService
                 'available_actions' => $this->reviewerActions($article, $roles, $version)];
         }
         foreach ($reviews as $reviewIndex => $review) {
+            $reviewLabel = $roles['reviewer']
+                ? 'My Review'
+                : ($roles['author']
+                    ? 'Reviewer '.($reviewIndex + 1).' Review'
+                    : ($review->reviewer?->name ?: $review->invitee_name ?: 'Reviewer '.($reviewIndex + 1)).' Review');
             $sidebar[] = [
                 'key' => 'review-'.$review->id,
-                'label' => $roles['reviewer'] ? 'My Review' : 'Reviewer '.($reviewIndex + 1).' Review',
+                'label' => $reviewLabel,
                 'visible' => true,
                 'review_id' => $review->id,
                 'available_actions' => [],

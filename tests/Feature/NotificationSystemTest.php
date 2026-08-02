@@ -244,6 +244,34 @@ class NotificationSystemTest extends TestCase
         ]);
     }
 
+    public function test_impersonation_events_never_queue_email_but_remain_visible_in_app(): void
+    {
+        foreach (['account.impersonation_started', 'account.impersonation_stopped'] as $index => $eventType) {
+            $event = app(NotificationEventRecorder::class)->record(
+                $eventType,
+                null,
+                $this->editor,
+                ['recipient_user_id' => $this->author->id, 'recipient_privacy_variant' => 'account'],
+                'user',
+                $this->author->id,
+                deduplicationKey: "impersonation-email-disabled-{$index}"
+            );
+
+            app(NotificationEventProjector::class)->project($event->id);
+
+            $this->assertDatabaseHas('user_notifications', [
+                'notification_event_id' => $event->id,
+                'recipient_user_id' => $this->author->id,
+                'in_app_visible' => true,
+                'email_mode' => 'off',
+            ]);
+            $this->assertDatabaseMissing('notification_logs', [
+                'notification_event_id' => $event->id,
+                'purpose' => $eventType,
+            ]);
+        }
+    }
+
     public function test_feed_filters_cursor_dismiss_and_restore(): void
     {
         foreach (['revision.requested', 'article.under_review', 'article.version_created'] as $index => $type) {

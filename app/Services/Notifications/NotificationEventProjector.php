@@ -57,6 +57,9 @@ class NotificationEventProjector
                 $emailMode = $template['legacyEmail']
                     ? 'off'
                     : ($template['mandatoryEmail'] ? 'immediate' : $preference['email']['mode']);
+                if (! ($template['emailEnabled'] ?? true)) {
+                    $emailMode = 'off';
+                }
                 if (! config('notification_system.features.email_projection', true) && ! $template['mandatoryEmail']) {
                     $emailMode = 'off';
                 }

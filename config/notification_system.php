@@ -10,7 +10,8 @@ $template = static fn (
     bool $action = false,
     bool $mandatoryEmail = false,
     bool $legacyEmail = false,
-): array => compact('category', 'priority', 'severity', 'title', 'body', 'route', 'action', 'mandatoryEmail', 'legacyEmail') + [
+    bool $emailEnabled = true,
+): array => compact('category', 'priority', 'severity', 'title', 'body', 'route', 'action', 'mandatoryEmail', 'legacyEmail', 'emailEnabled') + [
     'version' => 1,
     'schemaVersion' => 1,
     'allowedRenderData' => ['tracking_code', 'publication', 'article_title', 'ticket_reference', 'due_at'],
@@ -121,7 +122,7 @@ return [
         'account.email_changed' => $template('security', 'critical', 'warning', 'Email address changed', 'Your ScholarlyNest email address was changed.', 'account.settings', false, true),
         'account.mfa_method_changed' => $template('security', 'critical', 'warning', 'Multi-factor authentication changed', 'Your multi-factor authentication settings changed.', 'account.settings', false, true),
         'account.role_or_scope_changed' => $template('security', 'high', 'warning', 'Account access changed', 'Your ScholarlyNest role or publication access changed.', 'account.settings', false, true),
-        'account.impersonation_started' => $template('security', 'critical', 'warning', 'Impersonation session started', 'An administrator impersonation session was started for your account.', 'account.settings'),
-        'account.impersonation_stopped' => $template('security', 'critical', 'info', 'Impersonation session ended', 'An administrator impersonation session for your account ended.', 'account.settings'),
+        'account.impersonation_started' => $template('security', 'critical', 'warning', 'Impersonation session started', 'An administrator impersonation session was started for your account.', 'account.settings', emailEnabled: false),
+        'account.impersonation_stopped' => $template('security', 'critical', 'info', 'Impersonation session ended', 'An administrator impersonation session for your account ended.', 'account.settings', emailEnabled: false),
     ],
 ];

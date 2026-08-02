@@ -211,6 +211,33 @@ class ReviewerPortalDecisionOverrideTest extends TestCase
         $this->assertDatabaseHas('notification_events', ['article_id' => $this->article->id, 'event_type' => 'review.closed_without_review']);
     }
 
+    public function test_author_can_open_completed_review_comments_during_active_review_without_reviewer_identity(): void
+    {
+        $completed = $this->assignment($this->revision, $this->revisionRound, 'completed', [
+            'completed_at' => now(),
+            'recommendation' => 'minor_revision',
+            'comments_for_author' => 'Please clarify the statistical method.',
+            'confidential_comments' => 'Reviewer identity must remain confidential.',
+        ]);
+
+        Sanctum::actingAs($this->author);
+        $response = $this->getJson("/api/admin/articles/{$this->article->id}/workflow")->assertOk();
+        $review = collect($response->json('article.reviewer_assignments'))->firstWhere('id', $completed->id);
+
+        $this->assertNotNull($review);
+        $this->assertSame($this->revision->id, $review['article_version_id']);
+        $this->assertSame('Please clarify the statistical method.', $review['comments_for_author']);
+        $this->assertArrayNotHasKey('reviewer_id', $review);
+        $this->assertArrayNotHasKey('reviewer', $review);
+        $this->assertArrayNotHasKey('invitee_name', $review);
+        $this->assertArrayNotHasKey('invitee_email', $review);
+        $this->assertArrayNotHasKey('confidential_comments', $review);
+
+        $revisionTab = collect($response->json('workflow_manifest.tabs'))->firstWhere('version_id', $this->revision->id);
+        $this->assertContains($completed->id, collect($revisionTab['sidebar'])->pluck('review_id'));
+        $this->assertContains('Reviewer 1 Review', collect($revisionTab['sidebar'])->pluck('label'));
+    }
+
     private function assignment(ArticleVersion $version, ArticleReviewRound $round, string $status, array $extra = []): ReviewerAssignment
     {
         return ReviewerAssignment::create(array_merge([
