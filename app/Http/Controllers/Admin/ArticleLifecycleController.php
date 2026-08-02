@@ -48,7 +48,7 @@ class ArticleLifecycleController extends Controller
     {
         $this->authorizeEditorial($request, $article);
 
-        return $this->result($service->invite($article, $request->user(), $request->integer('article_version_id'), $request->integer('reviewer_id') ?: null, $request->input('name'), $request->input('email'), $request->input('due_at'), $request->idempotencyKey()));
+        return $this->result($service->invite($article, $request->user(), $request->integer('article_version_id'), $request->integer('review_round_id'), $request->integer('round_number'), $request->integer('reviewer_id') ?: null, $request->input('name'), $request->input('email'), $request->input('due_at'), $request->idempotencyKey()));
     }
 
     public function reviewResponse(LifecycleCommandRequest $request, ReviewerAssignment $assignment, ReviewerWorkflowService $service): JsonResponse

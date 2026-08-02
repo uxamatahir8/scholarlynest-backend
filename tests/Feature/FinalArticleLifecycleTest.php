@@ -63,6 +63,7 @@ class FinalArticleLifecycleTest extends TestCase
         $this->article = Article::create(['magazine_id' => $this->magazine->id, 'user_id' => $this->author->id, 'title' => 'Version Scoped Work', 'slug' => 'version-scoped-work', 'abstract' => 'Abstract', 'full_text' => '', 'status' => ArticleStatus::SUBMITTED]);
         $this->version = ArticleVersion::create(['article_id' => $this->article->id, 'created_by' => $this->author->id, 'version_number' => 1, 'label' => 'Initial Submission', 'status_snapshot' => ArticleStatus::SUBMITTED, 'submitted_at' => now(), 'locked_at' => now()]);
         $this->article->update(['current_version_id' => $this->version->id]);
+        app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($this->article->fresh(), $this->version->fresh(), $this->editor);
         $this->manuscript = ArticleFile::create(['article_id' => $this->article->id, 'article_version_id' => $this->version->id, 'uploaded_by' => $this->author->id, 'file_type' => ArticleFile::MANUSCRIPT, 'visibility' => 'author_visible', 'file_path' => 'clean/final-lifecycle.pdf', 'storage_key' => 'clean/final-lifecycle.pdf', 'original_name' => 'final-lifecycle.pdf', 'safe_original_name' => 'manuscript.pdf', 'mime_type' => 'application/pdf', 'size' => 100, 'scan_status' => 'clean']);
         $this->version->update(['manuscript_file_id' => $this->manuscript->id]);
     }
@@ -70,7 +71,8 @@ class FinalArticleLifecycleTest extends TestCase
     public function test_screening_gate_and_idempotent_version_scoped_invitation(): void
     {
         Sanctum::actingAs($this->editor);
-        $payload = ['article_version_id' => $this->version->id, 'reviewer_id' => $this->reviewer->id];
+        $round = $this->version->reviewRounds()->firstOrFail();
+        $payload = ['article_version_id' => $this->version->id, 'review_round_id' => $round->id, 'round_number' => 1, 'reviewer_id' => $this->reviewer->id];
         $this->withHeader('Idempotency-Key', 'invite-before-screen')->postJson("/api/admin/lifecycle/articles/{$this->article->id}/reviewer-invitations", $payload)->assertConflict();
         $this->withHeader('Idempotency-Key', 'screen-v1')->postJson("/api/admin/lifecycle/articles/{$this->article->id}/screen", ['article_version_id' => $this->version->id, 'decision' => 'pass'])->assertOk()->assertJsonPath('result.version_id', $this->version->id);
         $response = $this->withHeader('Idempotency-Key', 'invite-v1-reviewer')->postJson("/api/admin/lifecycle/articles/{$this->article->id}/reviewer-invitations", $payload)->assertOk();

@@ -10,6 +10,7 @@ class ReviewerAssignment extends Model
     protected $fillable = [
         'article_id',
         'article_version_id',
+        'review_round_id',
         'round_number',
         'sub_editor_assignment_id',
         'reviewer_id',
@@ -64,6 +65,11 @@ class ReviewerAssignment extends Model
     public function version(): BelongsTo
     {
         return $this->belongsTo(ArticleVersion::class, 'article_version_id');
+    }
+
+    public function reviewRound(): BelongsTo
+    {
+        return $this->belongsTo(ArticleReviewRound::class, 'review_round_id');
     }
 
     public function reopener(): BelongsTo

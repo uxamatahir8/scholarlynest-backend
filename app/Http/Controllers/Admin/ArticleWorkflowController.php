@@ -163,24 +163,30 @@ class ArticleWorkflowController extends Controller
         }
 
         $request->validate(['review_round' => 'nullable|integer|min:1']);
-        $round = $request->integer('review_round') ?: ((int) $article->reviewerAssignments()
-            ->where('article_version_id', $version->id)->max('round_number') ?: 1);
+        $roundNumber = $request->integer('review_round') ?: 1;
+        $reviewRound = (int) $article->current_version_id === (int) $version->id
+            ? app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($article, $version, $viewer)
+            : $article->reviewRounds()->where('article_version_id', $version->id)->where('round_number', $roundNumber)->first();
+        $roundNumber = (int) ($reviewRound?->round_number ?: $roundNumber);
         $article->load([
             'reviewerPreferences',
             'reviewerAssignments' => fn ($query) => $query
                 ->where('article_version_id', $version->id)
-                ->where('round_number', $round)
+                ->where('round_number', $roundNumber)
                 ->with(['reviewer:id,name,email,university_name', 'questionnaireInstance.version.questions.options', 'questionnaireInstance.responses']),
         ]);
         $priorCompleted = ReviewerAssignment::query()
             ->where('article_id', $article->id)
             ->where('article_version_id', '!=', $version->id)
             ->where('status', 'completed')
-            ->with('reviewer:id,name,email,university_name')
+            ->with(['reviewer:id,name,email,university_name', 'version:id,version_number,revision_number'])
             ->get();
         $completedEmails = $priorCompleted->map(fn ($assignment) => strtolower((string) ($assignment->invitee_email ?: $assignment->reviewer?->email)))
             ->filter()->unique()->values()->all();
-        $preferences = $article->reviewerPreferences->groupBy('type')->map(fn ($items) => $items->map(function ($item) use ($completedEmails) {
+        $previousByEmail = $priorCompleted->sortByDesc('completed_at')->groupBy(fn ($assignment) => strtolower((string) ($assignment->invitee_email ?: $assignment->reviewer?->email)))
+            ->map->first();
+        $preferences = $article->reviewerPreferences->groupBy('type')->map(fn ($items) => $items->map(function ($item) use ($completedEmails, $previousByEmail) {
+            $previous = $previousByEmail->get(strtolower((string) $item->email));
             return [
                 'id' => $item->id,
                 'type' => $item->type,
@@ -190,6 +196,7 @@ class ArticleWorkflowController extends Controller
                 'designation' => $item->designation,
                 'reason' => $item->reason,
                 'previously_completed_review' => in_array(strtolower((string) $item->email), $completedEmails, true),
+                'previous_review' => $this->previousReviewPayload($previous),
             ];
         })->values())->union(['suggested' => collect(), 'opposed' => collect()]);
         $suggestedEmails = collect($preferences['suggested'])->pluck('email')->map(fn ($email) => strtolower((string) $email));
@@ -207,33 +214,53 @@ class ArticleWorkflowController extends Controller
                 'designation' => null,
                 'reason' => null,
                 'previously_completed_review' => true,
+                'previous_review' => $this->previousReviewPayload($assignment),
             ]);
             $suggestedEmails->push(strtolower((string) $email));
         });
-        $canManage = (int) $article->current_version_id === (int) $version->id
-            && $version->screening_status === 'passed'
-            && in_array(ArticleStatus::normalize($article->status), [
-                ArticleStatus::UNDER_REVIEW,
-                ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
-                ArticleStatus::REVIEWER_ASSIGNED,
-                ArticleStatus::REVIEW_IN_PROGRESS,
-                ArticleStatus::RESUBMITTED,
-            ], true);
+        $authorizedManager = $this->isGlobal($viewer)
+            || $this->isAssignedToMagazine($viewer, $article->magazine_id, ['editor'])
+            || $isVersionSubEditor;
+        $requiresReview = app(\App\Services\ArticleReviewRoundService::class)->versionRequiresReview($article, $version);
+        $canManage = $authorizedManager && $requiresReview && $reviewRound?->status === \App\Models\ArticleReviewRound::OPEN;
+        $disabledReason = null;
+        if (! $authorizedManager) {
+            $disabledReason = ['code' => 'REVIEWER_MANAGEMENT_FORBIDDEN', 'message' => 'Your assignment does not allow reviewer management for this publication and version.'];
+        } elseif ((int) $article->current_version_id !== (int) $version->id) {
+            $disabledReason = ['code' => 'VERSION_NOT_CURRENT', 'message' => 'Historical versions are read-only. Select the current submitted version to manage reviewers.'];
+        } elseif (! $requiresReview) {
+            $disabledReason = ['code' => 'VERSION_NOT_REVIEWABLE', 'message' => 'This version is not currently eligible for peer review.'];
+        } elseif (! $reviewRound || $reviewRound->status !== \App\Models\ArticleReviewRound::OPEN) {
+            $disabledReason = ['code' => 'REVIEW_ROUND_NOT_OPEN', 'message' => 'Open a review round before inviting reviewers.'];
+        }
+
+        $capabilities = [
+            'manage' => $canManage,
+            'invite' => $canManage,
+            'invite_revision' => $canManage && (int) $version->revision_number > 0,
+            'manual_invitation' => $canManage,
+            'resend' => $canManage,
+            'reinvite' => $canManage,
+            'reminder' => $canManage,
+        ];
 
         return response()->json(['data' => [
             'article_id' => $article->id,
             'version_id' => $version->id,
-            'review_round' => $round,
+            'review_round' => $roundNumber,
+            'reviewers' => [
+                'version_id' => $version->id,
+                'review_round_id' => $reviewRound?->id,
+                'round_number' => $roundNumber,
+                'status' => $reviewRound?->status,
+                'capabilities' => $capabilities,
+                'disabled_reason' => $disabledReason,
+            ],
             'reviewer_preferences' => $preferences,
             'reviewer_assignments' => $article->reviewerAssignments
                 ->map(fn ($assignment) => $this->reviewerAssignmentPayload($assignment, $viewer, true))->values(),
-            'capabilities' => [
-                'manage' => $canManage,
-                'invite' => $canManage,
-                'resend' => $canManage,
-                'reinvite' => $canManage,
-                'invite_for_revision_review' => $canManage && (int) $version->version_number > 1,
-            ],
+            'capabilities' => $capabilities + ['invite_for_revision_review' => $capabilities['invite_revision']],
+            'disabled_reason' => $disabledReason,
         ]]);
     }
 
@@ -546,6 +573,19 @@ class ArticleWorkflowController extends Controller
         $oldStatus = $article->status;
 
         DB::transaction(function () use ($request, $article, $oldStatus) {
+            $version = $article->currentVersion()->lockForUpdate()->first()
+                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
+            if (! $version) {
+                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for screening.'], 409));
+            }
+            $isInitialSubmission = (int) ($version->revision_number ?? 0) === 0 && ! $version->parent_version_id;
+            if (! $isInitialSubmission) {
+                throw new HttpResponseException(response()->json(['message' => 'Editorial screening is only performed for the initial submission.'], 409));
+            }
+            if ($version->screening_status !== 'pending') {
+                throw new HttpResponseException(response()->json(['message' => 'Screening has already been completed for this version.'], 409));
+            }
+
             $nextStatus = $request->decision === 'reject'
                 ? ArticleStatus::REJECTED
                 : ArticleStatus::UNDER_REVIEW;
@@ -556,23 +596,17 @@ class ArticleWorkflowController extends Controller
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
             ]);
-            $version = $article->currentVersion()->lockForUpdate()->first()
-                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
-            if (! $version) {
-                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for screening.'], 409));
-            }
             if (! $article->current_version_id) {
                 $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
-            }
-            if ($version->screening_status !== 'pending') {
-                throw new HttpResponseException(response()->json(['message' => 'Screening has already been completed for this version.'], 409));
             }
             $version->update([
                 'screening_status' => $request->decision === 'reject' ? 'rejected' : 'passed',
                 'screened_at' => now(),
                 'screened_by' => $request->user()->id,
             ]);
+            $reviewRound = app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($article->fresh(), $version->fresh(), $request->user());
             if ($request->decision === 'reject') {
+                $reviewRound->update(['status' => \App\Models\ArticleReviewRound::CLOSED, 'closed_at' => now()]);
                 EditorialDecision::create([
                     'article_id' => $article->id,
                     'article_version_id' => $version->id,
@@ -692,7 +726,16 @@ class ArticleWorkflowController extends Controller
         $inviteeName = $reviewer?->name ?: ($preference?->name ?: $request->input('name'));
         $inviteeEmail = strtolower(trim((string) ($reviewer?->email ?: ($preference?->email ?: $request->input('email')))));
         $this->assertReviewerInviteAllowed($article, $inviteeEmail);
-        $version = $article->currentVersion()->first() ?: $article->versions()->latest('version_number')->first();
+        $version = $request->filled('article_version_id')
+            ? $article->versions()->whereKey($request->integer('article_version_id'))->first()
+            : ($article->currentVersion()->first() ?: $article->versions()->latest('version_number')->first());
+        if ($version && (int) $article->current_version_id !== (int) $version->id) {
+            return response()->json(['message' => 'Reviewer invitations can only be created for the current submitted version.'], 409);
+        }
+        if (! $this->isGlobal($request->user()) && $request->user()->hasRole('sub_editor')
+            && ! $article->subEditorAssignments()->where('article_version_id', $version?->id)->where('sub_editor_id', $request->user()->id)->whereNull('revoked_at')->exists()) {
+            return response()->json(['message' => 'A current-version Sub Editor assignment is required to manage reviewers.'], 403);
+        }
         if ($version && ! $article->current_version_id) {
             $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
         }
@@ -701,6 +744,13 @@ class ArticleWorkflowController extends Controller
         }
         if (! $version || $version->screening_status !== 'passed') {
             return response()->json(['message' => 'Reviewer invitation is prohibited until the current version passes screening.'], 409);
+        }
+        $reviewRound = app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($article, $version, $request->user());
+        if ($request->filled('review_round_id') && (int) $request->integer('review_round_id') !== (int) $reviewRound->id) {
+            return response()->json(['message' => 'The selected review round does not belong to the current article version.'], 409);
+        }
+        if ($reviewRound->status !== \App\Models\ArticleReviewRound::OPEN) {
+            return response()->json(['message' => 'Open a review round before inviting reviewers.'], 409);
         }
 
         $existingReviewer = User::whereRaw('LOWER(email) = ?', [$inviteeEmail])->first();
@@ -711,23 +761,7 @@ class ArticleWorkflowController extends Controller
         $duplicate = ReviewerAssignment::query()
             ->where('article_id', $article->id)
             ->where('article_version_id', $version->id)
-            ->where(function ($query) use ($reviewer, $inviteeEmail) {
-                if ($reviewer) {
-                    $query->where('reviewer_id', $reviewer->id);
-                }
-                $query->orWhereRaw('LOWER(invitee_email) = ?', [$inviteeEmail]);
-            })
-            ->whereNull('declined_at')
-            ->where('status', '!=', 'declined')
-            ->first();
-
-        if ($duplicate) {
-            return response()->json(['message' => 'This reviewer has already been invited or assigned for this article.'], 422);
-        }
-
-        $declinedAssignment = ReviewerAssignment::query()
-            ->where('article_id', $article->id)
-            ->where('article_version_id', $version->id)
+            ->where('review_round_id', $reviewRound->id)
             ->where(function ($query) use ($reviewer, $inviteeEmail) {
                 if ($reviewer) {
                     $query->where('reviewer_id', $reviewer->id);
@@ -735,18 +769,26 @@ class ArticleWorkflowController extends Controller
                 $query->orWhereRaw('LOWER(invitee_email) = ?', [$inviteeEmail]);
             })
             ->where(function ($query) {
-                $query->whereNotNull('declined_at')->orWhere('status', 'declined');
+                $query->whereIn('status', ['accepted', 'in_progress', 'completed'])
+                    ->orWhere(function ($pending) {
+                        $pending->whereIn('status', ['pending', 'invited'])
+                            ->where(fn ($expiry) => $expiry->whereNull('invite_expires_at')->orWhere('invite_expires_at', '>', now()));
+                    });
             })
-            ->latest('id')
             ->first();
+
+        if ($duplicate) {
+            return response()->json(['message' => 'This reviewer has already been invited or assigned for this article.'], 422);
+        }
 
         $rawToken = Str::random(48);
 
-        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $declinedAssignment, $version) {
+        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $version, $reviewRound) {
             $assignmentData = [
                 'article_id' => $article->id,
                 'article_version_id' => $version->id,
-                'round_number' => 1,
+                'review_round_id' => $reviewRound->id,
+                'round_number' => $reviewRound->round_number,
                 'reviewer_id' => $reviewer?->id,
                 'invitee_name' => $inviteeName,
                 'invitee_email' => $inviteeEmail,
@@ -761,21 +803,17 @@ class ArticleWorkflowController extends Controller
                 'declined_at' => null,
                 'decline_reason' => null,
                 'completed_at' => null,
+                'idempotency_key' => $request->input('idempotency_key') ?: $request->header('Idempotency-Key'),
             ];
 
-            if ($declinedAssignment) {
-                $declinedAssignment->update($assignmentData);
-                $assignment = $declinedAssignment->fresh();
-            } else {
-                $assignment = ReviewerAssignment::create($assignmentData);
-            }
+            $assignment = ReviewerAssignment::create($assignmentData);
 
             $article->update(['status' => ArticleStatus::REVIEWER_ASSIGNED]);
             $this->audit($article, $request->user()->id, 'reviewer.assigned', $oldStatus, ArticleStatus::REVIEWER_ASSIGNED, [
                 'reviewer_id' => $reviewer?->id,
                 'invitee_email' => $inviteeEmail,
                 'due_date' => $request->due_date,
-                'resent' => (bool) $declinedAssignment,
+                'review_round_id' => $reviewRound->id,
             ]);
 
             $assignment->load('reviewer:id,name,email');
@@ -1096,13 +1134,28 @@ class ArticleWorkflowController extends Controller
     {
         $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
-        $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor']);
+        $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor', 'sub_editor']);
+        if (! $this->isGlobal($request->user()) && $request->user()->hasRole('sub_editor')
+            && ! $article->subEditorAssignments()->where('article_version_id', $assignment->article_version_id)->where('sub_editor_id', $request->user()->id)->whereNull('revoked_at')->exists()) {
+            return response()->json(['message' => 'A current-version Sub Editor assignment is required to remind reviewers.'], 403);
+        }
+        if ((int) $article->current_version_id !== (int) $assignment->article_version_id
+            || ! $assignment->review_round_id
+            || $assignment->reviewRound?->status !== \App\Models\ArticleReviewRound::OPEN) {
+            return response()->json(['message' => 'Reminders can only be sent for assignments in the current open review round.'], 409);
+        }
+        $state = $this->reviewerInvitationState($assignment);
+        if (! in_array($state, ['invited', 'accepted', 'in_progress'], true)) {
+            return response()->json(['message' => 'This reviewer assignment is not eligible for a reminder or resend.'], 409);
+        }
 
         $rawToken = Str::random(48);
         DB::transaction(function () use ($assignment, $article, $request, $rawToken) {
             $assignment->update([
                 'invite_token_hash' => hash('sha256', $rawToken),
                 'invite_expires_at' => now()->addDays(21),
+                'reminder_count' => ((int) $assignment->reminder_count) + 1,
+                'last_reminded_at' => now(),
             ]);
             app(NotificationEventRecorder::class)->record(
                 'review.invitation_reminded', $article->fresh(), $request->user(),
@@ -2701,8 +2754,12 @@ class ArticleWorkflowController extends Controller
             return 'declined';
         }
 
+        if (! $assignment->accepted_at && $assignment->invite_expires_at?->isPast()) {
+            return 'expired';
+        }
+
         if ($assignment->accepted_at || in_array($assignment->status, ['accepted', 'in_progress'], true)) {
-            return 'accepted';
+            return $assignment->status === 'in_progress' ? 'in_progress' : 'accepted';
         }
 
         return 'invited';
@@ -3056,6 +3113,7 @@ class ArticleWorkflowController extends Controller
             $payload['role'] = $assignment->role;
             $payload['user'] = $assignment->user ? ['id' => $assignment->user->id, 'name' => $assignment->user->name] : null;
         } elseif ($assignment instanceof ReviewerAssignment) {
+            $payload['review_round_id'] = $assignment->review_round_id;
             $canViewReviewerIdentity = (int) $assignment->reviewer_id === (int) ($user?->id ?? 0)
                 || $this->canViewEditorialInternals($user, $assignment->article)
                 || $this->hasSubEditorAssignment($user, $assignment->article);
@@ -3063,6 +3121,9 @@ class ArticleWorkflowController extends Controller
             $payload['invitee_name'] = $canViewReviewerIdentity ? $assignment->invitee_name : null;
             $payload['invitee_email'] = $canViewReviewerIdentity ? $assignment->invitee_email : null;
             $payload['invited_at'] = $assignment->invited_at;
+            $payload['invite_expires_at'] = $assignment->invite_expires_at;
+            $payload['reminder_count'] = (int) $assignment->reminder_count;
+            $payload['last_reminded_at'] = $assignment->last_reminded_at;
             $payload['accepted_at'] = $assignment->accepted_at;
             $payload['declined_at'] = $assignment->declined_at;
             $payload['invitation_state'] = $this->reviewerInvitationState($assignment);
@@ -3113,6 +3174,25 @@ class ArticleWorkflowController extends Controller
         }
 
         return $payload;
+    }
+
+    private function previousReviewPayload(?ReviewerAssignment $assignment): ?array
+    {
+        if (! $assignment) {
+            return null;
+        }
+
+        $label = (int) ($assignment->version?->revision_number ?? 0) === 0
+            ? 'Initial Submission'
+            : 'R'.(int) $assignment->version->revision_number;
+
+        return [
+            'assignment_id' => $assignment->id,
+            'version_id' => $assignment->article_version_id,
+            'revision_number' => $assignment->version?->revision_number,
+            'label' => $label,
+            'completed_at' => $assignment->completed_at,
+        ];
     }
 
     private function questionnaireInstancePayload(?ReviewQuestionnaireInstance $instance): ?array

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Article;
+use App\Models\ArticleReviewRound;
 use App\Models\ReviewerAssignment;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -10,10 +11,10 @@ use Illuminate\Support\Str;
 
 class ReviewerWorkflowService
 {
-    public function invite(Article $article, User $actor, int $versionId, ?int $reviewerId, ?string $name, ?string $email, ?string $dueAt, string $key): array
+    public function invite(Article $article, User $actor, int $versionId, int $reviewRoundId, int $roundNumber, ?int $reviewerId, ?string $name, ?string $email, ?string $dueAt, string $key): array
     {
-        return app(ArticleLifecycleService::class)->command($article, $actor, 'invite-reviewer', $key, ['article_version_id' => $versionId, 'reviewer_id' => $reviewerId], 'reviewer.invited', 'reviewer.invited',
-            function (Article $locked) use ($actor, $versionId, $reviewerId, $name, $email, $dueAt, $key) {
+        return app(ArticleLifecycleService::class)->command($article, $actor, 'invite-reviewer', $key, ['article_version_id' => $versionId, 'review_round_id' => $reviewRoundId, 'round_number' => $roundNumber, 'reviewer_id' => $reviewerId], 'reviewer.invited', 'reviewer.invited',
+            function (Article $locked) use ($actor, $versionId, $reviewRoundId, $roundNumber, $reviewerId, $name, $email, $dueAt, $key) {
                 $version = $locked->versions()->whereKey($versionId)->lockForUpdate()->first();
                 if (! $version || (int) $locked->current_version_id !== $versionId) {
                     app(ArticleLifecycleService::class)->conflict('Reviewers can only be invited to the current article version.');
@@ -21,12 +22,25 @@ class ReviewerWorkflowService
                 if ($version->screening_status !== 'passed') {
                     app(ArticleLifecycleService::class)->conflict('Reviewer invitation is prohibited until this version passes screening.');
                 }
+                $round = ArticleReviewRound::query()->whereKey($reviewRoundId)
+                    ->where('article_id', $locked->id)->where('article_version_id', $versionId)
+                    ->where('round_number', $roundNumber)->where('status', ArticleReviewRound::OPEN)
+                    ->lockForUpdate()->first();
+                if (! $round) {
+                    app(ArticleLifecycleService::class)->conflict('The selected review round is not open for this version.');
+                }
                 $normalizedEmail = strtolower(trim((string) ($email ?: User::find($reviewerId)?->email)));
                 if (! $reviewerId && ! $normalizedEmail) {
                     app(ArticleLifecycleService::class)->conflict('A reviewer or invitation email is required.');
                 }
-                $duplicate = ReviewerAssignment::query()->where('article_version_id', $versionId)->where('round_number', 1)
-                    ->whereNull('revoked_at')->whereIn('status', ['pending', 'invited', 'accepted', 'in_progress'])
+                $duplicate = ReviewerAssignment::query()->where('article_version_id', $versionId)->where('review_round_id', $reviewRoundId)->where('round_number', $roundNumber)
+                    ->whereNull('revoked_at')->where(function ($query) {
+                        $query->whereIn('status', ['accepted', 'in_progress', 'completed'])
+                            ->orWhere(function ($pending) {
+                                $pending->whereIn('status', ['pending', 'invited'])
+                                    ->where(fn ($expiry) => $expiry->whereNull('invite_expires_at')->orWhere('invite_expires_at', '>', now()));
+                            });
+                    })
                     ->where(function ($query) use ($reviewerId, $normalizedEmail) {
                         if ($reviewerId) {
                             $query->where('reviewer_id', $reviewerId);
@@ -40,7 +54,7 @@ class ReviewerWorkflowService
                 }
                 $rawToken = Str::random(64);
                 $assignment = ReviewerAssignment::create([
-                    'article_id' => $locked->id, 'article_version_id' => $versionId, 'round_number' => 1,
+                    'article_id' => $locked->id, 'article_version_id' => $versionId, 'review_round_id' => $reviewRoundId, 'round_number' => $roundNumber,
                     'reviewer_id' => $reviewerId, 'invitee_name' => $name ?: User::find($reviewerId)?->name,
                     'invitee_email' => $normalizedEmail, 'invite_token_hash' => hash('sha256', $rawToken),
                     'invited_at' => now(), 'invite_expires_at' => now()->addDays(14), 'assigned_by' => $actor->id,

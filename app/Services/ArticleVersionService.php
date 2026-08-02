@@ -29,6 +29,7 @@ class ArticleVersionService
                 'parent_version_id' => $parentVersionId,
                 'created_by' => $user->id,
                 'version_number' => $this->nextVersionNumber($article),
+                'revision_number' => $label === 'Initial Submission' ? 0 : null,
                 'label' => $label,
                 'status_snapshot' => $article->status,
                 'metadata_snapshot' => $this->metadataSnapshot($article),
@@ -39,10 +40,9 @@ class ArticleVersionService
                 'locked_at' => now(),
             ]);
             if ($label === 'Revised Manuscript') {
-                $revision = max(1, $version->version_number - 1);
+                $revision = ((int) $article->versions()->whereNotNull('revision_number')->max('revision_number')) + 1;
                 $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code.'-R'.$revision]);
             }
-
             $this->linkFiles($article, $version, $linkFileIds);
 
             app(PrimaryManuscriptService::class)->authoritativeForSubmission($article, $version);
@@ -51,6 +51,9 @@ class ArticleVersionService
                 'file_snapshot' => $this->fileSnapshot($article, $version),
             ]);
             $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            if (in_array($label, ['Initial Submission', 'Revised Manuscript'], true)) {
+                app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($article->fresh(), $version->fresh(), $user);
+            }
 
             app(NotificationEventRecorder::class)->record(
                 'article.version_created',

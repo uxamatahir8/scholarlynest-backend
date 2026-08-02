@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleReviewRound;
 use App\Models\EditorialDecision;
 use App\Models\User;
 
@@ -27,7 +28,9 @@ class ScreeningService
                 }
                 $version->update(['screening_status' => $decision === 'reject' ? 'rejected' : 'passed', 'screened_at' => now(), 'screened_by' => $actor->id]);
                 $locked->update(['screened_at' => now(), 'screened_by' => $actor->id, 'status' => $decision === 'reject' ? ArticleStatus::REJECTED : ArticleStatus::UNDER_REVIEW, 'rejection_reason' => $decision === 'reject' ? $reason : null]);
+                $round = app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($locked->fresh(), $version->fresh(), $actor);
                 if ($decision === 'reject') {
+                    $round->update(['status' => ArticleReviewRound::CLOSED, 'closed_at' => now()]);
                     EditorialDecision::create(['article_id' => $locked->id, 'article_version_id' => $version->id, 'round_number' => 1, 'decision_by' => $actor->id, 'decision' => 'rejected', 'decision_source' => 'screening', 'decision_date' => now(), 'comments_for_author' => $reason]);
                 }
 

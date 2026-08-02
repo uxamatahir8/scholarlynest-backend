@@ -16,7 +16,8 @@ class ArticleWorkspaceManifestService
     {
         $article->loadMissing([
             'magazine:id,title,slug',
-            'versions:id,article_id,version_number,revision_number,status_snapshot,screening_status,submitted_at,created_at,accepted_marker,accepted_at',
+            'versions:id,article_id,parent_version_id,version_number,revision_number,status_snapshot,screening_status,submitted_at,created_at,accepted_marker,accepted_at',
+            'reviewRounds:id,article_id,article_version_id,round_number,status',
             'activeAcceptedFileSet',
             'subEditorAssignments:id,article_id,article_version_id,sub_editor_id,status,accepted_at,declined_at,completed_at,revoked_at,recommendation',
             'reviewerAssignments:id,article_id,article_version_id,round_number,reviewer_id,invitee_name,invitee_email,status,invited_at,accepted_at,declined_at,completed_at,revoked_at,recommendation',
@@ -36,12 +37,11 @@ class ArticleWorkspaceManifestService
 
         $versions = $this->visibleVersions($article, $viewer, $roles, $acceptedVersionId);
 
-        $tabs = $versions->map(fn ($version, int $index) => $this->versionTab(
+        $tabs = $versions->map(fn ($version) => $this->versionTab(
             $article,
             $viewer,
             $roles,
             $version,
-            $index,
             $acceptedVersionId,
             $projection
         ))->values();
@@ -167,7 +167,7 @@ class ArticleWorkspaceManifestService
             'workflow_progress' => $projection,
             'current_version_id' => $article->current_version_id,
             'accepted_version_id' => $acceptedVersionId,
-            'selected_review_round' => (int) ($article->reviewerAssignments->where('article_version_id', $article->current_version_id)->max('round_number') ?: 1),
+            'selected_review_round' => (int) ($article->reviewRounds->where('article_version_id', $article->current_version_id)->where('status', 'open')->max('round_number') ?: 1),
             'tabs' => $tabs->values()->all(),
         ];
     }
@@ -213,7 +213,7 @@ class ArticleWorkspaceManifestService
         return $versions;
     }
 
-    private function versionTab(Article $article, User $viewer, array $roles, $version, int $index, ?int $acceptedVersionId, array $projection): array
+    private function versionTab(Article $article, User $viewer, array $roles, $version, ?int $acceptedVersionId, array $projection): array
     {
         $versionId = (int) $version->id;
         $accepted = $acceptedVersionId && $versionId === (int) $acceptedVersionId;
@@ -252,11 +252,17 @@ class ArticleWorkspaceManifestService
             ? ArticleStatus::ACCEPTED
             : ($snapshotStatus === ArticleStatus::ACCEPTED ? ArticleStatus::SUBMITTED : $snapshotStatus);
 
+        $reviewRound = $article->reviewRounds->where('article_version_id', $versionId)->sortByDesc('round_number')->first();
+
         return [
             'key' => 'version-'.$versionId,
             'type' => 'article_version',
-            'label' => $this->versionLabel($article, $version, $index, $accepted),
+            'label' => $this->versionLabel($article, $version, $accepted),
+            'heading' => $this->versionHeading($article, $version),
             'version_id' => $versionId,
+            'revision_number' => is_null($version->revision_number) ? null : (int) $version->revision_number,
+            'is_initial' => $this->isInitialVersion($version),
+            'is_current' => $versionId === (int) $article->current_version_id,
             'accepted' => $accepted,
             'is_accepted' => $accepted,
             'status' => [
@@ -265,21 +271,40 @@ class ArticleWorkspaceManifestService
                 'screening' => $version->screening_status,
             ],
             'submitted_at' => $version->submitted_at?->toISOString() ?? $version->created_at?->toISOString(),
-            'review_round' => (int) ($article->reviewerAssignments->where('article_version_id', $versionId)->max('round_number') ?: 1),
+            'review_round' => (int) ($reviewRound?->round_number ?: 1),
+            'review_round_id' => $reviewRound?->id,
+            'review_round_status' => $reviewRound?->status,
             'review_status' => $this->reviewStatus($article->reviewerAssignments->where('article_version_id', $versionId)),
             'assignment_state' => $article->subEditorAssignments->where('article_version_id', $versionId)->sortByDesc('id')->first()?->status,
             'sidebar' => $sidebar,
         ];
     }
 
-    private function versionLabel(Article $article, $version, int $index, bool $accepted): string
+    private function versionLabel(Article $article, $version, bool $accepted): string
     {
-        $sequence = max(1, (int) ($version->version_number ?: $index + 1));
-        $label = $sequence === 1
+        $label = $this->isInitialVersion($version)
             ? 'Initial Submission ('.$article->tracking_code.')'
-            : $article->tracking_code.' – R'.$sequence;
+            : $article->tracking_code.' – R'.$this->revisionNumber($version);
 
         return $label.($accepted ? ' (Accepted)' : '');
+    }
+
+    private function versionHeading(Article $article, $version): string
+    {
+        return $this->isInitialVersion($version)
+            ? 'Initial Submission ('.$article->tracking_code.')'
+            : 'R'.$this->revisionNumber($version).' ('.$article->tracking_code.')';
+    }
+
+    private function isInitialVersion($version): bool
+    {
+        return (int) $version->revision_number === 0
+            && ($version->revision_number !== null || ((int) $version->version_number === 1 && $version->parent_version_id === null));
+    }
+
+    private function revisionNumber($version): int|string
+    {
+        return $version->revision_number === null ? '?' : (int) $version->revision_number;
     }
 
     private function editorialActions(array $roles, array $projection, $version, Article $article): array
@@ -287,7 +312,8 @@ class ArticleWorkspaceManifestService
         if (! $roles['editorial'] || (int) $version->id !== (int) $article->current_version_id) {
             return [];
         }
-        if ($projection['canonical'] === LifecycleStatus::AWAITING_INITIAL_SCREENING) {
+        $isInitialSubmission = (int) ($version->revision_number ?? 0) === 0 && ! $version->parent_version_id;
+        if ($isInitialSubmission && $version->screening_status === 'pending' && $projection['canonical'] === LifecycleStatus::AWAITING_INITIAL_SCREENING) {
             return ['screen', 'transfer', 'desk_reject'];
         }
         if (in_array($projection['canonical'], LifecycleStatus::TERMINAL, true)) {

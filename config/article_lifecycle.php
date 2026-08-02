@@ -14,7 +14,7 @@ return [
         'screen' => ['from' => ['submitted', 'awaiting_initial_screening', 'revision_submitted']],
         'assign-sub-editor' => ['from' => ['screening_completed', 'awaiting_sub_editor_assignment', 'awaiting_reviewer_invitation']],
         'sub-editor-recommendation' => ['from' => ['reviews_completed', 'awaiting_sub_editor_recommendation', 'under_review', 'reviews_partially_completed']],
-        'invite-reviewer' => ['from' => ['screening_completed', 'awaiting_sub_editor_assignment', 'awaiting_reviewer_invitation', 'reviewer_invitations_pending', 'under_review', 'reviews_partially_completed']],
+        'invite-reviewer' => ['from' => ['revision_submitted', 'screening_completed', 'awaiting_sub_editor_assignment', 'awaiting_reviewer_invitation', 'reviewer_invitations_pending', 'under_review', 'reviews_partially_completed']],
         'accept-review' => ['from' => ['reviewer_invitations_pending', 'under_review']],
         'decline-review' => ['from' => ['reviewer_invitations_pending', 'under_review']],
         'submit-review' => ['from' => ['under_review', 'reviews_partially_completed']],

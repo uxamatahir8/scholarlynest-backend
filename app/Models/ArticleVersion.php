@@ -77,6 +77,11 @@ class ArticleVersion extends Model
         return $this->hasMany(ReviewerAssignment::class);
     }
 
+    public function reviewRounds(): HasMany
+    {
+        return $this->hasMany(ArticleReviewRound::class);
+    }
+
     public function editorialDecisions(): HasMany
     {
         return $this->hasMany(EditorialDecision::class);

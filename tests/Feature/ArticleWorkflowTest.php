@@ -7,6 +7,7 @@ use App\Models\Article;
 use App\Models\ArticleAuthor;
 use App\Models\ArticleFile;
 use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleReviewRound;
 use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
@@ -16,6 +17,7 @@ use App\Models\ReviewerAssignment;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\AcceptedFileSetService;
+use App\Services\ArticleReviewRoundService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -119,6 +121,104 @@ class ArticleWorkflowTest extends TestCase
             'article_id' => $this->article->id,
             'event' => 'reviewer.assigned',
         ]);
+    }
+
+    public function test_every_submitted_revision_has_an_independent_open_reviewer_round_and_history(): void
+    {
+        $initial = $this->article->currentVersion;
+        $initialRound = app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($this->article->fresh(), $initial, $this->editor);
+        $historical = ReviewerAssignment::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $initial->id,
+            'review_round_id' => $initialRound->id,
+            'round_number' => 1,
+            'reviewer_id' => $this->reviewer->id,
+            'invitee_name' => $this->reviewer->name,
+            'invitee_email' => $this->reviewer->email,
+            'assigned_by' => $this->editor->id,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+        $parent = $initial;
+        $roundIds = [$initialRound->id];
+
+        Sanctum::actingAs($this->editor);
+        foreach (range(1, 3) as $revisionNumber) {
+            $version = ArticleVersion::create([
+                'article_id' => $this->article->id,
+                'parent_version_id' => $parent->id,
+                'version_number' => $revisionNumber + 1,
+                'revision_number' => $revisionNumber,
+                'label' => 'Revised Manuscript',
+                'created_by' => $this->author->id,
+                'status_snapshot' => ArticleStatus::RESUBMITTED,
+                'screening_status' => 'pending',
+                'submitted_at' => now()->addMinutes($revisionNumber),
+            ]);
+            $this->article->update(['current_version_id' => $version->id, 'status' => ArticleStatus::RESUBMITTED]);
+
+            $reviewers = $this->getJson("/api/admin/articles/{$this->article->id}/versions/{$version->id}/reviewers")
+                ->assertOk()
+                ->assertJsonPath('data.version_id', $version->id)
+                ->assertJsonPath('data.reviewers.status', ArticleReviewRound::OPEN)
+                ->assertJsonPath('data.capabilities.invite', true)
+                ->assertJsonPath('data.capabilities.manual_invitation', true)
+                ->assertJsonPath('data.reviewer_preferences.suggested.0.previous_review.label', 'Initial Submission');
+            $roundId = $reviewers->json('data.reviewers.review_round_id');
+            $roundIds[] = $roundId;
+
+            $assignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+                'reviewer_id' => $this->reviewer->id,
+                'article_version_id' => $version->id,
+                'review_round_id' => $roundId,
+                'round_number' => 1,
+                'idempotency_key' => "revision-{$revisionNumber}-reviewer-{$this->reviewer->id}",
+            ])->assertCreated()
+                ->assertJsonPath('assignment.article_version_id', $version->id)
+                ->assertJsonPath('assignment.review_round_id', $roundId)
+                ->json('assignment.id');
+
+            $this->assertNotSame($historical->id, $assignmentId);
+            $this->assertSame('completed', $historical->fresh()->status);
+            $parent = $version;
+        }
+
+        $this->assertCount(4, array_unique($roundIds));
+        $this->assertDatabaseCount('reviewer_assignments', 4);
+
+        $this->getJson("/api/admin/articles/{$this->article->id}/versions/{$initial->id}/reviewers")
+            ->assertOk()
+            ->assertJsonPath('data.capabilities.manual_invitation', false)
+            ->assertJsonPath('data.disabled_reason.code', 'VERSION_NOT_CURRENT');
+    }
+
+    public function test_submitted_revision_cannot_repeat_editorial_screening(): void
+    {
+        $initial = $this->article->currentVersion;
+        $revision = ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'parent_version_id' => $initial->id,
+            'version_number' => 2,
+            'revision_number' => 1,
+            'label' => 'Revised Manuscript',
+            'created_by' => $this->author->id,
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+            'screening_status' => 'pending',
+            'submitted_at' => now(),
+        ]);
+        $this->article->update([
+            'current_version_id' => $revision->id,
+            'status' => ArticleStatus::SUBMITTED,
+        ]);
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/screen", [
+            'decision' => 'send_to_review',
+        ])->assertStatus(409)
+            ->assertJsonPath('message', 'Editorial screening is only performed for the initial submission.');
+
+        $this->assertSame('pending', $revision->fresh()->screening_status);
+        $this->assertSame(ArticleStatus::SUBMITTED, $this->article->fresh()->status);
     }
 
     public function test_assigned_sub_editor_can_invite_suggested_and_manual_reviewers_without_approval_permission(): void
@@ -467,19 +567,24 @@ class ArticleWorkflowTest extends TestCase
             'invite_token_hash' => null,
         ]);
 
-        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+        $newAssignmentId = $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
             'reviewer_id' => $this->reviewer->id,
         ])->assertCreated()
-            ->assertJsonPath('assignment.id', $assignmentId)
-            ->assertJsonPath('assignment.invitation_state', 'invited');
+            ->assertJsonPath('assignment.invitation_state', 'invited')
+            ->json('assignment.id');
 
-        $this->assertDatabaseCount('reviewer_assignments', 1);
+        $this->assertNotSame($assignmentId, $newAssignmentId);
+        $this->assertDatabaseCount('reviewer_assignments', 2);
         $this->assertDatabaseHas('reviewer_assignments', [
             'id' => $assignmentId,
+            'status' => 'declined',
+        ]);
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'id' => $newAssignmentId,
             'status' => 'pending',
             'declined_at' => null,
         ]);
-        $this->assertNotSame($originalTokenHash, ReviewerAssignment::findOrFail($assignmentId)->invite_token_hash);
+        $this->assertNotSame($originalTokenHash, ReviewerAssignment::findOrFail($newAssignmentId)->invite_token_hash);
     }
 
     public function test_workflow_context_hides_confidential_notes_and_audit_logs_from_author(): void

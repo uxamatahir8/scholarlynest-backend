@@ -460,7 +460,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/reviewer-assignments/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerAssignment']);
         Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);
         Route::post('/reviewer-assignments/{id}/reopen', [ArticleWorkflowController::class, 'reopenReviewer'])->middleware('permission:articles.approve');
-        Route::post('/reviewer-assignments/{id}/remind', [ArticleWorkflowController::class, 'remindReviewer'])->middleware('permission:articles.approve');
+        Route::post('/reviewer-assignments/{id}/remind', [ArticleWorkflowController::class, 'remindReviewer'])->middleware('permission:articles.view-own');
         Route::get('/review-questionnaire', [ArticleWorkflowController::class, 'questionnaire'])->middleware('super-admin');
         Route::post('/review-questionnaire', [ArticleWorkflowController::class, 'storeQuestionnaire'])->middleware('super-admin');
         Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');

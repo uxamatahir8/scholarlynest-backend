@@ -28,14 +28,20 @@ class ArticleWorkspaceManifestTest extends TestCase
         [$article, $editor, $reviewer] = $this->workspaceFixture();
         $initial = ArticleVersion::create([
             'article_id' => $article->id, 'created_by' => $article->user_id, 'version_number' => 1,
+            'revision_number' => 0,
             'status_snapshot' => 'submitted', 'screening_status' => 'passed', 'submitted_at' => now()->subDay(),
         ]);
         $revision = ArticleVersion::create([
-            'article_id' => $article->id, 'created_by' => $article->user_id, 'version_number' => 2,
+            'article_id' => $article->id, 'parent_version_id' => $initial->id, 'created_by' => $article->user_id, 'version_number' => 2,
             'revision_number' => 1, 'status_snapshot' => 'under_review', 'screening_status' => 'passed',
+            'submitted_at' => now()->subHour(),
+        ]);
+        $secondRevision = ArticleVersion::create([
+            'article_id' => $article->id, 'parent_version_id' => $revision->id, 'created_by' => $article->user_id, 'version_number' => 3,
+            'revision_number' => 2, 'status_snapshot' => 'under_review', 'screening_status' => 'passed',
             'submitted_at' => now(), 'accepted_marker' => 1, 'accepted_at' => now(),
         ]);
-        $article->update(['current_version_id' => $revision->id, 'accepted_version_id' => $revision->id, 'status' => 'accepted']);
+        $article->update(['current_version_id' => $secondRevision->id, 'accepted_version_id' => $secondRevision->id, 'status' => 'accepted']);
         $initialReview = ReviewerAssignment::create([
             'article_id' => $article->id, 'article_version_id' => $initial->id, 'round_number' => 1,
             'reviewer_id' => $reviewer->id, 'assigned_by' => $editor->id, 'status' => 'completed',
@@ -51,14 +57,29 @@ class ArticleWorkspaceManifestTest extends TestCase
         $versionTabs = collect($manifest['tabs'])->where('type', 'article_version')->values();
 
         $this->assertSame('Initial Submission (ART-2026-001)', $versionTabs[0]['label']);
-        $this->assertSame('ART-2026-001 – R2 (Accepted)', $versionTabs[1]['label']);
+        $this->assertSame('ART-2026-001 – R1', $versionTabs[1]['label']);
+        $this->assertSame('ART-2026-001 – R2 (Accepted)', $versionTabs[2]['label']);
+        $this->assertSame('R1 (ART-2026-001)', $versionTabs[1]['heading']);
+        $this->assertSame('R2 (ART-2026-001)', $versionTabs[2]['heading']);
+        $this->assertSame(0, $versionTabs[0]['revision_number']);
+        $this->assertSame(1, $versionTabs[1]['revision_number']);
+        $this->assertSame(2, $versionTabs[2]['revision_number']);
+        $this->assertTrue($versionTabs[0]['is_initial']);
+        $this->assertFalse($versionTabs[1]['is_initial']);
+        $this->assertSame($initial->id, $versionTabs[0]['version_id']);
+        $this->assertSame($revision->id, $versionTabs[1]['version_id']);
+        $this->assertSame($secondRevision->id, $versionTabs[2]['version_id']);
         $this->assertSame(['code' => 'submitted', 'label' => 'Submitted', 'screening' => 'passed'], $versionTabs[0]['status']);
-        $this->assertSame(['code' => 'accepted', 'label' => 'Accepted', 'screening' => 'passed'], $versionTabs[1]['status']);
+        $this->assertSame(['code' => 'under_review', 'label' => 'Under review', 'screening' => 'passed'], $versionTabs[1]['status']);
+        $this->assertSame(['code' => 'accepted', 'label' => 'Accepted', 'screening' => 'passed'], $versionTabs[2]['status']);
         $this->assertFalse($versionTabs[0]['is_accepted']);
-        $this->assertTrue($versionTabs[1]['is_accepted']);
-        $this->assertSame($revision->id, $manifest['accepted_version_id']);
+        $this->assertFalse($versionTabs[1]['is_accepted']);
+        $this->assertTrue($versionTabs[2]['is_accepted']);
+        $this->assertSame($secondRevision->id, $manifest['accepted_version_id']);
         $this->assertContains('Reviewer 1 Review', collect($versionTabs[0]['sidebar'])->pluck('label'));
         $this->assertNotContains('Reviewer 1 Review', collect($versionTabs[1]['sidebar'])->pluck('label'));
+        $this->assertStringNotContainsString('(Accepted)', $versionTabs[0]['label']);
+        $this->assertStringNotContainsString('(Accepted)', $versionTabs[1]['label']);
         $this->assertArrayNotHasKey('next_action', $manifest);
 
         Sanctum::actingAs($editor);
