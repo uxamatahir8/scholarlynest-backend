@@ -272,6 +272,34 @@ class NotificationSystemTest extends TestCase
         }
     }
 
+    public function test_article_acceptance_projector_always_queues_the_author_email(): void
+    {
+        $event = app(NotificationEventRecorder::class)->record(
+            'article.accepted',
+            $this->article,
+            $this->editor,
+            ['article_version_id' => 1],
+            'article',
+            $this->article->id,
+            deduplicationKey: 'acceptance-email-projection'
+        );
+
+        app(NotificationEventProjector::class)->project($event->id);
+
+        $this->assertDatabaseHas('user_notifications', [
+            'notification_event_id' => $event->id,
+            'recipient_user_id' => $this->author->id,
+            'email_mode' => 'immediate',
+        ]);
+        $this->assertDatabaseHas('notification_logs', [
+            'notification_event_id' => $event->id,
+            'user_id' => $this->author->id,
+            'recipient_email' => $this->author->email,
+            'purpose' => 'article.accepted',
+            'status' => 'queued',
+        ]);
+    }
+
     public function test_feed_filters_cursor_dismiss_and_restore(): void
     {
         foreach (['revision.requested', 'article.under_review', 'article.version_created'] as $index => $type) {

@@ -52,6 +52,13 @@ class SendArticleWorkflowNotifications
                 $message['body'] = array_merge($mainLines, $this->workflowContextLines($article, $event), $closingLines);
             }
 
+            $privacyVariant = match ($recipient['type']) {
+                'article_owner', 'corresponding_author' => 'author',
+                'super_admin' => 'admin',
+                'production_assignee' => 'assignee',
+                default => $recipient['type'],
+            };
+            $dedupeRecipient = $recipient['user_id'] ?? strtolower($recipient['email']);
             $queued = $this->notificationService->send(
                 $recipient['email'],
                 $message['subject'],
@@ -63,8 +70,8 @@ class SendArticleWorkflowNotifications
                 context: [
                     'notification_event_id' => $event->notificationEventId ?: NotificationEvent::where('event_uuid', $event->notificationEventUuid)->value('id'),
                     'purpose' => $event->event,
-                    'privacy_variant' => $recipient['type'],
-                    'deduplication_key' => hash('sha256', $event->notificationEventUuid.'|'.strtolower($recipient['email']).'|'.$recipient['type'].'|email'),
+                    'privacy_variant' => $privacyVariant,
+                    'deduplication_key' => hash('sha256', $event->notificationEventUuid.'|'.$dedupeRecipient.'|'.$privacyVariant.'|email'),
                 ]
             );
             $queuedCount += $queued ? 1 : 0;

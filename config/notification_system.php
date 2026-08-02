@@ -93,7 +93,7 @@ return [
         'revision.requested' => $template('revision', 'high', 'warning', 'Revision required', 'Revisions are required for manuscript {tracking_code}.', 'article.edit', true, true, true),
         'article.resubmitted' => $template('revision', 'high', 'success', 'Revised manuscript submitted', 'A revised version of manuscript {tracking_code} is ready.', 'article.workflow', true, true, true),
         'article.version_created' => $template('revision', 'normal', 'info', 'Manuscript version created', 'A new version is available for manuscript {tracking_code}.', 'article.workflow'),
-        'article.accepted' => $template('editorial', 'high', 'success', 'Manuscript accepted', 'Manuscript {tracking_code} has been accepted.', 'article.workflow', false, true, true),
+        'article.accepted' => $template('editorial', 'high', 'success', 'Manuscript accepted', 'Manuscript {tracking_code} has been accepted.', 'article.workflow', false, true, false),
         'article.rejected' => $template('editorial', 'high', 'warning', 'Editorial decision recorded', 'An editorial decision has been recorded for manuscript {tracking_code}.', 'article.workflow', false, true, true),
         'accepted_file_set.created' => $template('files', 'high', 'success', 'Accepted files ready', 'The accepted file set for manuscript {tracking_code} is ready.', 'article.workflow', true, true),
         'accepted_file_set.superseded' => $template('files', 'high', 'warning', 'Accepted files replaced', 'The accepted file set for manuscript {tracking_code} was replaced.', 'article.workflow', true),
