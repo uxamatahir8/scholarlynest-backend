@@ -18,7 +18,7 @@ class ArticleThreadSystemEventService
         'transfer.accepted', 'transfer.rejected', 'revision.requested', 'article.resubmitted',
         'article.version_created', 'article.accepted', 'article.rejected', 'accepted_file_set.created',
         'production.completed', 'author.final_review_requested', 'author.final_review_denied',
-        'author.final_review_approved', 'author.final_review_auto_approved', 'article.ready_for_publication',
+        'author.final_review_approved', 'article.ready_for_publication',
         'article.issue_assigned', 'article.published', 'post_publication.recorded',
     ];
 

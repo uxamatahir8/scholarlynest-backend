@@ -10,12 +10,12 @@ class ProofRound extends Model
     protected $fillable = [
         'article_id', 'article_version_id', 'accepted_file_set_id', 'production_assignment_id',
         'round_number', 'status', 'source_file_id', 'author_file_id', 'corrected_file_id',
-        'author_comments', 'production_notes', 'requested_at', 'due_at', 'responded_at',
+        'author_comments', 'production_notes', 'requested_at', 'responded_at',
         'approved_at', 'approved_by', 'idempotency_key', 'active_marker',
     ];
 
     protected $casts = [
-        'requested_at' => 'datetime', 'due_at' => 'datetime', 'responded_at' => 'datetime',
+        'requested_at' => 'datetime', 'responded_at' => 'datetime',
         'approved_at' => 'datetime',
     ];
 

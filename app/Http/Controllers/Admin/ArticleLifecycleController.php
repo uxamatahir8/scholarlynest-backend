@@ -129,7 +129,7 @@ class ArticleLifecycleController extends Controller
     {
         $this->authorizePublisher($request, $article);
 
-        return $this->result($service->request($article, $request->user(), $request->integer('source_file_id'), $request->input('due_at'), $request->idempotencyKey()));
+        return $this->result($service->request($article, $request->user(), $request->integer('source_file_id'), $request->idempotencyKey()));
     }
 
     public function proofResponse(LifecycleCommandRequest $request, ProofRound $proof, ProofWorkflowService $service): JsonResponse

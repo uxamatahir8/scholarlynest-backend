@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Services\Media\MediaStorageService;
 use App\Traits\Auditable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -75,10 +76,8 @@ class Article extends Model
         'author_final_approved_at',
         'author_final_approved_by',
         'author_final_review_requested_at',
-        'author_final_review_due_at',
         'author_final_rejected_at',
         'author_final_rejection_reason',
-        'author_final_auto_approved_at',
         'published_year',
         'published_month',
         'page_start',
@@ -96,9 +95,7 @@ class Article extends Model
         'terms_accepted_at' => 'datetime',
         'author_final_approved_at' => 'datetime',
         'author_final_review_requested_at' => 'datetime',
-        'author_final_review_due_at' => 'datetime',
         'author_final_rejected_at' => 'datetime',
-        'author_final_auto_approved_at' => 'datetime',
         'received_at' => 'date',
         'accepted_at' => 'date',
         'is_peer_reviewed' => 'boolean',
@@ -180,6 +177,50 @@ class Article extends Model
     public function articleAuthors()
     {
         return $this->hasMany(ArticleAuthor::class);
+    }
+
+    /**
+     * Limit a query to manuscripts owned by the user or naming them as a
+     * corresponding author. Email matching keeps invitations linked when the
+     * author record was created before the user's account existed.
+     */
+    public function scopeForPrimaryOrCorrespondingAuthor(Builder $query, User $user): Builder
+    {
+        $email = strtolower(trim((string) $user->email));
+
+        return $query->where(function (Builder $authorQuery) use ($user, $email) {
+            $authorQuery->where('user_id', $user->id)
+                ->orWhereHas('articleAuthors', function (Builder $articleAuthorQuery) use ($user, $email) {
+                    $articleAuthorQuery->where('is_corresponding', true)
+                        ->where(function (Builder $identityQuery) use ($user, $email) {
+                            $identityQuery->where('user_id', $user->id);
+
+                            if ($email !== '') {
+                                $identityQuery->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                            }
+                        });
+                });
+        });
+    }
+
+    public function isPrimaryOrCorrespondingAuthor(User $user): bool
+    {
+        if ((int) $this->user_id === (int) $user->id) {
+            return true;
+        }
+
+        $email = strtolower(trim((string) $user->email));
+
+        return $this->articleAuthors()
+            ->where('is_corresponding', true)
+            ->where(function (Builder $query) use ($user, $email) {
+                $query->where('user_id', $user->id);
+
+                if ($email !== '') {
+                    $query->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                }
+            })
+            ->exists();
     }
 
     /**

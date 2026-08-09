@@ -2,7 +2,10 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\Article;
+use App\Models\Magazine;
 use Closure;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -11,22 +14,17 @@ class AuthorizePermission
     /**
      * Handle an incoming request.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
-     * @param  string  $permission
-     * @return \Symfony\Component\HttpFoundation\Response
+     * @param  Closure(Request): (Response)  $next
      */
     public function handle(Request $request, Closure $next, string $permission): Response
     {
         $user = $request->user();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json([
-                'message' => 'Unauthenticated.'
+                'message' => 'Unauthenticated.',
             ], 401);
         }
-
-
 
         // 1. Universal override check (any)
         $anyPermission = str_replace('-own', '-any', $permission);
@@ -34,15 +32,10 @@ class AuthorizePermission
             return $next($request);
         }
 
-        // Special override: articles.auto-approve is allowed to perform articles.approve tasks (review/approval)
-        if ($permission === 'articles.approve' && $user->hasPermission('articles.auto-approve')) {
-            return $next($request);
-        }
-
         // 2. Determine if user has the specific permission (non-any)
-        if (!$user->hasPermission($permission)) {
+        if (! $user->hasPermission($permission)) {
             return response()->json([
-                'message' => 'This action is unauthorized. You do not possess the required permissions.'
+                'message' => 'This action is unauthorized. You do not possess the required permissions.',
             ], 403);
         }
 
@@ -53,7 +46,7 @@ class AuthorizePermission
 
             if ($route) {
                 foreach ($route->parameters() as $key => $value) {
-                    if ($value instanceof \Illuminate\Database\Eloquent\Model) {
+                    if ($value instanceof Model) {
                         $resource = $value;
                         break;
                     }
@@ -64,9 +57,9 @@ class AuthorizePermission
                     $modelClass = null;
 
                     if ($module === 'articles') {
-                        $modelClass = \App\Models\Article::class;
+                        $modelClass = Article::class;
                     } elseif ($module === 'magazines') {
-                        $modelClass = \App\Models\Magazine::class;
+                        $modelClass = Magazine::class;
                     }
 
                     if ($modelClass && (is_numeric($value) || is_string($value))) {
@@ -82,8 +75,8 @@ class AuthorizePermission
             // Verify if resource belongs to the current user or their assigned magazine(s)
             if ($resource) {
 
-                if ($resource instanceof \App\Models\Article) {
-                    if ($resource->user_id === $user->id) {
+                if ($resource instanceof Article) {
+                    if ($resource->isPrimaryOrCorrespondingAuthor($user)) {
                         return $next($request);
                     }
                     $isMagazineAssigned = \DB::table('magazine_user')
@@ -122,16 +115,23 @@ class AuthorizePermission
                         ->exists()) {
                         return $next($request);
                     }
+                    $email = strtolower(trim((string) $user->email));
                     $isCoAuthorEditor = \DB::table('article_author')
                         ->where('article_id', $resource->id)
-                        ->where('user_id', $user->id)
                         ->where('can_edit', true)
+                        ->where(function ($query) use ($user, $email) {
+                            $query->where('user_id', $user->id);
+
+                            if ($email !== '') {
+                                $query->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                            }
+                        })
                         ->exists();
                     if ($isCoAuthorEditor) {
                         return $next($request);
                     }
-                } elseif ($resource instanceof \App\Models\Magazine) {
-                    $typeAllowed = !$user->isPublicationEditor()
+                } elseif ($resource instanceof Magazine) {
+                    $typeAllowed = ! $user->isPublicationEditor()
                         || in_array($resource->publication_type, $user->editorPublicationTypes(), true);
                     $isPublicationAssigned = $typeAllowed && \DB::table('magazine_user')
                         ->where('user_id', $user->id)
@@ -151,7 +151,7 @@ class AuthorizePermission
 
                 // If resource was resolved but ownership validation failed
                 return response()->json([
-                    'message' => 'This action is unauthorized. You do not possess the required permissions.'
+                    'message' => 'This action is unauthorized. You do not possess the required permissions.',
                 ], 403);
             }
         }

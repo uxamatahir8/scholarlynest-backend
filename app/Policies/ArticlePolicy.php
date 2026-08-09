@@ -47,8 +47,8 @@ class ArticlePolicy
             return true;
         }
 
-        // Primary author can view
-        if ($article->user_id === $user->id) {
+        // Primary and corresponding authors share manuscript access.
+        if ($article->isPrimaryOrCorrespondingAuthor($user)) {
             return true;
         }
 
@@ -120,16 +120,24 @@ class ArticlePolicy
         // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
         // Normal article content edits stay limited to authors during editable statuses.
 
-        // Primary author can edit
-        if ($article->user_id === $user->id) {
+        // Corresponding authors have the same edit rights as the primary author.
+        if ($article->isPrimaryOrCorrespondingAuthor($user)) {
             return true;
         }
 
         // Co-authors with explicit can_edit rights can edit
+        $email = strtolower(trim((string) $user->email));
+
         return DB::table('article_author')
             ->where('article_id', $article->id)
-            ->where('user_id', $user->id)
             ->where('can_edit', true)
+            ->where(function ($query) use ($user, $email) {
+                $query->where('user_id', $user->id);
+
+                if ($email !== '') {
+                    $query->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                }
+            })
             ->exists();
     }
 

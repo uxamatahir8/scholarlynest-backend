@@ -485,7 +485,7 @@ class ArticleController extends Controller
             return response()->json(['message' => 'Article not found.'], 404);
         }
 
-        if (! $this->hasGlobalArticleAccess($user) && ! $user->hasPermission('articles.auto-approve')) {
+        if (! $this->hasGlobalArticleAccess($user)) {
             if (! $this->isAssignedToArticleMagazine($user, $article, ['editor'])) {
                 return response()->json(['message' => 'Forbidden. You are not assigned to this magazine.'], 403);
             }
@@ -1717,7 +1717,7 @@ class ArticleController extends Controller
         $hasEditAny = $user->hasPermission('articles.edit-any');
         $hasEditOwn = $user->hasPermission('articles.edit-own');
 
-        if ($hasEditOwn && ! $hasEditAny && $article->user_id !== $user->id) {
+        if ($hasEditOwn && ! $hasEditAny && ! $article->isPrimaryOrCorrespondingAuthor($user)) {
             return response()->json(['message' => 'You can only manage SEO for your own articles.'], 403);
         }
 
@@ -1759,7 +1759,7 @@ class ArticleController extends Controller
 
         if ($scopeUser->hasRole('sub_editor')) {
             return $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
+                $q->forPrimaryOrCorrespondingAuthor($scopeUser)
                     ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                         $subQ->select('article_id')
                             ->from('sub_editor_assignments')
@@ -1770,7 +1770,7 @@ class ArticleController extends Controller
 
         if ($scopeUser->hasRole('reviewer')) {
             return $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
+                $q->forPrimaryOrCorrespondingAuthor($scopeUser)
                     ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                         $subQ->select('article_id')
                             ->from('reviewer_assignments')
@@ -1781,7 +1781,7 @@ class ArticleController extends Controller
 
         if ($scopeUser->hasRole('copy_editor')) {
             return $query->where(function ($q) use ($scopeUser) {
-                $q->where('user_id', $scopeUser->id)
+                $q->forPrimaryOrCorrespondingAuthor($scopeUser)
                     ->orWhereIn('id', function ($subQ) use ($scopeUser) {
                         $subQ->select('article_id')
                             ->from('production_assignments')
@@ -1800,7 +1800,7 @@ class ArticleController extends Controller
                 });
         }
 
-        return $query->where('user_id', $scopeUser->id);
+        return $query->forPrimaryOrCorrespondingAuthor($scopeUser);
     }
 
     private function applyAdminArticleFilters($query, Request $request, bool $includeStatus = true): void

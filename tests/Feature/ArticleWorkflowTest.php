@@ -13,12 +13,14 @@ use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\Permission;
 use App\Models\ProductionAssignment;
+use App\Models\ProofRound;
 use App\Models\ReviewerAssignment;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\AcceptedFileSetService;
 use App\Services\ArticleReviewRoundService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -371,7 +373,7 @@ class ArticleWorkflowTest extends TestCase
 
     public function test_author_final_review_moves_proofreading_article_to_ready_for_publication_once(): void
     {
-        $this->article->update(['status' => ArticleStatus::PROOFREADING]);
+        $this->prepareAuthorProof();
 
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
@@ -410,7 +412,7 @@ class ArticleWorkflowTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath('message', 'Author publication review is available only after copyediting is completed.');
 
-        $this->article->update(['status' => ArticleStatus::PROOFREADING]);
+        $this->prepareAuthorProof();
 
         Sanctum::actingAs($otherAuthor);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review")
@@ -435,11 +437,7 @@ class ArticleWorkflowTest extends TestCase
             'status' => 'completed',
             'completed_at' => now(),
         ]);
-        $this->article->update([
-            'status' => ArticleStatus::PROOFREADING,
-            'author_final_review_requested_at' => now(),
-            'author_final_review_due_at' => now()->addDays(14),
-        ]);
+        $proof = $this->prepareAuthorProof($assignment);
 
         Sanctum::actingAs($this->author);
         $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review", ['decision' => 'denied'])
@@ -454,50 +452,106 @@ class ArticleWorkflowTest extends TestCase
 
         $this->assertDatabaseHas('production_assignments', [
             'id' => $assignment->id,
-            'status' => 'pending',
+            'status' => 'correction_required',
             'completed_at' => null,
         ]);
         $this->assertDatabaseHas('articles', [
             'id' => $this->article->id,
             'status' => ArticleStatus::COPY_EDITING,
             'author_final_rejection_reason' => 'Please correct the author affiliation in the copyedited file.',
-            'author_final_review_due_at' => null,
+        ]);
+        $this->assertDatabaseHas('proof_rounds', [
+            'id' => $proof->id,
+            'status' => 'corrections_requested',
+            'active_marker' => 1,
         ]);
     }
 
-    public function test_expired_author_review_is_automatically_approved_but_future_review_is_not(): void
+    public function test_author_proof_never_auto_approves_after_time_passes(): void
     {
-        $this->article->update([
-            'status' => ArticleStatus::PROOFREADING,
-            'author_final_review_requested_at' => now()->subDays(14)->subMinute(),
-            'author_final_review_due_at' => now()->subMinute(),
-        ]);
-        $future = Article::create([
-            'magazine_id' => $this->magazine->id,
-            'user_id' => $this->author->id,
-            'title' => 'Future Author Review',
-            'slug' => 'future-author-review',
-            'abstract' => 'Abstract',
-            'full_text' => 'Text',
-            'status' => ArticleStatus::PROOFREADING,
-            'author_final_review_requested_at' => now(),
-            'author_final_review_due_at' => now()->addMinute(),
-        ]);
+        $proof = $this->prepareAuthorProof();
+        $this->travel(60)->days();
 
-        $this->artisan('workflow:auto-approve-author-final-reviews')
-            ->expectsOutput('Author final reviews automatically approved: 1')
-            ->assertSuccessful();
+        $this->artisan('workflow:send-deadline-reminders')->assertSuccessful();
 
-        $approved = $this->article->fresh();
-        $this->assertSame(ArticleStatus::READY_FOR_PUBLICATION, $approved->status);
-        $this->assertNotNull($approved->author_final_approved_at);
-        $this->assertNotNull($approved->author_final_auto_approved_at);
-        $this->assertNull($approved->author_final_approved_by);
-        $this->assertSame(ArticleStatus::PROOFREADING, $future->fresh()->status);
-        $this->assertDatabaseHas('article_audit_logs', [
+        $this->assertArrayNotHasKey('workflow:auto-approve-author-final-reviews', Artisan::all());
+        $this->assertSame(ArticleStatus::PROOFREADING, $this->article->fresh()->status);
+        $this->assertNull($this->article->fresh()->author_final_approved_at);
+        $this->assertDatabaseHas('proof_rounds', ['id' => $proof->id, 'status' => 'awaiting_author']);
+        $this->assertDatabaseMissing('article_audit_logs', [
             'article_id' => $this->article->id,
-            'event' => 'author.final_review_auto_approved',
+            'event' => 'author.final_review_approved',
         ]);
+    }
+
+    public function test_author_correction_file_returns_to_copy_editor_and_corrected_file_becomes_next_proof(): void
+    {
+        $copyEditorRole = Role::create(['name' => 'copy_editor', 'display_name' => 'Copy Editor', 'is_system' => true]);
+        $copyEditorRole->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
+        $copyEditor = User::factory()->create(['role_id' => $copyEditorRole->id]);
+        $assignment = ProductionAssignment::create([
+            'article_id' => $this->article->id,
+            'user_id' => $copyEditor->id,
+            'role' => 'copy_editor',
+            'assigned_by' => $this->admin->id,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+        $firstProof = $this->prepareAuthorProof($assignment);
+        $annotationUpload = $this->cleanManuscriptUpload($this->author, $this->article, 'article_annotated_manuscript');
+
+        Sanctum::actingAs($this->author);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review", [
+            'decision' => 'denied',
+            'reason' => 'Please correct the highlighted affiliation and table heading.',
+            'correction_file_upload_id' => $annotationUpload->id,
+        ])->assertOk()->assertJsonPath('article.status', ArticleStatus::COPY_EDITING);
+
+        $authorFile = ArticleFile::where('media_upload_session_id', $annotationUpload->id)->firstOrFail();
+        $this->assertDatabaseHas('proof_rounds', [
+            'id' => $firstProof->id,
+            'status' => 'corrections_requested',
+            'author_file_id' => $authorFile->id,
+            'active_marker' => 1,
+        ]);
+        $this->assertDatabaseHas('production_assignments', [
+            'id' => $assignment->id,
+            'user_id' => $copyEditor->id,
+            'status' => 'correction_required',
+        ]);
+
+        $correctedUpload = $this->cleanManuscriptUpload($copyEditor, $this->article, 'article_production_file');
+        Sanctum::actingAs($copyEditor);
+        $response = $this->postJson("/api/admin/production-assignments/{$assignment->id}/complete", [
+            'production_file_upload_id' => $correctedUpload->id,
+        ])->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::PROOFREADING);
+
+        $correctedFile = ArticleFile::where('media_upload_session_id', $correctedUpload->id)->firstOrFail();
+        $secondProofId = $response->json('proof_round_id');
+        $this->assertDatabaseHas('proof_rounds', [
+            'id' => $firstProof->id,
+            'status' => 'corrected',
+            'corrected_file_id' => $correctedFile->id,
+            'active_marker' => null,
+        ]);
+        $this->assertDatabaseHas('proof_rounds', [
+            'id' => $secondProofId,
+            'round_number' => 2,
+            'status' => 'awaiting_author',
+            'source_file_id' => $correctedFile->id,
+            'active_marker' => 1,
+        ]);
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.proof_rounds.0.id', $secondProofId)
+            ->assertJsonPath('article.proof_rounds.0.file_for_author_review.id', $correctedFile->id)
+            ->assertJsonPath('article.proof_rounds.0.file_for_author_review.uploader.name', $copyEditor->name);
+        $this->postJson("/api/admin/articles/{$this->article->id}/author-final-review", ['decision' => 'accepted'])
+            ->assertOk()
+            ->assertJsonPath('article.status', ArticleStatus::READY_FOR_PUBLICATION);
     }
 
     public function test_sub_editor_recommendation_and_reviewer_acceptance(): void
@@ -658,5 +712,69 @@ class ArticleWorkflowTest extends TestCase
         $assignmentAfter = ReviewerAssignment::findOrFail($assignmentId);
         $this->assertNotEmpty($assignmentAfter->invite_token_hash);
         $this->assertNotEquals($oldHash, $assignmentAfter->invite_token_hash);
+    }
+
+    private function prepareAuthorProof(?ProductionAssignment $assignment = null): ProofRound
+    {
+        $version = $this->article->currentVersion;
+        $manuscript = ArticleFile::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'file_path' => 'clean/author-proof-source-'.$this->article->id.'.pdf',
+            'storage_key' => 'clean/author-proof-source-'.$this->article->id.'.pdf',
+            'original_name' => 'author-manuscript.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 100,
+            'scan_status' => 'clean',
+        ]);
+        $set = app(AcceptedFileSetService::class)->createForCurrentSubmission($this->article, $this->editor);
+        $assignment ??= ProductionAssignment::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'accepted_file_set_id' => $set->id,
+            'user_id' => $this->editor->id,
+            'role' => 'copy_editor',
+            'assigned_by' => $this->admin->id,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+        $assignment->update([
+            'article_version_id' => $version->id,
+            'accepted_file_set_id' => $set->id,
+        ]);
+        $copyedited = ArticleFile::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $assignment->user_id,
+            'file_type' => ArticleFile::COPY_EDITED_FILE,
+            'visibility' => 'author_visible',
+            'assignment_type' => 'production_assignment',
+            'assignment_id' => $assignment->id,
+            'file_path' => 'clean/copyedited-proof-'.$this->article->id.'.pdf',
+            'storage_key' => 'clean/copyedited-proof-'.$this->article->id.'.pdf',
+            'original_name' => 'copyedited-proof.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 120,
+            'scan_status' => 'clean',
+        ]);
+        $this->article->update([
+            'status' => ArticleStatus::PROOFREADING,
+            'author_final_review_requested_at' => now(),
+        ]);
+
+        return ProofRound::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'accepted_file_set_id' => $set->id,
+            'production_assignment_id' => $assignment->id,
+            'round_number' => 1,
+            'status' => 'awaiting_author',
+            'source_file_id' => $copyedited->id,
+            'requested_at' => now(),
+            'active_marker' => 1,
+        ]);
     }
 }

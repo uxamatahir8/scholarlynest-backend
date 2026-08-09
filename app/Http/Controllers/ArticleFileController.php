@@ -412,6 +412,16 @@ class ArticleFileController extends Controller
                 return true;
             }
 
+            if ($file->file_type === ArticleFile::ANNOTATED_MANUSCRIPT) {
+                return DB::table('proof_rounds')
+                    ->join('production_assignments', 'production_assignments.id', '=', 'proof_rounds.production_assignment_id')
+                    ->where('proof_rounds.article_id', $article->id)
+                    ->where('proof_rounds.author_file_id', $file->id)
+                    ->where('production_assignments.user_id', $user->id)
+                    ->whereNull('production_assignments.revoked_at')
+                    ->exists();
+            }
+
             return $this->isActiveAcceptedFile($file);
         }
 
@@ -516,7 +526,15 @@ class ArticleFileController extends Controller
         return match ($fileType) {
             ArticleFile::MANUSCRIPT => $user && $user->can('update', $article),
             ArticleFile::PLAGIARISM_REPORT => $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']),
-            ArticleFile::ANNOTATED_MANUSCRIPT => $this->hasSubEditorAssignment($user, $article, $assignmentId),
+            ArticleFile::ANNOTATED_MANUSCRIPT => $user && (
+                $this->hasSubEditorAssignment($user, $article, $assignmentId)
+                || (($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                    && ArticleStatus::normalize($article->status) === ArticleStatus::PROOFREADING
+                    && DB::table('proof_rounds')->where('article_id', $article->id)
+                        ->where('active_marker', 1)
+                        ->whereIn('status', ['awaiting_author', 'resent'])
+                        ->exists())
+            ),
             ArticleFile::REVIEWED_MANUSCRIPT => $this->hasReviewerAssignment($user, $article, $assignmentId),
             ArticleFile::REVISION_RESPONSE => $user
                 && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))

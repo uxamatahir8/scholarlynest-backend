@@ -177,12 +177,11 @@ class ArticleWorkspaceManifestService
     {
         $super = $viewer->hasRole(['super_admin', 'admin']);
         $editorial = $super || $viewer->can('approve', $article);
-        $author = (int) $article->user_id === (int) $viewer->id
-            || $article->articleAuthors()->where(fn ($query) => $query->where('user_id', $viewer->id)->orWhere('co_author_email', $viewer->email))->exists();
-        $subEditor = $viewer->hasRole('sub_editor');
-        $reviewer = $viewer->hasRole('reviewer') && ! $editorial;
-        $copyEditor = $viewer->hasRole('copy_editor') && ! $editorial;
-        $publisher = $viewer->hasRole('publisher');
+        $author = $article->isPrimaryOrCorrespondingAuthor($viewer);
+        $subEditor = $viewer->hasRole('sub_editor') && ! $author;
+        $reviewer = $viewer->hasRole('reviewer') && ! $editorial && ! $author;
+        $copyEditor = $viewer->hasRole('copy_editor') && ! $editorial && ! $author;
+        $publisher = $viewer->hasRole('publisher') && ! $author;
 
         return compact('super', 'editorial', 'author', 'subEditor', 'reviewer', 'copyEditor', 'publisher') + [
             'sub_editor' => $subEditor,
@@ -387,11 +386,11 @@ class ArticleWorkspaceManifestService
         if (! $round) {
             return [];
         }
-        if ($roles['author'] && $round->status === 'awaiting_author') {
+        if ($roles['author'] && in_array($round->status, ['awaiting_author', 'resent'], true)) {
             return ['submit_proof_corrections', 'approve_proof'];
         }
-        if (($roles['editorial'] || $roles['copy_editor']) && in_array($round->status, ['author_responded', 'correction_required'], true)) {
-            return ['submit_corrected_proof', 'approve_proof'];
+        if (($roles['editorial'] || $roles['copy_editor']) && in_array($round->status, ['corrections_requested', 'correction_in_progress'], true)) {
+            return ['submit_corrected_proof'];
         }
 
         return [];

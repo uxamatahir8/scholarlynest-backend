@@ -2,23 +2,23 @@
 
 namespace Tests\Feature;
 
-use App\Models\Magazine;
-use App\Models\MagazinePage;
-use App\Models\MagazineIssue;
+use App\Constants\ArticleStatus;
 use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\ArticleVersion;
-use App\Models\Permission;
+use App\Models\Magazine;
+use App\Models\MagazineIssue;
+use App\Models\MagazinePage;
 use App\Models\MediaUploadSession;
-use App\Models\User;
+use App\Models\Permission;
 use App\Models\Role;
-use App\Constants\ArticleStatus;
+use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\TestCase;
-use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Http\UploadedFile;
+use Laravel\Sanctum\Sanctum;
 use Spatie\Permission\PermissionRegistrar;
+use Tests\TestCase;
 
 class MagazineTest extends TestCase
 {
@@ -62,10 +62,10 @@ class MagazineTest extends TestCase
         $response = $this->getJson('/api/magazines');
 
         $response->assertStatus(200)
-                 ->assertJsonFragment([
-                     'title' => 'Test Medical Magazine',
-                     'slug' => 'test-medical-magazine'
-                 ]);
+            ->assertJsonFragment([
+                'title' => 'Test Medical Magazine',
+                'slug' => 'test-medical-magazine',
+            ]);
     }
 
     public function test_can_fetch_all_publication_types_using_query_param(): void
@@ -179,8 +179,8 @@ class MagazineTest extends TestCase
         $response = $this->getJson('/api/magazines/astrophysics-review');
 
         $response->assertStatus(200)
-                 ->assertJsonPath('pages.0.title', 'Page One')
-                 ->assertJsonPath('pages.1.title', 'Page Two');
+            ->assertJsonPath('pages.0.title', 'Page One')
+            ->assertJsonPath('pages.1.title', 'Page Two');
     }
 
     /**
@@ -221,14 +221,14 @@ class MagazineTest extends TestCase
         ]);
 
         $response->assertStatus(211)
-                 ->assertJsonFragment([
-                      'title' => 'Quantum Logic Theory',
-                      'status' => 'submitted'
-                  ]);
+            ->assertJsonFragment([
+                'title' => 'Quantum Logic Theory',
+                'status' => 'submitted',
+            ]);
 
         $this->assertDatabaseHas('articles', [
             'title' => 'Quantum Logic Theory',
-            'user_id' => $user->id
+            'user_id' => $user->id,
         ]);
     }
 
@@ -251,7 +251,7 @@ class MagazineTest extends TestCase
             'slug' => 'a-new-algorithmic-approach',
             'abstract' => 'Abstract info',
             'full_text' => 'Full text info',
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
         $version = $this->attachSubmittedManuscript($article, $author);
 
@@ -262,7 +262,7 @@ class MagazineTest extends TestCase
         ]);
 
         $response->assertStatus(200)
-                 ->assertJsonPath('article.status', 'accepted');
+            ->assertJsonPath('article.status', 'accepted');
 
         $article->refresh();
         $this->assertNull($article->pdf_path);
@@ -292,9 +292,9 @@ class MagazineTest extends TestCase
         $response = $this->getJson('/api/magazines/latest');
 
         $response->assertStatus(200)
-                 ->assertJsonCount(10, 'data')
-                 ->assertJsonPath('data.0.title', 'Magazine 12')
-                 ->assertJsonPath('data.9.title', 'Magazine 3');
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('data.0.title', 'Magazine 12')
+            ->assertJsonPath('data.9.title', 'Magazine 3');
     }
 
     /**
@@ -314,7 +314,7 @@ class MagazineTest extends TestCase
                 'slug' => "article-$i",
                 'abstract' => "Abstract $i",
                 'full_text' => "Full Text $i",
-                'status' => 'published'
+                'status' => 'published',
             ]);
             $article->created_at = now()->addMinutes($i);
             $article->save();
@@ -328,15 +328,15 @@ class MagazineTest extends TestCase
             'slug' => 'pending-article',
             'abstract' => 'Abstract',
             'full_text' => 'Full Text',
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
 
         $response = $this->getJson('/api/articles/latest');
 
         $response->assertStatus(200)
-                 ->assertJsonCount(10, 'data')
-                 ->assertJsonPath('data.0.title', 'Article 12')
-                 ->assertJsonPath('data.9.title', 'Article 3');
+            ->assertJsonCount(10, 'data')
+            ->assertJsonPath('data.0.title', 'Article 12')
+            ->assertJsonPath('data.9.title', 'Article 3');
     }
 
     /**
@@ -356,7 +356,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract 1',
             'full_text' => 'Full text 1',
             'status' => 'published',
-            'published_at' => \Carbon\Carbon::parse('2026-09-15 10:00:00'),
+            'published_at' => Carbon::parse('2026-09-15 10:00:00'),
         ]);
 
         $article2 = Article::create([
@@ -367,7 +367,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract 2',
             'full_text' => 'Full text 2',
             'status' => 'published',
-            'published_at' => \Carbon\Carbon::parse('2026-10-20 12:00:00'),
+            'published_at' => Carbon::parse('2026-10-20 12:00:00'),
         ]);
 
         // Pending article should be filtered out
@@ -379,18 +379,18 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract P',
             'full_text' => 'Full text P',
             'status' => ArticleStatus::DRAFT,
-            'published_at' => \Carbon\Carbon::parse('2026-10-22 12:00:00'),
+            'published_at' => Carbon::parse('2026-10-22 12:00:00'),
         ]);
 
-        $response = $this->getJson("/api/magazines/biology-today/table-of-contents");
+        $response = $this->getJson('/api/magazines/biology-today/table-of-contents');
 
         $response->assertStatus(200)
-                 ->assertJsonPath('table_of_contents.2026.year', 2026)
-                 ->assertJsonCount(1, 'table_of_contents.2026.months.10.articles')
-                 ->assertJsonCount(1, 'table_of_contents.2026.months.09.articles')
-                 ->assertJsonPath('table_of_contents.2026.months.10.articles.0.slug', 'article-two')
-                 ->assertJsonPath('table_of_contents.2026.months.09.articles.0.slug', 'article-one')
-                 ->assertJsonMissing(['slug' => 'article-pending']);
+            ->assertJsonPath('table_of_contents.2026.year', 2026)
+            ->assertJsonCount(1, 'table_of_contents.2026.months.10.articles')
+            ->assertJsonCount(1, 'table_of_contents.2026.months.09.articles')
+            ->assertJsonPath('table_of_contents.2026.months.10.articles.0.slug', 'article-two')
+            ->assertJsonPath('table_of_contents.2026.months.09.articles.0.slug', 'article-one')
+            ->assertJsonMissing(['slug' => 'article-pending']);
     }
 
     /**
@@ -410,7 +410,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract 1',
             'full_text' => 'Full text 1',
             'status' => 'published',
-            'published_at' => \Carbon\Carbon::parse('2026-01-01 10:00:00'),
+            'published_at' => Carbon::parse('2026-01-01 10:00:00'),
         ]);
 
         $art2 = Article::create([
@@ -421,7 +421,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract 2',
             'full_text' => 'Full text 2',
             'status' => 'published',
-            'published_at' => \Carbon\Carbon::parse('2026-02-01 10:00:00'),
+            'published_at' => Carbon::parse('2026-02-01 10:00:00'),
         ]);
 
         $art3 = Article::create([
@@ -432,93 +432,40 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract 3',
             'full_text' => 'Full text 3',
             'status' => 'published',
-            'published_at' => \Carbon\Carbon::parse('2026-03-01 10:00:00'),
+            'published_at' => Carbon::parse('2026-03-01 10:00:00'),
         ]);
 
         // Request second article - should have first as previous and third as next
-        $response = $this->getJson("/api/articles/second-article");
+        $response = $this->getJson('/api/articles/second-article');
 
         $response->assertStatus(200)
-                 ->assertJsonPath('article.previous_article_slug', 'first-article')
-                 ->assertJsonPath('article.next_article_slug', 'third-article')
-                 ->assertJsonPath('article.previous_article_title', 'First Article')
-                 ->assertJsonPath('article.next_article_title', 'Third Article')
-                 ->assertJsonPath('previous_article_slug', 'first-article')
-                 ->assertJsonPath('next_article_slug', 'third-article')
-                 ->assertJsonPath('previous_article_title', 'First Article')
-                 ->assertJsonPath('next_article_title', 'Third Article');
+            ->assertJsonPath('article.previous_article_slug', 'first-article')
+            ->assertJsonPath('article.next_article_slug', 'third-article')
+            ->assertJsonPath('article.previous_article_title', 'First Article')
+            ->assertJsonPath('article.next_article_title', 'Third Article')
+            ->assertJsonPath('previous_article_slug', 'first-article')
+            ->assertJsonPath('next_article_slug', 'third-article')
+            ->assertJsonPath('previous_article_title', 'First Article')
+            ->assertJsonPath('next_article_title', 'Third Article');
 
         // Request first article - should have null as previous and second as next
-        $responseFirst = $this->getJson("/api/articles/first-article");
+        $responseFirst = $this->getJson('/api/articles/first-article');
         $responseFirst->assertStatus(200)
-                      ->assertJsonPath('article.previous_article_slug', null)
-                      ->assertJsonPath('article.next_article_slug', 'second-article')
-                      ->assertJsonPath('article.previous_article_title', null)
-                      ->assertJsonPath('article.next_article_title', 'Second Article');
+            ->assertJsonPath('article.previous_article_slug', null)
+            ->assertJsonPath('article.next_article_slug', 'second-article')
+            ->assertJsonPath('article.previous_article_title', null)
+            ->assertJsonPath('article.next_article_title', 'Second Article');
 
         // Request third article - should have second as previous and null as next
-        $responseThird = $this->getJson("/api/articles/third-article");
+        $responseThird = $this->getJson('/api/articles/third-article');
         $responseThird->assertStatus(200)
-                      ->assertJsonPath('article.previous_article_slug', 'second-article')
-                      ->assertJsonPath('article.next_article_slug', null)
-                      ->assertJsonPath('article.previous_article_title', 'Second Article')
-                      ->assertJsonPath('article.next_article_title', null);
+            ->assertJsonPath('article.previous_article_slug', 'second-article')
+            ->assertJsonPath('article.next_article_slug', null)
+            ->assertJsonPath('article.previous_article_title', 'Second Article')
+            ->assertJsonPath('article.next_article_title', null);
     }
 
-    /**
-     * Test user with auto-approve permission can approve article.
-     */
-    public function test_user_with_auto_approve_permission_can_approve_article(): void
-    {
-        Storage::fake('public');
-
-        $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
-        $author = User::factory()->create();
-        
-        // Create custom role and assign permission
-        $customRole = Role::create(['name' => 'pdf_compiler', 'guard_name' => 'web']);
-        $permission = \App\Models\Permission::firstOrCreate([
-            'name' => 'articles.auto-approve'
-        ], [
-            'module' => 'articles',
-            'description' => 'Auto-Approve & Compile PDF'
-        ]);
-        $customRole->permissions()->attach($permission->id);
-
-        $user = User::factory()->create(['role_id' => $customRole->id]);
-
-        $article = Article::create([
-            'magazine_id' => $magazine->id,
-            'user_id' => $author->id,
-            'title' => 'Auto Approved Article',
-            'slug' => 'auto-approved-article',
-            'abstract' => 'Abstract info',
-            'full_text' => 'Full text info',
-            'status' => 'pending'
-        ]);
-        $version = $this->attachSubmittedManuscript($article, $author);
-
-        Sanctum::actingAs($user);
-
-        $response = $this->patchJson("/api/admin/articles/{$article->id}/review", [
-            'status' => 'approved',
-        ]);
-
-        $response->assertStatus(200)
-                 ->assertJsonPath('article.status', 'accepted');
-
-        $article->refresh();
-        $this->assertNull($article->pdf_path);
-        $this->assertDatabaseHas('article_accepted_file_sets', [
-            'article_id' => $article->id,
-            'article_version_id' => $version->id,
-        ]);
-    }
-
-    /**
-     * Test user without auto-approve permission is forbidden.
-     */
-    public function test_user_without_auto_approve_permission_cannot_approve_article(): void
+    public function test_unassigned_author_cannot_approve_article(): void
     {
         $magazine = Magazine::create(['title' => 'A', 'slug' => 'a']);
         $author = User::factory()->create();
@@ -532,7 +479,7 @@ class MagazineTest extends TestCase
             'slug' => 'auto-approved-article-2',
             'abstract' => 'Abstract info',
             'full_text' => 'Full text info',
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
 
         Sanctum::actingAs($user);
@@ -567,7 +514,7 @@ class MagazineTest extends TestCase
         ]);
 
         $response->assertStatus(211);
-        
+
         $article = Article::where('title', 'Quantum Logic Theory with Image')->first();
         $this->assertNotNull($article);
         $this->assertNull($article->featured_image);
@@ -594,7 +541,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'status' => ArticleStatus::DRAFT,
-            'featured_image' => 'storage/articles/old_image.png'
+            'featured_image' => 'storage/articles/old_image.png',
         ]);
 
         // Place a fake file
@@ -636,7 +583,7 @@ class MagazineTest extends TestCase
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'status' => ArticleStatus::DRAFT,
-            'featured_image' => 'storage/articles/old_image.png'
+            'featured_image' => 'storage/articles/old_image.png',
         ]);
 
         Storage::disk('public')->put('articles/old_image.png', 'fake old image content');
@@ -655,6 +602,7 @@ class MagazineTest extends TestCase
         $this->assertSame('storage/articles/old_image.png', $article->featured_image);
         Storage::disk('public')->assertExists('articles/old_image.png');
     }
+
     public function test_public_about_overview_resolves_only_requested_magazine(): void
     {
         Magazine::create(['title' => 'Magazine A', 'slug' => 'magazine-a', 'description' => 'A desc', 'about_text' => 'A about']);
@@ -775,9 +723,9 @@ class MagazineTest extends TestCase
 
         $response->assertStatus(200)
             ->assertJsonPath('magazine.slug', 'biology')
-            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.issue.volume_number', 2)
-            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.title', 'Published Biology')
-            ->assertJsonPath('table_of_contents.' . now()->year . '.months.' . now()->format('m') . '.articles.0.page_start', 11)
+            ->assertJsonPath('table_of_contents.'.now()->year.'.months.'.now()->format('m').'.articles.0.issue.volume_number', 2)
+            ->assertJsonPath('table_of_contents.'.now()->year.'.months.'.now()->format('m').'.articles.0.title', 'Published Biology')
+            ->assertJsonPath('table_of_contents.'.now()->year.'.months.'.now()->format('m').'.articles.0.page_start', 11)
             ->assertJsonMissing(['title' => 'Unpublished Biology'])
             ->assertJsonMissing(['title' => 'Published Chemistry'])
             ->assertJsonMissing(['full_text' => 'Private full text']);
@@ -859,7 +807,7 @@ class MagazineTest extends TestCase
 
     private function cleanUpload(User $user, string $purpose, string $filename): MediaUploadSession
     {
-        $key = 'dev/clean/test/' . $purpose . '/' . $filename;
+        $key = 'dev/clean/test/'.$purpose.'/'.$filename;
         Storage::disk('s3')->put($key, 'fake clean image');
 
         return MediaUploadSession::create([
@@ -870,7 +818,7 @@ class MagazineTest extends TestCase
             'expected_size_bytes' => 16,
             'declared_mime_type' => 'image/png',
             'disk' => 's3',
-            's3_incoming_key' => 'dev/incoming/test/' . $purpose . '/' . $filename,
+            's3_incoming_key' => 'dev/incoming/test/'.$purpose.'/'.$filename,
             's3_clean_key' => $key,
             'upload_mode' => 'single',
             'status' => MediaUploadSession::STATUS_CLEAN,
@@ -910,5 +858,4 @@ class MagazineTest extends TestCase
 
         return $version;
     }
-
 }

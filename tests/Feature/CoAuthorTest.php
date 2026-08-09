@@ -3,12 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\Article;
+use App\Models\ArticleAuthor;
 use App\Models\Magazine;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
-use App\Models\Permission;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -18,7 +18,9 @@ class CoAuthorTest extends TestCase
     use RefreshDatabase;
 
     protected User $primaryAuthor;
+
     protected Magazine $magazine;
+
     protected Role $authorRole;
 
     protected function setUp(): void
@@ -29,24 +31,24 @@ class CoAuthorTest extends TestCase
         $this->authorRole = Role::create([
             'name' => 'author',
             'display_name' => 'Author',
-            'is_system' => true
+            'is_system' => true,
         ]);
 
         // Seed permissions needed for author
         $createPermission = Permission::create([
             'name' => 'articles.create',
             'module' => 'articles',
-            'description' => 'Create articles'
+            'description' => 'Create articles',
         ]);
         $editOwnPermission = Permission::create([
             'name' => 'articles.edit-own',
             'module' => 'articles',
-            'description' => 'Edit own articles'
+            'description' => 'Edit own articles',
         ]);
         $viewOwnPermission = Permission::create([
             'name' => 'articles.view-own',
             'module' => 'articles',
-            'description' => 'View own articles'
+            'description' => 'View own articles',
         ]);
 
         $this->authorRole->permissions()->sync([$createPermission->id, $editOwnPermission->id, $viewOwnPermission->id]);
@@ -106,14 +108,14 @@ class CoAuthorTest extends TestCase
                     'email' => 'david@meta.com',
                     'can_edit' => false,
                     'create_account' => false,
-                ]
-            ])
+                ],
+            ]),
         ];
 
         $response = $this->postJson('/api/articles', $payload);
 
         $response->assertStatus(211);
-        
+
         // Assert Charlie New user was created
         $this->assertDatabaseHas('users', [
             'email' => 'charlie@new.com',
@@ -207,25 +209,25 @@ class CoAuthorTest extends TestCase
                 'co_author_email' => 'dave@test.com',
                 'can_edit' => false,
                 'account_provisioned' => false,
-            ]
+            ],
         ]);
 
         // 1. Unauthenticated viewer gets 404 (hidden entirely)
-        $response = $this->getJson('/api/articles/' . $article->slug);
+        $response = $this->getJson('/api/articles/'.$article->slug);
         $response->assertStatus(404);
 
         // 2. Unrelated user gets 404 because unpublished article details are hidden on the public endpoint
         Sanctum::actingAs($malloy);
-        $response = $this->getJson('/api/articles/' . $article->slug);
+        $response = $this->getJson('/api/articles/'.$article->slug);
         $response->assertStatus(404);
 
         // 3. Co-author with read-only cannot view pending via the public article detail endpoint
         Sanctum::actingAs($dave);
-        $response = $this->getJson('/api/articles/' . $article->slug);
+        $response = $this->getJson('/api/articles/'.$article->slug);
         $response->assertStatus(404);
 
         // 4. Co-author with read-only cannot edit (update)
-        $response = $this->putJson('/api/admin/articles/' . $article->id, [
+        $response = $this->putJson('/api/admin/articles/'.$article->id, [
             'magazine_id' => $this->magazine->id,
             'title' => 'Updated by Dave',
             'abstract' => 'Abstract synopsis.',
@@ -236,7 +238,7 @@ class CoAuthorTest extends TestCase
         // 5. Co-author with edit rights can edit (update)
         $article->update(['status' => 'minor_review_rejected']);
         Sanctum::actingAs($charlie);
-        $response = $this->putJson('/api/admin/articles/' . $article->id, [
+        $response = $this->putJson('/api/admin/articles/'.$article->id, [
             'magazine_id' => $this->magazine->id,
             'title' => 'Updated by Charlie Editor',
             'abstract' => 'Abstract synopsis.',
@@ -245,6 +247,64 @@ class CoAuthorTest extends TestCase
             'revision_response_upload_id' => $this->cleanManuscriptUpload($charlie, null, 'article_revision_response')->id,
         ]);
         $response->assertStatus(200);
+    }
+
+    public function test_corresponding_author_sees_manuscript_and_has_primary_author_edit_rights(): void
+    {
+        $correspondingAuthor = User::create([
+            'name' => 'Dr. Corresponding Author',
+            'email' => 'corresponding@test.com',
+            'password' => Hash::make('password123'),
+            'role_id' => $this->authorRole->id,
+            'email_verified_at' => now(),
+        ]);
+
+        $article = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->primaryAuthor->id,
+            'title' => 'Shared Corresponding Manuscript',
+            'slug' => 'shared-corresponding-manuscript',
+            'abstract' => 'Abstract synopsis.',
+            'full_text' => 'Full article body text.',
+            'status' => 'draft',
+            'submission_mode' => 'editorial_workflow',
+        ]);
+
+        // Deliberately leave user_id empty to cover author records created before
+        // the corresponding author registered. Matching is case-insensitive.
+        ArticleAuthor::create([
+            'article_id' => $article->id,
+            'user_id' => null,
+            'co_author_name' => $correspondingAuthor->name,
+            'co_author_email' => 'CORRESPONDING@TEST.COM',
+            'author_order' => 2,
+            'is_owner' => false,
+            'is_corresponding' => true,
+            'can_edit' => false,
+        ]);
+
+        Sanctum::actingAs($correspondingAuthor);
+
+        $this->assertTrue($article->isPrimaryOrCorrespondingAuthor($correspondingAuthor));
+        $this->assertTrue($correspondingAuthor->can('view', $article));
+        $this->assertTrue($correspondingAuthor->can('update', $article));
+
+        $this->getJson('/api/admin/articles')
+            ->assertOk()
+            ->assertJsonPath('total', 1)
+            ->assertJsonPath('data.0.id', $article->id)
+            ->assertJsonPath('data.0.can_edit_article', true);
+
+        $this->getJson("/api/admin/articles/{$article->id}")
+            ->assertOk()
+            ->assertJsonPath('id', $article->id)
+            ->assertJsonPath('can_edit_article', true);
+
+        // Reaching validation (rather than a permission denial) confirms the
+        // edit-own route grants the corresponding author primary-author scope.
+        $this->patchJson("/api/admin/articles/{$article->id}", ['publication_type' => 'invalid'])
+            ->assertUnprocessable();
+
     }
 
     /**

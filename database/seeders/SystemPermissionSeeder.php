@@ -23,7 +23,6 @@ class SystemPermissionSeeder extends Seeder
         ['name' => 'articles.delete-any', 'module' => 'articles', 'description' => 'Delete any article'],
         ['name' => 'articles.delete-own', 'module' => 'articles', 'description' => 'Delete own articles'],
         ['name' => 'articles.approve', 'module' => 'articles', 'description' => 'Approve or reject articles'],
-        ['name' => 'articles.auto-approve', 'module' => 'articles', 'description' => 'Auto-approve eligible articles'],
         ['name' => 'articles.manage-assets', 'module' => 'articles', 'description' => 'Allow adding assets to articles'],
         ['name' => 'roles.view-any', 'module' => 'roles', 'description' => 'View roles and permissions'],
         ['name' => 'roles.manage', 'module' => 'roles', 'description' => 'Manage system roles'],
@@ -81,11 +80,11 @@ class SystemPermissionSeeder extends Seeder
         ]);
         foreach (['editor', 'super_editor', 'magazine_editor', 'journal_editor'] as $editorRole) {
             $this->syncRole($editorRole, [
-            'magazines.view-own',
-            'articles.view-own',
-            'articles.approve',
-            'articles.manage-assets',
-            'seo.articles',
+                'magazines.view-own',
+                'articles.view-own',
+                'articles.approve',
+                'articles.manage-assets',
+                'seo.articles',
             ]);
         }
         $this->syncRole('sub_editor', [
@@ -116,7 +115,7 @@ class SystemPermissionSeeder extends Seeder
     private function syncRole(string $roleName, array $permissionNames): void
     {
         $role = Role::where('name', $roleName)->first();
-        if (!$role) {
+        if (! $role) {
             return;
         }
 

@@ -371,7 +371,9 @@ class ArticleWorkflowCompletionTest extends TestCase
         Sanctum::actingAs($this->author);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
-            ->assertJsonCount(0, 'article.reviewer_assignments')
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
             ->assertJsonMissing(['Confidential Reviewer'])
             ->assertJsonMissing(['confidential.reviewer@example.test'])
             ->assertJsonMissing(['Confidential editorial note.']);

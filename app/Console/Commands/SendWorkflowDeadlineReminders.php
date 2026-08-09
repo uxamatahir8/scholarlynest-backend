@@ -18,7 +18,7 @@ class SendWorkflowDeadlineReminders extends Command
 {
     protected $signature = 'workflow:send-deadline-reminders {--chunk=200}';
 
-    protected $description = 'Record retry-safe workflow deadline, final-review, and invitation-expiry notifications.';
+    protected $description = 'Record retry-safe workflow deadline and invitation-expiry notifications.';
 
     private int $recorded = 0;
 
@@ -37,7 +37,6 @@ class SendWorkflowDeadlineReminders extends Command
         $this->processAssignmentType(SubEditorAssignment::class, 'sub_editor_assignment', 'subEditor', 'sub_editor_id', ['pending']);
         $this->processAssignmentType(ReviewerAssignment::class, 'reviewer_assignment', 'reviewer', 'reviewer_id', ['pending', 'accepted', 'review_in_progress', 'reopened']);
         $this->processAssignmentType(ProductionAssignment::class, 'production_assignment', 'user', 'user_id', ['pending', 'in_progress']);
-        $this->processAuthorFinalReviews();
         $this->processExpiredInvitations();
 
         $this->info("Workflow reminder notification events recorded: {$this->recorded}");
@@ -129,36 +128,6 @@ class SendWorkflowDeadlineReminders extends Command
             $this->audit($assignment->article, $assignmentType, $assignment->id, $reminderType, $recipientId, $dueVersion);
             $this->recorded++;
         });
-    }
-
-    private function processAuthorFinalReviews(): void
-    {
-        foreach (['due_in_3_days' => now()->addDays(3), 'due_today' => now()] as $reminderType => $date) {
-            Article::query()
-                ->with(['user', 'articleAuthors.user', 'magazine'])
-                ->whereNull('author_final_approved_at')
-                ->whereNotNull('author_final_review_due_at')
-                ->whereBetween('author_final_review_due_at', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
-                ->chunkById($this->chunkSize(), function ($articles) use ($reminderType) {
-                    foreach ($articles as $article) {
-                        $recipients = collect([$article->user_id])
-                            ->merge($article->articleAuthors->filter(fn ($author) => $author->is_corresponding)->pluck('user_id'))
-                            ->filter()->unique();
-                        foreach ($recipients as $recipientId) {
-                            $dueVersion = hash('sha256', $article->author_final_review_due_at->utc()->format('Y-m-d\TH:i:s.u\Z'));
-                            $key = "author-final-review:{$article->id}:{$recipientId}:{$reminderType}:{$dueVersion}";
-                            $event = $this->events->record(
-                                'author.final_review_reminder', $article, null,
-                                ['recipient_user_id' => (int) $recipientId, 'recipient_privacy_variant' => 'author', 'due_at' => $article->author_final_review_due_at->toISOString(), 'reminder_type' => $reminderType, 'due_date_version' => $dueVersion],
-                                'article', $article->id, deduplicationKey: $key
-                            );
-                            if ($event?->wasRecentlyCreated) {
-                                $this->recorded++;
-                            }
-                        }
-                    }
-                });
-        }
     }
 
     private function processExpiredInvitations(): void

@@ -125,7 +125,6 @@ class SendArticleWorkflowNotifications
 
             'production.completed',
             'author.final_review_approved',
-            'author.final_review_auto_approved',
             'article.ready_for_publication',
             'post_publication.recorded' => $this->authorRecipients($article)
                 ->merge($this->editorialRecipients($article))
@@ -242,15 +241,14 @@ class SendArticleWorkflowNotifications
             ],
             'production.completed' => [
                 'subject' => 'Production Task Completed: '.$title,
-                'body' => ['Copyediting has been completed.', 'Next Action: The corresponding author must approve or deny publication within 14 days.'],
+                'body' => ['Copyediting has been completed.', 'Next Action: The corresponding author must review the attached production proof and explicitly approve it or request corrections.'],
             ],
             'author.final_review_requested' => [
                 'subject' => 'Publication Approval Required: '.$title,
                 'body' => [
                     'Copyediting has been completed and the article is ready for your review.',
-                    'You have 14 days to approve publication or return the article to copyediting with a reason.',
-                    'If no response is received within 14 days, publication approval will be recorded automatically.',
-                    'Next Action: Open the article workflow and review the copyedited manuscript.',
+                    'Publication will remain blocked until an author explicitly approves the current proof.',
+                    'Next Action: Open the article workflow, review the exact copyedited file, and approve it or request corrections.',
                 ],
             ],
             'author.final_review_denied' => [
@@ -264,10 +262,6 @@ class SendArticleWorkflowNotifications
             'author.final_review_approved' => [
                 'subject' => 'Publication Approved by Author: '.$title,
                 'body' => ['The author approved the copyedited article for publication.', 'Next Action: Complete publication preparation.'],
-            ],
-            'author.final_review_auto_approved' => [
-                'subject' => 'Publication Automatically Approved: '.$title,
-                'body' => ['The 14-day author response window expired without a response.', 'The article has been automatically approved and is ready for publication.'],
             ],
             'article.ready_for_publication' => [
                 'subject' => 'Article Ready for Publication: '.$title,

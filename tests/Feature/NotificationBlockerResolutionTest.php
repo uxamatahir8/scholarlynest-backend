@@ -305,8 +305,7 @@ class NotificationBlockerResolutionTest extends TestCase
             'sub_editor.assigned', 'reviewer.assigned', 'revision.requested',
             'article.resubmitted', 'article.version_created', 'article.accepted', 'article.rejected',
             'production.assigned', 'production.completed', 'author.final_review_denied',
-            'author.final_review_requested', 'author.final_review_reminder',
-            'author.final_review_approved', 'author.final_review_auto_approved',
+            'author.final_review_requested', 'author.final_review_approved',
             'article.ready_for_publication', 'article.issue_assigned', 'issue.published',
             'article.published', 'post_publication.recorded',
         ];

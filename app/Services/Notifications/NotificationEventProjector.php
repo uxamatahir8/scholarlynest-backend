@@ -156,7 +156,7 @@ class NotificationEventProjector
         }
 
         if ($variant === 'author' && ! in_array($eventType, [
-            'revision.requested', 'author.final_review_requested', 'author.final_review_reminder',
+            'revision.requested', 'author.final_review_requested',
         ], true)) {
             return false;
         }
