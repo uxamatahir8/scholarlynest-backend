@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Constants\DirectPublicationStatus;
+use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\DirectPublicationRequest;
 use App\Models\Article;
@@ -29,15 +30,24 @@ class DirectPublicationController extends Controller
             $base->whereIn('magazine_id', $this->publisherMagazineIds($request));
         }
         $counts = collect(DirectPublicationStatus::ALL)->mapWithKeys(fn ($status) => [$status => (clone $base)->where('status', $status)->count()]);
-        $counts['blocked_by_validation'] = (clone $base)->whereIn('status', [DirectPublicationStatus::DRAFT, DirectPublicationStatus::READY])
+        $counts['blocked_by_validation'] = (clone $base)->with(['articleAuthors', 'files', 'magazine', 'currentVersion', 'latestPublicationRecord.issue', 'latestPublicationRecord.primaryFile'])
+            ->whereIn('status', [DirectPublicationStatus::DRAFT, DirectPublicationStatus::READY])
             ->get()->filter(fn (Article $article) => ! $this->service->readiness($article)['ready'])->count();
 
-        $query = (clone $base)->with(['magazine:id,title,publication_type', 'articleAuthors', 'latestPublicationRecord.issue', 'latestPublicationRecord.primaryFile']);
+        $query = (clone $base)->with(['magazine:id,title,publication_type', 'articleAuthors', 'latestPublicationRecord.issue']);
         $query->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
             ->when($request->filled('magazine_id'), fn ($q) => $q->where('magazine_id', $request->integer('magazine_id')))
             ->when($request->filled('search'), fn ($q) => $q->where(fn ($nested) => $nested->where('title', 'like', '%'.$request->string('search').'%')->orWhere('tracking_code', 'like', '%'.$request->string('search').'%')));
 
-        return response()->json(['data' => $query->latest('updated_at')->paginate(min($request->integer('per_page', 20), 100)), 'counts' => $counts]);
+        $page = $query->latest('updated_at')->paginate(min($request->integer('per_page', 20), 100));
+        $page->through(function (Article $article) {
+            $payload = $article->toArray();
+            unset($payload['pdf_path']);
+
+            return $payload;
+        });
+
+        return response()->json(['data' => $page, 'counts' => $counts]);
     }
 
     public function options(Request $request): JsonResponse
@@ -61,14 +71,14 @@ class DirectPublicationController extends Controller
         abort_unless($this->policy->create($request->user()) && $this->policy->canAccessMagazine($request->user(), $request->integer('magazine_id')), 403);
         $article = $this->service->createDraft($request->user(), $request->validated(), $this->key($request));
 
-        return response()->json(['message' => 'Direct-publication draft created.', 'data' => $this->serialize($article)], 201);
+        return response()->json(['message' => 'Direct-publication draft created.', 'data' => $this->serialize($article, $request->user())], 201);
     }
 
     public function show(Request $request, Article $article): JsonResponse
     {
         $this->authorizeArticle($request, $article, 'view');
 
-        return response()->json(['data' => $this->serialize($article), 'readiness' => $this->service->readiness($article)]);
+        return response()->json(['data' => $this->serialize($article, $request->user()), 'readiness' => $this->service->readiness($article)]);
     }
 
     public function update(DirectPublicationRequest $request, Article $article): JsonResponse
@@ -202,7 +212,7 @@ class DirectPublicationController extends Controller
 
     private function ok(string $message, Article $article): JsonResponse
     {
-        return response()->json(['message' => $message, 'data' => $this->serialize($article)]);
+        return response()->json(['message' => $message, 'data' => $this->serialize($article, request()->user())]);
     }
 
     private function readinessMutation(string $message, callable $callback): JsonResponse
@@ -218,10 +228,22 @@ class DirectPublicationController extends Controller
         }
     }
 
-    private function serialize(Article $article): array
+    private function serialize(Article $article, $viewer): array
     {
         $article->loadMissing(['magazine', 'articleAuthors', 'files', 'publicationSections', 'currentVersion', 'latestPublicationRecord.issue', 'latestPublicationRecord.primaryFile', 'latestPublicationRecord.files.file']);
         $payload = $article->toArray();
+        unset($payload['pdf_path']);
+        $fileSerializer = app(ArticleFileController::class);
+        $payload['files'] = $article->files->map(fn (ArticleFile $file) => $fileSerializer->serializeFile($file, $viewer))->values()->all();
+        if ($record = $article->latestPublicationRecord) {
+            $payload['latest_publication_record'] = $record->attributesToArray() + [
+                'issue' => $record->issue?->toArray(),
+                'primary_file' => $record->primaryFile ? $fileSerializer->serializeFile($record->primaryFile, $viewer) : null,
+                'files' => $record->files->map(fn ($selection) => $selection->attributesToArray() + [
+                    'file' => $selection->file ? $fileSerializer->serializeFile($selection->file, $viewer) : null,
+                ])->values()->all(),
+            ];
+        }
         $payload['publication_sections'] = $article->publicationSections->sortBy('sort_order')->values()->map(fn ($section) => [
             'id' => $section->id, 'section_key' => $section->section_key, 'title' => $section->title,
             'content_html' => $section->content_html, 'content_text' => $section->content_text,

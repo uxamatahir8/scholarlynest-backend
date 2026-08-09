@@ -7,10 +7,14 @@ use App\Models\Article;
 use App\Models\ArticleFile;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
+use App\Models\MediaUploadSession;
+use App\Models\PublicationRecord;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -105,6 +109,112 @@ class DirectPublicationTest extends TestCase
         $this->assertFalse(app(ArticleFileController::class)->canAccess(null, $source->fresh('article')));
         $this->withHeader('Idempotency-Key', 'unpublish-now')->postJson("/api/admin/direct-publications/{$article->id}/unpublish", ['reason' => 'A documented legal correction is required.'])->assertOk()->assertJsonPath('data.status', 'unpublished');
         $this->assertFalse(app(ArticleFileController::class)->canAccess(null, $pdf->fresh('article')));
+    }
+
+    public function test_create_retries_and_step_updates_keep_one_authoritative_draft(): void
+    {
+        Sanctum::actingAs($this->superAdmin);
+        $payload = $this->payload($this->magazine);
+        $first = $this->withHeader('Idempotency-Key', 'stable-browser-operation')->postJson('/api/admin/direct-publications', $payload)->assertCreated();
+        $articleId = $first->json('data.id');
+        $this->withHeader('Idempotency-Key', 'stable-browser-operation')->postJson('/api/admin/direct-publications', $payload)
+            ->assertCreated()->assertJsonPath('data.id', $articleId);
+        $this->withHeader('Idempotency-Key', 'stable-browser-operation')->postJson('/api/admin/direct-publications', array_replace($payload, ['title' => 'Conflicting retry']))
+            ->assertConflict();
+
+        foreach (range(1, 10) as $step) {
+            $this->withHeader('Idempotency-Key', "wizard-step-{$step}")->putJson("/api/admin/direct-publications/{$articleId}", [
+                'title' => "A Directly Published Study {$step}",
+            ])->assertOk()->assertJsonPath('data.id', $articleId);
+        }
+
+        $this->assertSame(1, Article::where('submission_mode', 'direct_publication')->count());
+        $this->assertSame(1, PublicationRecord::where('article_id', $articleId)->where('publication_mode', 'direct')->count());
+    }
+
+    public function test_destination_issue_and_idempotency_scope_are_enforced(): void
+    {
+        $issue = MagazineIssue::create(['magazine_id' => $this->magazine->id, 'volume_number' => 1, 'issue_number' => 1, 'issue_year' => now()->year, 'status' => 'draft']);
+        Sanctum::actingAs($this->superAdmin);
+        $articleId = $this->withHeader('Idempotency-Key', 'destination-create')->postJson('/api/admin/direct-publications', $this->payload($this->magazine) + ['magazine_issue_id' => $issue->id])->assertCreated()->json('data.id');
+        $otherId = $this->withHeader('Idempotency-Key', 'other-create')->postJson('/api/admin/direct-publications', $this->payload($this->otherMagazine) + ['title' => 'Other'])->assertCreated()->json('data.id');
+
+        $this->withHeader('Idempotency-Key', 'destination-change')->putJson("/api/admin/direct-publications/{$articleId}", ['magazine_id' => $this->otherMagazine->id])->assertOk();
+        $this->assertNull(PublicationRecord::where('article_id', $articleId)->value('magazine_issue_id'));
+        $this->withHeader('Idempotency-Key', 'invalid-cross-issue')->putJson("/api/admin/direct-publications/{$articleId}", ['magazine_issue_id' => $issue->id])->assertUnprocessable();
+
+        $this->withHeader('Idempotency-Key', 'same-update-key')->putJson("/api/admin/direct-publications/{$articleId}", ['title' => 'One'])->assertOk();
+        $this->withHeader('Idempotency-Key', 'same-update-key')->putJson("/api/admin/direct-publications/{$otherId}", ['title' => 'One'])->assertConflict();
+    }
+
+    public function test_file_attachment_is_resumable_safe_to_serialize_and_primary_removal_clears_selection(): void
+    {
+        Storage::fake('s3');
+        config(['media_uploads.disk' => 's3']);
+        Sanctum::actingAs($this->superAdmin);
+        $articleId = $this->withHeader('Idempotency-Key', 'file-create')->postJson('/api/admin/direct-publications', $this->payload($this->magazine))->assertCreated()->json('data.id');
+        $article = Article::findOrFail($articleId);
+        $contents = '%PDF-1.4 direct publication';
+        $key = 'clean/articles/direct/manuscripts/test.pdf';
+        Storage::disk('s3')->put($key, $contents);
+        $upload = MediaUploadSession::create([
+            'id' => (string) Str::uuid(), 'user_id' => $this->superAdmin->id, 'client_upload_id' => (string) Str::uuid(),
+            'purpose' => 'direct_publication_manuscript', 'attachable_type' => Article::class, 'attachable_id' => $articleId,
+            'original_filename' => 'final.pdf', 'safe_display_filename' => 'final.pdf', 'expected_size_bytes' => strlen($contents),
+            'declared_mime_type' => 'application/pdf', 'detected_mime_type' => 'application/pdf', 'disk' => 's3',
+            's3_incoming_key' => 'incoming/final.pdf', 's3_clean_key' => $key, 'upload_mode' => 'single', 'status' => MediaUploadSession::STATUS_CLEAN,
+            'expires_at' => now()->addHour(), 'scanned_at' => now(),
+        ]);
+
+        $attach = ['upload_id' => $upload->id, 'purpose' => 'direct_publication_manuscript'];
+        $otherArticleId = $this->withHeader('Idempotency-Key', 'file-other-create')->postJson('/api/admin/direct-publications', array_replace($this->payload($this->magazine), ['title' => 'Other file target']))->assertCreated()->json('data.id');
+        $this->withHeader('Idempotency-Key', 'cross-article-attach')->postJson("/api/admin/direct-publications/{$otherArticleId}/files", $attach)->assertUnprocessable();
+        $fileId = $this->withHeader('Idempotency-Key', 'stable-file-attach')->postJson("/api/admin/direct-publications/{$articleId}/files", $attach)->assertCreated()->json('data.id');
+        $this->withHeader('Idempotency-Key', 'stable-file-attach')->postJson("/api/admin/direct-publications/{$articleId}/files", $attach)->assertCreated()->assertJsonPath('data.id', $fileId);
+        $this->assertSame(1, ArticleFile::where('article_id', $articleId)->count());
+        $show = $this->getJson("/api/admin/direct-publications/{$articleId}")->assertOk();
+        $this->assertArrayNotHasKey('storage_key', $show->json('data.files.0'));
+        $this->assertArrayNotHasKey('file_path', $show->json('data.files.0'));
+
+        $this->withHeader('Idempotency-Key', 'primary-select')->postJson("/api/admin/direct-publications/{$articleId}/select-primary-file", ['article_file_id' => $fileId])->assertOk();
+        $selected = $this->getJson("/api/admin/direct-publications/{$articleId}")->assertOk();
+        $this->assertArrayNotHasKey('storage_key', $selected->json('data.latest_publication_record.primary_file'));
+        $this->assertArrayNotHasKey('file_path', $selected->json('data.latest_publication_record.files.0.file'));
+        $this->withHeader('Idempotency-Key', 'primary-delete')->deleteJson("/api/admin/direct-publications/{$articleId}/files/{$fileId}")->assertOk();
+        $this->assertNull(PublicationRecord::where('article_id', $articleId)->value('primary_publication_file_id'));
+        $this->assertDatabaseMissing('article_files', ['id' => $fileId]);
+        $this->assertTrue(Storage::disk('s3')->exists($key));
+    }
+
+    public function test_readiness_returns_structured_blockers(): void
+    {
+        Sanctum::actingAs($this->superAdmin);
+        $articleId = $this->withHeader('Idempotency-Key', 'blocker-create')->postJson('/api/admin/direct-publications', $this->payload($this->magazine))->assertCreated()->json('data.id');
+        $this->getJson("/api/admin/direct-publications/{$articleId}/readiness")
+            ->assertUnprocessable()
+            ->assertJsonPath('ready', false)
+            ->assertJsonPath('blockers.0.field', 'magazine_issue_id');
+    }
+
+    public function test_duplicate_draft_audit_is_dry_run_and_repairs_only_untouched_exact_payload_duplicates(): void
+    {
+        Sanctum::actingAs($this->superAdmin);
+        $payload = $this->payload($this->magazine);
+        $this->withHeader('Idempotency-Key', 'historical-click-one')->postJson('/api/admin/direct-publications', $payload)->assertCreated();
+        $this->withHeader('Idempotency-Key', 'historical-click-two')->postJson('/api/admin/direct-publications', $payload)->assertCreated();
+        $this->assertSame(2, Article::where('submission_mode', 'direct_publication')->count());
+
+        $this->artisan('direct-publications:audit', ['--details' => true])
+            ->expectsOutputToContain('Likely duplicate group')
+            ->expectsOutputToContain('Dry run only')
+            ->assertSuccessful();
+        $this->assertSame(2, Article::where('submission_mode', 'direct_publication')->count());
+
+        $this->artisan('direct-publications:audit', ['--repair' => true])
+            ->expectsOutputToContain('Removed untouched duplicate draft')
+            ->assertSuccessful();
+        $this->assertSame(1, Article::where('submission_mode', 'direct_publication')->count());
+        $this->assertDatabaseHas('article_audit_logs', ['event' => 'direct_publication.duplicate_draft_repaired']);
     }
 
     private function payload(Magazine $magazine): array

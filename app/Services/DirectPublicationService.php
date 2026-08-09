@@ -17,6 +17,7 @@ use App\Models\WorkflowIdempotencyKey;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Notifications\NotificationEventRecorder;
 use Carbon\CarbonInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -24,7 +25,7 @@ use Illuminate\Validation\ValidationException;
 
 class DirectPublicationService
 {
-    private const EDITABLE = [DirectPublicationStatus::DRAFT, DirectPublicationStatus::READY];
+    private const EDITABLE = [DirectPublicationStatus::DRAFT];
 
     public function __construct(
         private CleanUploadResolver $uploads,
@@ -34,62 +35,98 @@ class DirectPublicationService
 
     public function createDraft(User $actor, array $payload, string $key): Article
     {
-        return DB::transaction(function () use ($actor, $payload, $key) {
-            if ($existing = $this->idempotentResult($actor, 'direct.create', $key, $payload)) {
-                return $existing;
+        if (! empty($payload['magazine_issue_id']) && ! DB::table('magazine_issues')->where('id', $payload['magazine_issue_id'])->where('magazine_id', $payload['magazine_id'])->exists()) {
+            throw ValidationException::withMessages(['magazine_issue_id' => 'The issue must belong to the selected publication.']);
+        }
+        if (array_key_exists('doi', $payload)) {
+            $payload['doi'] = $this->normalizeDoi($payload['doi']);
+            if ($payload['doi'] && PublicationRecord::where('doi', $payload['doi'])->exists()) {
+                throw ValidationException::withMessages(['doi' => 'This DOI is already in use.']);
+            }
+        }
+
+        try {
+            return DB::transaction(function () use ($actor, $payload, $key) {
+                if ($existing = $this->idempotentResult($actor, 'direct.create', $key, $payload)) {
+                    return $existing;
+                }
+
+                // Reserve the operation before creating any domain rows. The unique
+                // index makes simultaneous retries collapse to this one transaction.
+                WorkflowIdempotencyKey::create([
+                    'actor_id' => $actor->id,
+                    'command' => 'direct.create',
+                    'idempotency_key' => $key,
+                    'request_hash' => $this->payloadHash($payload),
+                ]);
+
+                $slug = $this->uniqueSlug($payload['slug'] ?? $payload['title']);
+                $article = Article::create(array_merge($this->articleData($payload), [
+                    'magazine_id' => $payload['magazine_id'],
+                    'user_id' => null,
+                    'title' => $payload['title'],
+                    'slug' => $slug,
+                    'abstract' => $payload['abstract'] ?? '',
+                    'full_text' => $payload['full_text'] ?? '',
+                    'status' => DirectPublicationStatus::DRAFT,
+                    'lifecycle_status' => DirectPublicationStatus::DRAFT,
+                    'submission_mode' => 'direct_publication',
+                    'directly_created_by' => $actor->id,
+                    'is_peer_reviewed' => false,
+                ]));
+
+                $version = ArticleVersion::create([
+                    'article_id' => $article->id, 'created_by' => $actor->id,
+                    'version_number' => 1, 'revision_number' => 0,
+                    'label' => 'Initial Publication Version', 'source' => 'direct_publication',
+                    'status_snapshot' => DirectPublicationStatus::DRAFT,
+                    'metadata_snapshot' => $this->metadataSnapshot($article),
+                ]);
+                $article->forceFill(['current_version_id' => $version->id])->save();
+                $this->replaceAuthors($article, $payload['authors'] ?? []);
+                $this->persistPublicationSections($article, $payload['publication_sections'] ?? [], $actor);
+
+                PublicationRecord::create([
+                    'article_id' => $article->id, 'magazine_id' => $article->magazine_id,
+                    'article_version_id' => $version->id, 'publication_mode' => 'direct',
+                    'magazine_issue_id' => $payload['magazine_issue_id'] ?? null,
+                    'status' => DirectPublicationStatus::DRAFT, 'active_marker' => 1,
+                    'doi' => $this->normalizeDoi($payload['doi'] ?? null), 'page_start' => $payload['page_start'] ?? null,
+                    'page_end' => $payload['page_end'] ?? null,
+                    'online_publication_date' => $payload['online_publication_date'] ?? null,
+                    'print_publication_date' => $payload['print_publication_date'] ?? null,
+                    'created_by' => $actor->id, 'updated_by' => $actor->id,
+                ]);
+
+                $this->audit($article, $actor, 'direct_publication.created', null, DirectPublicationStatus::DRAFT, [], $payload);
+                $this->notify('direct_publication.created', $article, $actor, $key);
+                $this->completeIdempotency($actor, 'direct.create', $key, $payload, $article);
+
+                return $this->fresh($article);
+            });
+        } catch (QueryException $exception) {
+            if (! $this->isUniqueConstraintViolation($exception)) {
+                throw $exception;
             }
 
-            $slug = $this->uniqueSlug($payload['slug'] ?? $payload['title']);
-            $article = Article::create(array_merge($this->articleData($payload), [
-                'magazine_id' => $payload['magazine_id'],
-                'user_id' => null,
-                'title' => $payload['title'],
-                'slug' => $slug,
-                'abstract' => $payload['abstract'],
-                'full_text' => $payload['full_text'] ?? '',
-                'status' => DirectPublicationStatus::DRAFT,
-                'lifecycle_status' => DirectPublicationStatus::DRAFT,
-                'submission_mode' => 'direct_publication',
-                'directly_created_by' => $actor->id,
-                'is_peer_reviewed' => false,
-            ]));
+            return DB::transaction(function () use ($actor, $payload, $key) {
+                $existing = $this->idempotentResult($actor, 'direct.create', $key, $payload);
+                if (! $existing) {
+                    throw ValidationException::withMessages(['idempotency_key' => 'The draft creation request is still being processed. Please retry.']);
+                }
 
-            $version = ArticleVersion::create([
-                'article_id' => $article->id, 'created_by' => $actor->id,
-                'version_number' => 1, 'revision_number' => 0,
-                'label' => 'Initial Publication Version', 'source' => 'direct_publication',
-                'status_snapshot' => DirectPublicationStatus::DRAFT,
-                'metadata_snapshot' => $this->metadataSnapshot($article),
-            ]);
-            $article->forceFill(['current_version_id' => $version->id])->save();
-            $this->replaceAuthors($article, $payload['authors'] ?? []);
-            $this->persistPublicationSections($article, $payload['publication_sections'] ?? [], $actor);
-
-            PublicationRecord::create([
-                'article_id' => $article->id, 'magazine_id' => $article->magazine_id,
-                'article_version_id' => $version->id, 'publication_mode' => 'direct',
-                'magazine_issue_id' => $payload['magazine_issue_id'] ?? null,
-                'status' => DirectPublicationStatus::DRAFT, 'active_marker' => 1,
-                'doi' => $payload['doi'] ?? null, 'page_start' => $payload['page_start'] ?? null,
-                'page_end' => $payload['page_end'] ?? null,
-                'online_publication_date' => $payload['online_publication_date'] ?? null,
-                'print_publication_date' => $payload['print_publication_date'] ?? null,
-                'created_by' => $actor->id, 'updated_by' => $actor->id,
-            ]);
-
-            $this->audit($article, $actor, 'direct_publication.created', null, DirectPublicationStatus::DRAFT, [], $payload);
-            $this->notify('direct_publication.created', $article, $actor, $key);
-            $this->completeIdempotency($actor, 'direct.create', $key, $payload, $article);
-
-            return $this->fresh($article);
-        });
+                return $existing;
+            });
+        }
     }
 
     public function updateDraft(Article $article, User $actor, array $payload, string $key): Article
     {
         return $this->mutate($article, $actor, 'direct.update', $key, $payload, function (Article $locked) use ($actor, $payload) {
             $this->assertStatus($locked, self::EDITABLE);
+            $this->normalizeAndValidatePlacement($locked, $payload);
             $before = $locked->only(array_keys($this->articleData($payload)));
+            $destinationChanged = array_key_exists('magazine_id', $payload) && (int) $payload['magazine_id'] !== (int) $locked->magazine_id;
             $locked->fill($this->articleData($payload));
             if (isset($payload['slug']) && $payload['slug'] !== $locked->getOriginal('slug')) {
                 $locked->slug = $this->uniqueSlug($payload['slug'], $locked->id);
@@ -102,9 +139,16 @@ class DirectPublicationService
                 $this->persistPublicationSections($locked, $payload['publication_sections'], $actor);
             }
             $publication = $this->record($locked, true);
-            $publication->fill(Arr::only($payload, [
+            $placement = Arr::only($payload, [
                 'magazine_issue_id', 'doi', 'page_start', 'page_end', 'online_publication_date', 'print_publication_date',
-            ]) + ['magazine_id' => $locked->magazine_id, 'updated_by' => $actor->id])->save();
+            ]);
+            if ($destinationChanged && ! array_key_exists('magazine_issue_id', $placement)) {
+                $placement['magazine_issue_id'] = null;
+            }
+            if (array_key_exists('doi', $placement)) {
+                $placement['doi'] = $this->normalizeDoi($placement['doi']);
+            }
+            $publication->fill($placement + ['magazine_id' => $locked->magazine_id, 'updated_by' => $actor->id])->save();
             $locked->load('currentVersion');
             $locked->currentVersion?->forceFill(['metadata_snapshot' => $this->metadataSnapshot($locked->fresh())])->save();
             $this->audit($locked, $actor, 'direct_publication.metadata_updated', $locked->status, $locked->status, $before, $payload);
@@ -121,10 +165,13 @@ class DirectPublicationService
                 if (! hash_equals($idempotency->request_hash, $hash)) {
                     abort(409, 'The idempotency key was already used with a different request.');
                 }
+                abort_unless((int) $idempotency->article_id === (int) $article->id, 409, 'The idempotency key belongs to another direct publication.');
 
-                return ArticleFile::findOrFail($idempotency->response_payload['article_file_id']);
+                return ArticleFile::where('article_id', $article->id)->findOrFail($idempotency->response_payload['article_file_id']);
             }
             $locked = Article::query()->lockForUpdate()->findOrFail($article->id);
+            abort_unless($locked->isDirectPublication(), 404);
+            $this->assertActorScope($actor, $locked);
             $allowed = self::EDITABLE;
             if ($payload['purpose'] === 'direct_publication_manuscript') {
                 $allowed[] = DirectPublicationStatus::PUBLISHED;
@@ -133,6 +180,9 @@ class DirectPublicationService
             $purposeConfig = config("media_uploads.purposes.{$payload['purpose']}");
             abort_unless(is_array($purposeConfig), 422, 'Unsupported direct-publication file purpose.');
             $upload = $this->uploads->resolveOwned($actor, $payload['upload_id'], $payload['purpose']);
+            if ($upload->attachable_type !== Article::class || (int) $upload->attachable_id !== (int) $locked->id) {
+                throw ValidationException::withMessages(['upload_id' => 'The upload session belongs to another article.']);
+            }
             $file = $this->articleFiles->createCleanDirectUploadFile($locked, $upload, $purposeConfig, [
                 'article_version_id' => $locked->current_version_id,
                 'file_title' => $payload['file_title'] ?? null,
@@ -155,7 +205,7 @@ class DirectPublicationService
             $this->assertStatus($locked, self::EDITABLE);
             $record = $this->record($locked, true);
             if ((int) $record->primary_publication_file_id === (int) $file->id) {
-                throw ValidationException::withMessages(['file' => 'Deselect the primary publication PDF before deleting it.']);
+                $record->update(['primary_publication_file_id' => null, 'updated_by' => $actor->id]);
             }
             PublicationFileSelection::where('publication_record_id', $record->id)->where('article_file_id', $file->id)->delete();
             $file->delete();
@@ -225,7 +275,8 @@ class DirectPublicationService
     public function readiness(Article $article): array
     {
         $article->loadMissing(['articleAuthors', 'files', 'magazine', 'currentVersion']);
-        $record = $this->record($article)->loadMissing(['issue', 'primaryFile']);
+        $record = ($article->relationLoaded('latestPublicationRecord') ? $article->latestPublicationRecord : null) ?? $this->record($article);
+        $record->loadMissing(['issue', 'primaryFile']);
         $errors = [];
         foreach (['title', 'abstract', 'article_type', 'language'] as $field) {
             if (blank($article->{$field})) {
@@ -266,7 +317,11 @@ class DirectPublicationService
             $errors['page_range'][] = 'The page range overlaps another article in this issue.';
         }
 
-        return ['ready' => $errors === [], 'code' => $errors === [] ? null : 'DIRECT_PUBLICATION_NOT_READY', 'errors' => $errors];
+        $blockers = collect($errors)->flatMap(fn (array $messages, string $field) => collect($messages)->map(fn (string $message) => [
+            'code' => Str::upper($field), 'field' => $field, 'message' => $message,
+        ]))->values()->all();
+
+        return ['ready' => $errors === [], 'code' => $errors === [] ? null : 'DIRECT_PUBLICATION_NOT_READY', 'errors' => $errors, 'blockers' => $blockers];
     }
 
     public function markReady(Article $article, User $actor, string $key): Article
@@ -357,6 +412,8 @@ class DirectPublicationService
     {
         DB::transaction(function () use ($article, $actor) {
             $locked = Article::query()->lockForUpdate()->findOrFail($article->id);
+            abort_unless($locked->isDirectPublication(), 404);
+            $this->assertActorScope($actor, $locked);
             $this->assertStatus($locked, [DirectPublicationStatus::DRAFT]);
             $this->audit($locked, $actor, 'direct_publication.draft_deleted', $locked->status, null, [], []);
             $locked->delete();
@@ -388,11 +445,12 @@ class DirectPublicationService
     private function mutate(Article $article, User $actor, string $command, string $key, array $payload, callable $action): Article
     {
         return DB::transaction(function () use ($article, $actor, $command, $key, $payload, $action) {
-            if ($existing = $this->idempotentResult($actor, $command, $key, $payload)) {
+            if ($existing = $this->idempotentResult($actor, $command, $key, $payload, $article->id)) {
                 return $existing;
             }
             $locked = Article::query()->lockForUpdate()->findOrFail($article->id);
             abort_unless($locked->isDirectPublication(), 404);
+            $this->assertActorScope($actor, $locked);
             $action($locked);
             $this->completeIdempotency($actor, $command, $key, $payload, $locked);
 
@@ -447,6 +505,11 @@ class DirectPublicationService
             $uploadId = $section['media_upload_session_id'] ?? null;
             if ($uploadId && (string) $existing?->media_upload_session_id !== (string) $uploadId) {
                 $this->uploads->resolveOwned($actor, $uploadId, 'publication_section_image');
+                $alreadyAttached = ArticlePublicationSection::where('media_upload_session_id', $uploadId)
+                    ->when($existing, fn ($query) => $query->whereKeyNot($existing->id))->exists();
+                if ($alreadyAttached) {
+                    throw ValidationException::withMessages(['publication_sections' => 'A section image upload can only be attached once.']);
+                }
             }
             $record = ArticlePublicationSection::updateOrCreate(
                 ['article_id' => $article->id, 'section_key' => $key],
@@ -527,14 +590,17 @@ class DirectPublicationService
         }
     }
 
-    private function idempotentResult(User $actor, string $command, string $key, array $payload): ?Article
+    private function idempotentResult(User $actor, string $command, string $key, array $payload, ?int $articleId = null): ?Article
     {
         $row = WorkflowIdempotencyKey::where('actor_id', $actor->id)->where('command', $command)->where('idempotency_key', $key)->lockForUpdate()->first();
         if (! $row) {
             return null;
         }
-        if (! hash_equals($row->request_hash, hash('sha256', json_encode($payload)))) {
+        if (! hash_equals($row->request_hash, $this->payloadHash($payload))) {
             abort(409, 'The idempotency key was already used with a different request.');
+        }
+        if ($articleId !== null && (int) $row->article_id !== $articleId) {
+            abort(409, 'The idempotency key belongs to another direct publication.');
         }
 
         return isset($row->response_payload['article_id']) ? $this->fresh(Article::findOrFail($row->response_payload['article_id'])) : null;
@@ -543,8 +609,66 @@ class DirectPublicationService
     private function completeIdempotency(User $actor, string $command, string $key, array $payload, Article $article): void
     {
         WorkflowIdempotencyKey::updateOrCreate(['actor_id' => $actor->id, 'command' => $command, 'idempotency_key' => $key], [
-            'article_id' => $article->id, 'request_hash' => hash('sha256', json_encode($payload)), 'response_status' => 200,
+            'article_id' => $article->id, 'request_hash' => $this->payloadHash($payload), 'response_status' => 200,
             'response_payload' => ['article_id' => $article->id],
         ]);
+    }
+
+    private function payloadHash(array $payload): string
+    {
+        return hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    private function isUniqueConstraintViolation(QueryException $exception): bool
+    {
+        $message = Str::lower($exception->getMessage());
+
+        return (in_array((string) $exception->getCode(), ['23000', '23505'], true) || str_contains($message, 'unique'))
+            && (str_contains($message, 'workflow_idempotency_scope_unique') || str_contains($message, 'workflow_idempotency_keys.actor_id'));
+    }
+
+    private function assertActorScope(User $actor, Article $article): void
+    {
+        $allowed = $actor->hasRole('super_admin') || ($actor->hasRole('publisher') && DB::table('magazine_user')
+            ->where('user_id', $actor->id)->where('magazine_id', $article->magazine_id)
+            ->where(fn ($query) => $query->where('role', 'publisher')->orWhereNull('role'))->exists());
+        abort_unless($allowed, 403, 'This action is outside your publication scope.');
+    }
+
+    private function normalizeAndValidatePlacement(Article $article, array &$payload): void
+    {
+        $magazineId = (int) ($payload['magazine_id'] ?? $article->magazine_id);
+        if (! empty($payload['magazine_issue_id'])) {
+            $belongs = DB::table('magazine_issues')->where('id', $payload['magazine_issue_id'])->where('magazine_id', $magazineId)->exists();
+            if (! $belongs) {
+                throw ValidationException::withMessages(['magazine_issue_id' => 'The issue must belong to the selected publication.']);
+            }
+        }
+        if (array_key_exists('doi', $payload)) {
+            $payload['doi'] = $this->normalizeDoi($payload['doi']);
+            $recordId = $article->publicationRecords()->where('publication_mode', 'direct')->latest('id')->value('id');
+            if ($payload['doi'] && PublicationRecord::where('doi', $payload['doi'])->whereKeyNot($recordId)->exists()) {
+                throw ValidationException::withMessages(['doi' => 'This DOI is already in use.']);
+            }
+        }
+        $record = $this->record($article);
+        $issueId = array_key_exists('magazine_issue_id', $payload) ? $payload['magazine_issue_id'] : $record->magazine_issue_id;
+        $start = array_key_exists('page_start', $payload) ? $payload['page_start'] : $record->page_start;
+        $end = array_key_exists('page_end', $payload) ? $payload['page_end'] : $record->page_end;
+        if ($start && $end && (int) $start > (int) $end) {
+            throw ValidationException::withMessages(['page_end' => 'Ending page must be greater than or equal to starting page.']);
+        }
+        if ($issueId && $start && $end && PublicationRecord::where('magazine_issue_id', $issueId)->whereKeyNot($record->id)
+            ->whereNotNull('active_marker')->where('page_start', '<=', $end)->where('page_end', '>=', $start)->exists()) {
+            throw ValidationException::withMessages(['page_range' => 'The page range overlaps another article in this issue.']);
+        }
+    }
+
+    private function normalizeDoi(?string $doi): ?string
+    {
+        $value = Str::lower(trim((string) $doi));
+        $value = preg_replace('#^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)#i', '', $value) ?? $value;
+
+        return $value === '' ? null : $value;
     }
 }
