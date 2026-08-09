@@ -10,6 +10,7 @@ use App\Models\ArticleAuthor;
 use App\Models\ArticleFile;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleVersion;
+use App\Models\MediaUploadSession;
 use App\Models\PublicationFileSelection;
 use App\Models\PublicationRecord;
 use App\Models\User;
@@ -183,13 +184,22 @@ class DirectPublicationService
             if ($upload->attachable_type !== Article::class || (int) $upload->attachable_id !== (int) $locked->id) {
                 throw ValidationException::withMessages(['upload_id' => 'The upload session belongs to another article.']);
             }
+            $alreadyAttached = ArticleFile::where('media_upload_session_id', $upload->id)->first();
+            if ($alreadyAttached) {
+                abort_unless((int) $alreadyAttached->article_id === (int) $locked->id, 409, 'The upload session is already attached to another article.');
+                WorkflowIdempotencyKey::create(['article_id' => $locked->id, 'actor_id' => $actor->id, 'command' => 'direct.file.attach',
+                    'idempotency_key' => $key, 'request_hash' => $hash, 'response_status' => 201, 'response_payload' => ['article_file_id' => $alreadyAttached->id]]);
+
+                return $alreadyAttached->fresh();
+            }
             $file = $this->articleFiles->createCleanDirectUploadFile($locked, $upload, $purposeConfig, [
                 'article_version_id' => $locked->current_version_id,
                 'file_title' => $payload['file_title'] ?? null,
-                'metadata' => ['direct_publication' => true],
+                'metadata' => ['direct_publication' => ['active' => true]],
             ]);
             $file->forceFill(['visibility' => 'internal'])->save();
             $this->audit($locked, $actor, 'direct_publication.file_uploaded', $locked->status, $locked->status, [], ['article_file_id' => $file->id]);
+            $this->activateSingletonFile($locked, $file, $actor, $key);
             WorkflowIdempotencyKey::create(['article_id' => $locked->id, 'actor_id' => $actor->id, 'command' => 'direct.file.attach',
                 'idempotency_key' => $key, 'request_hash' => $hash, 'response_status' => 201, 'response_payload' => ['article_file_id' => $file->id]]);
 
@@ -215,27 +225,14 @@ class DirectPublicationService
 
     public function selectPrimary(Article $article, User $actor, int $fileId, string $key): Article
     {
-        return $this->mutate($article, $actor, 'direct.primary.select', $key, ['file_id' => $fileId], function (Article $locked) use ($actor, $fileId) {
+        return $this->mutate($article, $actor, 'direct.primary.select', $key, ['file_id' => $fileId], function (Article $locked) use ($actor, $fileId, $key) {
             $this->assertStatus($locked, [DirectPublicationStatus::DRAFT, DirectPublicationStatus::READY, DirectPublicationStatus::PUBLISHED]);
             $file = $locked->files()->whereKey($fileId)->where('file_type', ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT)
                 ->where('mime_type', 'application/pdf')->where('scan_status', 'clean')->first();
-            if (! $file) {
+            if (! $file || data_get($file->metadata, 'direct_publication.active', true) === false) {
                 throw ValidationException::withMessages(['article_file_id' => 'Select a clean direct-publication PDF owned by this article.']);
             }
-            $record = $this->record($locked, true);
-            $previousFileId = $record->primary_publication_file_id;
-            $record->files()->update(['is_primary' => false, 'primary_marker' => null]);
-            $record->files()->updateOrCreate(['article_file_id' => $file->id], [
-                'public_role' => 'primary_pdf', 'is_primary' => true, 'is_public' => true,
-                'primary_marker' => 1, 'selected_by' => $actor->id,
-            ]);
-            $record->update(['primary_publication_file_id' => $file->id, 'updated_by' => $actor->id]);
-            $event = $locked->status === DirectPublicationStatus::PUBLISHED ? 'direct_publication.file_replaced' : 'direct_publication.primary_file_selected';
-            if ($locked->status === DirectPublicationStatus::PUBLISHED) {
-                $locked->forceFill(['pdf_path' => $file->storage_key ?: $file->file_path])->save();
-                $this->notify($event, $locked, $actor, $key);
-            }
-            $this->audit($locked, $actor, $event, $locked->status, $locked->status, ['article_file_id' => $previousFileId], ['article_file_id' => $file->id]);
+            $this->makePrimaryFile($locked, $file, $actor, $key);
         });
     }
 
@@ -248,6 +245,9 @@ class DirectPublicationService
             $files = $locked->files()->whereIn('id', $fileIds)->where('scan_status', 'clean')->get()->keyBy('id');
             if ($files->count() !== $fileIds->count()) {
                 throw ValidationException::withMessages(['publication_file_settings' => 'One or more file selections are invalid or do not belong to this article.']);
+            }
+            if ($files->contains(fn (ArticleFile $file) => data_get($file->metadata, 'direct_publication.active', true) === false)) {
+                throw ValidationException::withMessages(['publication_file_settings' => 'Superseded publication files cannot be selected for public display.']);
             }
             $record->files()->where('is_primary', false)->delete();
             foreach ($settings as $setting) {
@@ -308,6 +308,32 @@ class DirectPublicationService
         }
         if (! $record->primaryFile || $record->primaryFile->file_type !== ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT || $record->primaryFile->mime_type !== 'application/pdf' || $record->primaryFile->scan_status !== 'clean') {
             $errors['primary_publication_file'][] = 'A clean final publication PDF must be selected.';
+        }
+        $directFileTypes = collect(config('media_uploads.direct_publication_purposes', []))->pluck('article_file_type')->filter()->all();
+        $unsafeFiles = $article->files->filter(fn (ArticleFile $file) => in_array($file->file_type, $directFileTypes, true)
+            && data_get($file->metadata, 'direct_publication.active', true) !== false
+            && $file->scan_status !== 'clean');
+        if ($unsafeFiles->isNotEmpty()) {
+            $errors['publication_files'][] = $unsafeFiles->count().' publication '.Str::plural('file', $unsafeFiles->count()).' have not passed security scanning.';
+        }
+        $sessions = MediaUploadSession::query()->where('attachable_type', Article::class)->where('attachable_id', $article->id)
+            ->whereIn('purpose', array_keys(config('media_uploads.direct_publication_purposes', [])))->get();
+        $processingCount = $sessions->whereIn('status', [
+            MediaUploadSession::STATUS_INITIATED, MediaUploadSession::STATUS_UPLOADING,
+            MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN, MediaUploadSession::STATUS_SCANNING,
+        ])->count();
+        if ($processingCount > 0) {
+            $errors['publication_files_processing'][] = $processingCount.' publication '.Str::plural('file', $processingCount).' '.($processingCount === 1 ? 'is' : 'are').' still processing.';
+        }
+        $failedCount = $sessions->whereIn('status', [MediaUploadSession::STATUS_REJECTED, MediaUploadSession::STATUS_SCAN_FAILED])->count();
+        if ($failedCount > 0) {
+            $errors['publication_files_failed'][] = $failedCount.' publication '.Str::plural('file', $failedCount).' failed validation.';
+        }
+        $attachedUploadIds = $article->files->pluck('media_upload_session_id')->filter()->map(fn ($id) => (string) $id);
+        $unattachedCleanCount = $sessions->where('status', MediaUploadSession::STATUS_CLEAN)
+            ->reject(fn (MediaUploadSession $session) => $attachedUploadIds->contains((string) $session->id))->count();
+        if ($unattachedCleanCount > 0) {
+            $errors['publication_files_attachment'][] = $unattachedCleanCount.' clean publication '.Str::plural('file', $unattachedCleanCount).' still need to be attached.';
         }
         if ($record->doi && PublicationRecord::where('doi', $record->doi)->whereKeyNot($record->id)->exists()) {
             $errors['doi'][] = 'This DOI is already in use.';
@@ -463,6 +489,61 @@ class DirectPublicationService
         $result = $this->readiness($article->fresh());
         if (! $result['ready']) {
             throw ValidationException::withMessages($result['errors']);
+        }
+    }
+
+    private function activateSingletonFile(Article $article, ArticleFile $file, User $actor, string $key): void
+    {
+        if (! in_array($file->file_type, [ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_COVER], true)) {
+            return;
+        }
+
+        $record = $this->record($article, true);
+        $replacedIds = [];
+        $article->files()->where('file_type', $file->file_type)->whereKeyNot($file->id)->get()->each(function (ArticleFile $previous) use ($actor, $file, $record, &$replacedIds) {
+            if (data_get($previous->metadata, 'direct_publication.active', true) === false) {
+                return;
+            }
+            $metadata = $previous->metadata ?: [];
+            $metadata['direct_publication'] = array_merge(is_array($metadata['direct_publication'] ?? null) ? $metadata['direct_publication'] : [], [
+                'active' => false,
+                'superseded_at' => now()->toIso8601String(),
+                'superseded_by_file_id' => $file->id,
+                'superseded_by_user_id' => $actor->id,
+            ]);
+            $previous->update(['metadata' => $metadata]);
+            $record->files()->where('article_file_id', $previous->id)->delete();
+            $replacedIds[] = $previous->id;
+        });
+
+        $metadata = $file->metadata ?: [];
+        $metadata['direct_publication'] = array_merge(is_array($metadata['direct_publication'] ?? null) ? $metadata['direct_publication'] : [], ['active' => true]);
+        $file->update(['metadata' => $metadata]);
+
+        if ($file->file_type === ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT) {
+            $this->makePrimaryFile($article, $file, $actor, $key);
+        } elseif ($replacedIds !== []) {
+            $this->audit($article, $actor, 'direct_publication.cover_replaced', $article->status, $article->status, ['article_file_ids' => $replacedIds], ['article_file_id' => $file->id]);
+        }
+    }
+
+    private function makePrimaryFile(Article $article, ArticleFile $file, User $actor, string $key): void
+    {
+        $record = $this->record($article, true);
+        $previousFileId = $record->primary_publication_file_id;
+        $record->files()->update(['is_primary' => false, 'primary_marker' => null]);
+        $record->files()->updateOrCreate(['article_file_id' => $file->id], [
+            'public_role' => 'primary_pdf', 'is_primary' => true, 'is_public' => true,
+            'primary_marker' => 1, 'selected_by' => $actor->id,
+        ]);
+        $record->update(['primary_publication_file_id' => $file->id, 'updated_by' => $actor->id]);
+        $event = $article->status === DirectPublicationStatus::PUBLISHED ? 'direct_publication.file_replaced' : 'direct_publication.primary_file_selected';
+        if ($article->status === DirectPublicationStatus::PUBLISHED) {
+            $article->forceFill(['pdf_path' => $file->storage_key ?: $file->file_path])->save();
+            $this->notify($event, $article, $actor, $key);
+        }
+        if ((int) $previousFileId !== (int) $file->id) {
+            $this->audit($article, $actor, $event, $article->status, $article->status, ['article_file_id' => $previousFileId], ['article_file_id' => $file->id]);
         }
     }
 

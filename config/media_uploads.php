@@ -47,7 +47,7 @@ return [
         'direct_publication_figure' => [
             'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_figure',
             'clean_prefix' => 'clean/articles/direct/figures/', 'max_size_bytes' => 10 * 1024 * 1024,
-            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp'], 'extensions' => ['png', 'jpg', 'jpeg', 'webp'], 'scan_required' => true,
+            'detected_mime_types' => ['image/png', 'image/jpeg', 'image/webp', 'image/tiff', 'image/x-tiff'], 'extensions' => ['png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff'], 'scan_required' => true,
         ],
         'direct_publication_supplementary' => [
             'model' => Article::class, 'target' => 'article', 'article_file_type' => 'direct_publication_supplementary',

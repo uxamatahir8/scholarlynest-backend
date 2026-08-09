@@ -288,6 +288,7 @@ class ArticleFileController extends Controller
             'size_bytes' => $file->size,
             'scan_status' => $file->scan_status ?? 'clean',
             'available' => ($file->scan_status ?? 'clean') === 'clean',
+            'is_active' => data_get($file->metadata, 'direct_publication.active', true) !== false,
             'uploader' => $file->uploader ? [
                 'id' => $file->uploader->id,
                 'name' => $file->uploader->name,

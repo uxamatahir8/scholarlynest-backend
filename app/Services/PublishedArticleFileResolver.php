@@ -43,6 +43,16 @@ class PublishedArticleFileResolver
 
     public function resolveSectionKey(ArticleFile $file, Article $article): string
     {
+        if ($article->isDirectPublication()) {
+            return match ($file->file_type) {
+                ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT => self::SECTION_PUBLISHED_PDF,
+                ArticleFile::DIRECT_PUBLICATION_FIGURE => self::SECTION_FIGURES,
+                ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY => self::SECTION_SUPPLEMENTARY_DOWNLOADS,
+                ArticleFile::DIRECT_PUBLICATION_COVER => self::SECTION_COVER_IMAGE,
+                default => self::SECTION_OTHER_PUBLIC_FILES,
+            };
+        }
+
         $sectionKey = data_get($file->metadata, 'section_key')
             ?? data_get($file->metadata, 'document_type')
             ?? data_get($file->metadata, 'purpose');
@@ -103,7 +113,9 @@ class PublishedArticleFileResolver
 
             return ArticleFile::query()->whereHas('publicationSelections', fn ($query) => $query
                 ->where('publication_record_id', $publication->id)->where('is_public', true))
-                ->where('scan_status', 'clean')->orderBy('id')->get()->all();
+                ->where('scan_status', 'clean')->orderBy('id')->get()
+                ->filter(fn (ArticleFile $file) => data_get($file->metadata, 'direct_publication.active', true) !== false)
+                ->values()->all();
         }
         $article->loadMissing('files');
 
