@@ -1158,7 +1158,6 @@ class AuthController extends Controller
             'articles.create',
             'articles.edit-own',
             'articles.approve',
-            'articles.auto-approve',
             'articles.manage-assets',
             'magazines.view-any',
             'magazines.view-own',

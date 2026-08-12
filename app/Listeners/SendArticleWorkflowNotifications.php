@@ -52,6 +52,13 @@ class SendArticleWorkflowNotifications
                 $message['body'] = array_merge($mainLines, $this->workflowContextLines($article, $event), $closingLines);
             }
 
+            $privacyVariant = match ($recipient['type']) {
+                'article_owner', 'corresponding_author' => 'author',
+                'super_admin' => 'admin',
+                'production_assignee' => 'assignee',
+                default => $recipient['type'],
+            };
+            $dedupeRecipient = $recipient['user_id'] ?? strtolower($recipient['email']);
             $queued = $this->notificationService->send(
                 $recipient['email'],
                 $message['subject'],
@@ -63,8 +70,8 @@ class SendArticleWorkflowNotifications
                 context: [
                     'notification_event_id' => $event->notificationEventId ?: NotificationEvent::where('event_uuid', $event->notificationEventUuid)->value('id'),
                     'purpose' => $event->event,
-                    'privacy_variant' => $recipient['type'],
-                    'deduplication_key' => hash('sha256', $event->notificationEventUuid.'|'.strtolower($recipient['email']).'|'.$recipient['type'].'|email'),
+                    'privacy_variant' => $privacyVariant,
+                    'deduplication_key' => hash('sha256', $event->notificationEventUuid.'|'.$dedupeRecipient.'|'.$privacyVariant.'|email'),
                 ]
             );
             $queuedCount += $queued ? 1 : 0;
@@ -118,7 +125,6 @@ class SendArticleWorkflowNotifications
 
             'production.completed',
             'author.final_review_approved',
-            'author.final_review_auto_approved',
             'article.ready_for_publication',
             'post_publication.recorded' => $this->authorRecipients($article)
                 ->merge($this->editorialRecipients($article))
@@ -235,15 +241,14 @@ class SendArticleWorkflowNotifications
             ],
             'production.completed' => [
                 'subject' => 'Production Task Completed: '.$title,
-                'body' => ['Copyediting has been completed.', 'Next Action: The corresponding author must approve or deny publication within 14 days.'],
+                'body' => ['Copyediting has been completed.', 'Next Action: The corresponding author must review the attached production proof and explicitly approve it or request corrections.'],
             ],
             'author.final_review_requested' => [
                 'subject' => 'Publication Approval Required: '.$title,
                 'body' => [
                     'Copyediting has been completed and the article is ready for your review.',
-                    'You have 14 days to approve publication or return the article to copyediting with a reason.',
-                    'If no response is received within 14 days, publication approval will be recorded automatically.',
-                    'Next Action: Open the article workflow and review the copyedited manuscript.',
+                    'Publication will remain blocked until an author explicitly approves the current proof.',
+                    'Next Action: Open the article workflow, review the exact copyedited file, and approve it or request corrections.',
                 ],
             ],
             'author.final_review_denied' => [
@@ -257,10 +262,6 @@ class SendArticleWorkflowNotifications
             'author.final_review_approved' => [
                 'subject' => 'Publication Approved by Author: '.$title,
                 'body' => ['The author approved the copyedited article for publication.', 'Next Action: Complete publication preparation.'],
-            ],
-            'author.final_review_auto_approved' => [
-                'subject' => 'Publication Automatically Approved: '.$title,
-                'body' => ['The 14-day author response window expired without a response.', 'The article has been automatically approved and is ready for publication.'],
             ],
             'article.ready_for_publication' => [
                 'subject' => 'Article Ready for Publication: '.$title,

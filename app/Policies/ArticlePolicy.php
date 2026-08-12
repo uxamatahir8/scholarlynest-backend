@@ -27,6 +27,11 @@ class ArticlePolicy
             return false;
         }
 
+        if ($article->isDirectPublication()) {
+            return $user->hasRole('super_admin')
+                || ($user->hasRole('publisher') && $this->isAssignedMagazineRole($user, $article, ['publisher']));
+        }
+
         // Super admins and legacy admins can view any article.
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
@@ -42,8 +47,8 @@ class ArticlePolicy
             return true;
         }
 
-        // Primary author can view
-        if ($article->user_id === $user->id) {
+        // Primary and corresponding authors share manuscript access.
+        if ($article->isPrimaryOrCorrespondingAuthor($user)) {
             return true;
         }
 
@@ -63,6 +68,8 @@ class ArticlePolicy
             $isAssignedReviewer = DB::table('reviewer_assignments')
                 ->where('article_id', $article->id)
                 ->where('reviewer_id', $user->id)
+                ->whereNull('revoked_at')
+                ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened'])
                 ->exists();
             if ($isAssignedReviewer) {
                 return true;
@@ -75,6 +82,8 @@ class ArticlePolicy
                 ->where('article_id', $article->id)
                 ->where('user_id', $user->id)
                 ->where('role', 'copy_editor')
+                ->whereNull('revoked_at')
+                ->whereIn('status', ['pending', 'in_progress', 'correction_required'])
                 ->exists();
             if ($isAssignedProduction) {
                 return true;
@@ -96,6 +105,9 @@ class ArticlePolicy
      */
     public function update(User $user, Article $article): bool
     {
+        if ($article->isDirectPublication()) {
+            return false;
+        }
         if (! ArticleStatus::isEditableStatus($article->status)) {
             return false;
         }
@@ -108,16 +120,24 @@ class ArticlePolicy
         // Editors use dedicated workflow endpoints for screening, decisions, and assignment.
         // Normal article content edits stay limited to authors during editable statuses.
 
-        // Primary author can edit
-        if ($article->user_id === $user->id) {
+        // Corresponding authors have the same edit rights as the primary author.
+        if ($article->isPrimaryOrCorrespondingAuthor($user)) {
             return true;
         }
 
         // Co-authors with explicit can_edit rights can edit
+        $email = strtolower(trim((string) $user->email));
+
         return DB::table('article_author')
             ->where('article_id', $article->id)
-            ->where('user_id', $user->id)
             ->where('can_edit', true)
+            ->where(function ($query) use ($user, $email) {
+                $query->where('user_id', $user->id);
+
+                if ($email !== '') {
+                    $query->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                }
+            })
             ->exists();
     }
 
@@ -126,6 +146,9 @@ class ArticlePolicy
      */
     public function approve(User $user, Article $article): bool
     {
+        if ($article->isDirectPublication()) {
+            return false;
+        }
         if ($user->hasRole('super_admin') || $user->hasRole('admin')) {
             return true;
         }

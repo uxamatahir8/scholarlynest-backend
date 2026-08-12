@@ -22,12 +22,14 @@ use App\Models\ArticleAuditLog;
 use App\Models\ArticleFile;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleReviewRound;
 use App\Models\EditorialDecision;
 use App\Models\Magazine;
 use App\Models\MagazineIssue;
 use App\Models\MediaUploadSession;
 use App\Models\PostPublicationAction;
 use App\Models\ProductionAssignment;
+use App\Models\ProofRound;
 use App\Models\ReviewerAssignment;
 use App\Models\ReviewQuestion;
 use App\Models\ReviewQuestionnaire;
@@ -39,9 +41,12 @@ use App\Models\Role;
 use App\Models\SubEditorAssignment;
 use App\Models\User;
 use App\Services\AcceptedFileSetService;
+use App\Services\ArticleReviewRoundService;
 use App\Services\ArticleVersionFileSectionResolver;
 use App\Services\ArticleVersionService;
+use App\Services\ArticleWorkspaceManifestService;
 use App\Services\CitationService;
+use App\Services\LifecycleStatusProjector;
 use App\Services\Media\CleanUploadResolver;
 use App\Services\Media\MediaStorageService;
 use App\Services\Media\UploadValidationService;
@@ -49,7 +54,10 @@ use App\Services\Notifications\NotificationEventRecorder;
 use App\Services\NotificationService;
 use App\Services\PasswordSetupService;
 use App\Services\PdfGeneratorService;
+use App\Services\PendingReviewDecisionService;
+use App\Services\ReviewerQuestionnaireService;
 use App\Services\Security\HtmlSanitizer;
+use App\Services\WorkflowTabManifestService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -70,6 +78,9 @@ class ArticleWorkflowController extends Controller
     public function context(Request $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
+        if ($article->isDirectPublication() && ! $request->user()->hasRole(['super_admin', 'admin', 'publisher'])) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
 
         $article->load([
             'issue',
@@ -88,6 +99,11 @@ class ArticleWorkflowController extends Controller
             'auditLogs.actor:id,name',
             'versions.creator:id,name',
             'versions.files.uploader:id,name',
+            'currentVersion',
+            'proofRounds.sourceFile',
+            'proofRounds.authorFile',
+            'proofRounds.correctedFile',
+            'publicationRecords.files.file',
             'pendingTransferRequest.fromMagazine:id,title,slug',
             'pendingTransferRequest.toMagazine:id,title,slug',
             'pendingTransferRequest.requestedBy:id,name,email',
@@ -103,6 +119,8 @@ class ArticleWorkflowController extends Controller
             'capabilities' => $articlePayload['capabilities'] ?? [],
             'current_user_action' => $articlePayload['current_user_action'] ?? null,
             'unassigned_legacy_files' => $articlePayload['unassigned_legacy_files'] ?? [],
+            'workflow_manifest' => app(WorkflowTabManifestService::class)->manifest($article, $request->user()),
+            'status_projection' => app(LifecycleStatusProjector::class)->projection($article, $request->user()),
         ]);
     }
 
@@ -120,6 +138,137 @@ class ArticleWorkflowController extends Controller
         ]);
     }
 
+    public function workspaceManifest(Request $request, int $articleId): JsonResponse
+    {
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
+        if ($article->isDirectPublication() && ! $request->user()->hasRole(['super_admin', 'admin', 'publisher'])) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        return response()->json([
+            'data' => app(ArticleWorkspaceManifestService::class)->manifest($article, $request->user()),
+        ]);
+    }
+
+    public function versionReviewers(Request $request, int $articleId, int $versionId): JsonResponse
+    {
+        $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'sub_editor'], false);
+        $version = $article->versions()->whereKey($versionId)->firstOrFail();
+        $viewer = $request->user();
+        $isVersionSubEditor = $article->subEditorAssignments()
+            ->where('article_version_id', $version->id)
+            ->where('sub_editor_id', $viewer->id)
+            ->whereNull('revoked_at')
+            ->exists();
+        if (! $this->isGlobal($viewer)
+            && ! $this->isAssignedToMagazine($viewer, $article->magazine_id, ['editor'])
+            && ! $isVersionSubEditor) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $request->validate(['review_round' => 'nullable|integer|min:1']);
+        $roundNumber = $request->integer('review_round') ?: 1;
+        $reviewRound = (int) $article->current_version_id === (int) $version->id
+            ? app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($article, $version, $viewer)
+            : $article->reviewRounds()->where('article_version_id', $version->id)->where('round_number', $roundNumber)->first();
+        $roundNumber = (int) ($reviewRound?->round_number ?: $roundNumber);
+        $article->load([
+            'reviewerPreferences',
+            'reviewerAssignments' => fn ($query) => $query
+                ->where('article_version_id', $version->id)
+                ->where('round_number', $roundNumber)
+                ->with(['reviewer:id,name,email,university_name', 'questionnaireInstance.version.questions.options', 'questionnaireInstance.responses']),
+        ]);
+        $priorCompleted = ReviewerAssignment::query()
+            ->where('article_id', $article->id)
+            ->where('article_version_id', '!=', $version->id)
+            ->where('status', 'completed')
+            ->with(['reviewer:id,name,email,university_name', 'version:id,version_number,revision_number'])
+            ->get();
+        $completedEmails = $priorCompleted->map(fn ($assignment) => strtolower((string) ($assignment->invitee_email ?: $assignment->reviewer?->email)))
+            ->filter()->unique()->values()->all();
+        $previousByEmail = $priorCompleted->sortByDesc('completed_at')->groupBy(fn ($assignment) => strtolower((string) ($assignment->invitee_email ?: $assignment->reviewer?->email)))
+            ->map->first();
+        $preferences = $article->reviewerPreferences->groupBy('type')->map(fn ($items) => $items->map(function ($item) use ($completedEmails, $previousByEmail) {
+            $previous = $previousByEmail->get(strtolower((string) $item->email));
+
+            return [
+                'id' => $item->id,
+                'type' => $item->type,
+                'name' => $item->name,
+                'email' => $item->email,
+                'affiliation' => $item->affiliation,
+                'designation' => $item->designation,
+                'reason' => $item->reason,
+                'previously_completed_review' => in_array(strtolower((string) $item->email), $completedEmails, true),
+                'previous_review' => $this->previousReviewPayload($previous),
+            ];
+        })->values())->union(['suggested' => collect(), 'opposed' => collect()]);
+        $suggestedEmails = collect($preferences['suggested'])->pluck('email')->map(fn ($email) => strtolower((string) $email));
+        $priorCompleted->each(function ($assignment) use ($preferences, $suggestedEmails) {
+            $email = $assignment->invitee_email ?: $assignment->reviewer?->email;
+            if (! $email || $suggestedEmails->contains(strtolower((string) $email))) {
+                return;
+            }
+            $preferences['suggested']->push([
+                'id' => 'previous-'.$assignment->id,
+                'type' => 'suggested',
+                'name' => $assignment->invitee_name ?: $assignment->reviewer?->name,
+                'email' => $email,
+                'affiliation' => $assignment->reviewer?->university_name,
+                'designation' => null,
+                'reason' => null,
+                'previously_completed_review' => true,
+                'previous_review' => $this->previousReviewPayload($assignment),
+            ]);
+            $suggestedEmails->push(strtolower((string) $email));
+        });
+        $authorizedManager = $this->isGlobal($viewer)
+            || $this->isAssignedToMagazine($viewer, $article->magazine_id, ['editor'])
+            || $isVersionSubEditor;
+        $requiresReview = app(ArticleReviewRoundService::class)->versionRequiresReview($article, $version);
+        $canManage = $authorizedManager && $requiresReview && $reviewRound?->status === ArticleReviewRound::OPEN;
+        $disabledReason = null;
+        if (! $authorizedManager) {
+            $disabledReason = ['code' => 'REVIEWER_MANAGEMENT_FORBIDDEN', 'message' => 'Your assignment does not allow reviewer management for this publication and version.'];
+        } elseif ((int) $article->current_version_id !== (int) $version->id) {
+            $disabledReason = ['code' => 'VERSION_NOT_CURRENT', 'message' => 'Historical versions are read-only. Select the current submitted version to manage reviewers.'];
+        } elseif (! $requiresReview) {
+            $disabledReason = ['code' => 'VERSION_NOT_REVIEWABLE', 'message' => 'This version is not currently eligible for peer review.'];
+        } elseif (! $reviewRound || $reviewRound->status !== ArticleReviewRound::OPEN) {
+            $disabledReason = ['code' => 'REVIEW_ROUND_NOT_OPEN', 'message' => 'Open a review round before inviting reviewers.'];
+        }
+
+        $capabilities = [
+            'manage' => $canManage,
+            'invite' => $canManage,
+            'invite_revision' => $canManage && (int) $version->revision_number > 0,
+            'manual_invitation' => $canManage,
+            'resend' => $canManage,
+            'reinvite' => $canManage,
+            'reminder' => $canManage,
+        ];
+
+        return response()->json(['data' => [
+            'article_id' => $article->id,
+            'version_id' => $version->id,
+            'review_round' => $roundNumber,
+            'reviewers' => [
+                'version_id' => $version->id,
+                'review_round_id' => $reviewRound?->id,
+                'round_number' => $roundNumber,
+                'status' => $reviewRound?->status,
+                'capabilities' => $capabilities,
+                'disabled_reason' => $disabledReason,
+            ],
+            'reviewer_preferences' => $preferences,
+            'reviewer_assignments' => $article->reviewerAssignments
+                ->map(fn ($assignment) => $this->reviewerAssignmentPayload($assignment, $viewer, true))->values(),
+            'capabilities' => $capabilities + ['invite_for_revision_review' => $capabilities['invite_revision']],
+            'disabled_reason' => $disabledReason,
+        ]]);
+    }
+
     public function acceptedFiles(Request $request, int $articleId): JsonResponse
     {
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor'], false);
@@ -129,6 +278,33 @@ class ArticleWorkflowController extends Controller
 
         return response()->json([
             'data' => $this->acceptedFileSetPayload($article->activeAcceptedFileSet, $request->user()),
+        ]);
+    }
+
+    public function acceptedManuscript(Request $request, int $articleId): JsonResponse
+    {
+        $article = Article::with([
+            'magazine:id,title,slug',
+            'activeAcceptedFileSet.version',
+            'activeAcceptedFileSet.accepter:id,name',
+            'activeAcceptedFileSet.items.file.uploader:id,name',
+            'activeAcceptedFileSet.items.sourceVersion',
+        ])->findOrFail($articleId);
+        $viewer = $request->user();
+        $manifestService = app(ArticleWorkspaceManifestService::class);
+
+        if (! $viewer || ! $manifestService->canAccessAcceptedManuscript($article, $viewer)) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $acceptedVersionId = $article->activeAcceptedFileSet?->article_version_id ?: $article->accepted_version_id;
+        $version = $article->versions()->whereKey($acceptedVersionId)->first();
+        if (! $version) {
+            return response()->json(['message' => 'Accepted manuscript is not yet available.'], 409);
+        }
+
+        return response()->json([
+            'data' => $this->acceptedManuscriptPayload($article, $version, $viewer),
         ]);
     }
 
@@ -199,8 +375,9 @@ class ArticleWorkflowController extends Controller
 
         $query = SubEditorAssignment::query()
             ->with([
-                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
                 'article.magazine:id,title,slug',
+                'subEditor:id,name',
             ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('sub_editor_id', $deskUser->id))
             ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
@@ -241,15 +418,21 @@ class ArticleWorkflowController extends Controller
 
         $query = ReviewerAssignment::query()
             ->with([
-                'article:id,magazine_id,title,slug,status,created_at,updated_at',
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
                 'article.magazine:id,title,slug',
+                'article.editorialDecisions:id,article_id,article_version_id,decision_date',
+                'reviewer:id,name',
+                'version:id,article_id,parent_version_id,version_number,revision_number',
+                'reviewRound:id,article_id,article_version_id,round_number,status',
+                'questionnaireInstance:id,reviewer_assignment_id,submitted_at',
+                'questionnaireInstance.responses:id,review_questionnaire_instance_id',
             ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
-            ->where(fn ($q) => $q->whereNotNull('accepted_at')->orWhereNull('invite_token_hash'))
-            ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
+            ->when($status === 'active', fn ($q) => $q->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened']))
             ->when($status === 'completed', fn ($q) => $q->where(fn ($sub) => $sub->whereNotNull('completed_at')->orWhere('status', 'completed')))
-            ->when($status === 'pending', fn ($q) => $q->where('status', 'pending'))
+            ->when($status === 'pending', fn ($q) => $q->whereIn('status', ['pending', 'invited']))
             ->when($status === 'accepted', fn ($q) => $q->where('status', 'accepted'))
+            ->when($status === 'closed', fn ($q) => $q->whereIn('status', ['declined', 'expired', 'cancelled', 'closed_without_review']))
             ->when($search !== '', function ($q) use ($search) {
                 $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
             })
@@ -261,13 +444,60 @@ class ArticleWorkflowController extends Controller
         $perPage = max(5, min(50, $request->integer('per_page', 20)));
         $paginator = $query->paginate($perPage);
 
+        $allAssignments = ReviewerAssignment::query()
+            ->with([
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+                'article.editorialDecisions:id,article_id,article_version_id,decision_date',
+                'reviewer:id,name',
+                'version:id,article_id,parent_version_id,version_number,revision_number',
+                'reviewRound:id,article_id,article_version_id,round_number,status',
+                'questionnaireInstance:id,reviewer_assignment_id,submitted_at',
+                'questionnaireInstance.responses:id,review_questionnaire_instance_id',
+            ])
+            ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('reviewer_id', $deskUser->id))
+            ->when($search !== '', function ($q) use ($search) {
+                $q->whereHas('article', fn ($articleQuery) => $articleQuery->where('title', 'like', "%{$search}%")->orWhere('slug', 'like', "%{$search}%"));
+            })
+            ->latest()
+            ->get()
+            ->map(fn (ReviewerAssignment $assignment) => $this->reviewerAssignmentListPayload($assignment, ! $observedUser));
+
+        $groups = [
+            'pending_invitations' => $allAssignments->whereIn('status', ['pending', 'invited'])->values(),
+            'active_reviews' => $allAssignments->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened'])->values(),
+            'completed_reviews' => $allAssignments->where('status', 'completed')->values(),
+            'closed_history' => $allAssignments->whereIn('status', ['declined', 'expired', 'cancelled', 'closed_without_review'])->values(),
+        ];
+
         return response()->json([
-            'data' => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->reviewerAssignmentListPayload($a))->values(),
+            'data' => collect($paginator->items())->map(fn (ReviewerAssignment $a) => $this->reviewerAssignmentListPayload($a, ! $observedUser))->values(),
+            ...$groups,
             'current_page' => $paginator->currentPage(),
             'last_page' => $paginator->lastPage(),
             'total' => $paginator->total(),
             'per_page' => $paginator->perPage(),
         ]);
+    }
+
+    public function myReviewerAssignment(Request $request, int $assignmentId): JsonResponse
+    {
+        $assignment = ReviewerAssignment::query()
+            ->whereKey($assignmentId)
+            ->where('reviewer_id', $request->user()->id)
+            ->with([
+                'article:id,magazine_id,tracking_code,title,slug,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+                'article.editorialDecisions:id,article_id,article_version_id,decision_date',
+                'reviewer:id,name',
+                'version:id,article_id,parent_version_id,version_number,revision_number',
+                'reviewRound:id,article_id,article_version_id,round_number,status',
+                'questionnaireInstance:id,reviewer_assignment_id,submitted_at',
+                'questionnaireInstance.responses:id,review_questionnaire_instance_id',
+            ])
+            ->firstOrFail();
+
+        return response()->json(['data' => $this->reviewerAssignmentListPayload($assignment)]);
     }
 
     public function myProductionAssignments(Request $request): JsonResponse
@@ -301,7 +531,11 @@ class ArticleWorkflowController extends Controller
         }
 
         $query = ProductionAssignment::query()
-            ->with(['article:id,magazine_id,title,status,created_at,updated_at', 'article.magazine:id,title,slug'])
+            ->with([
+                'article:id,magazine_id,tracking_code,title,status,created_at,updated_at',
+                'article.magazine:id,title,slug',
+                'user:id,name',
+            ])
             ->when($observedUser || ! $this->isGlobal($user), fn ($q) => $q->where('user_id', $deskUser->id))
             ->when($allowedRole, fn ($q) => $q->where('role', $allowedRole))
             ->when($status === 'active', fn ($q) => $q->whereNull('completed_at')->where('status', '!=', 'completed'))
@@ -396,6 +630,19 @@ class ArticleWorkflowController extends Controller
         $oldStatus = $article->status;
 
         DB::transaction(function () use ($request, $article, $oldStatus) {
+            $version = $article->currentVersion()->lockForUpdate()->first()
+                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
+            if (! $version) {
+                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for screening.'], 409));
+            }
+            $isInitialSubmission = (int) ($version->revision_number ?? 0) === 0 && ! $version->parent_version_id;
+            if (! $isInitialSubmission) {
+                throw new HttpResponseException(response()->json(['message' => 'Editorial screening is only performed for the initial submission.'], 409));
+            }
+            if ($version->screening_status !== 'pending') {
+                throw new HttpResponseException(response()->json(['message' => 'Screening has already been completed for this version.'], 409));
+            }
+
             $nextStatus = $request->decision === 'reject'
                 ? ArticleStatus::REJECTED
                 : ArticleStatus::UNDER_REVIEW;
@@ -406,6 +653,28 @@ class ArticleWorkflowController extends Controller
                 'screened_by' => $request->user()->id,
                 'rejection_reason' => $request->decision === 'reject' ? $request->comments : null,
             ]);
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            }
+            $version->update([
+                'screening_status' => $request->decision === 'reject' ? 'rejected' : 'passed',
+                'screened_at' => now(),
+                'screened_by' => $request->user()->id,
+            ]);
+            $reviewRound = app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($article->fresh(), $version->fresh(), $request->user());
+            if ($request->decision === 'reject') {
+                $reviewRound->update(['status' => ArticleReviewRound::CLOSED, 'closed_at' => now()]);
+                EditorialDecision::create([
+                    'article_id' => $article->id,
+                    'article_version_id' => $version->id,
+                    'round_number' => 1,
+                    'decision_by' => $request->user()->id,
+                    'decision' => 'rejected',
+                    'decision_source' => 'screening',
+                    'decision_date' => now(),
+                    'comments_for_author' => $request->comments,
+                ]);
+            }
 
             $this->audit($article, $request->user()->id, 'article.screened', $oldStatus, $nextStatus, $request->validated());
             event(new ArticleWorkflowEventOccurred(
@@ -449,12 +718,20 @@ class ArticleWorkflowController extends Controller
         }
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus) {
-            $assignment = SubEditorAssignment::updateOrCreate(
+            $versionId = $article->current_version_id ?: $article->versions()->latest('version_number')->value('id');
+            if (! $versionId) {
+                throw new HttpResponseException(response()->json(['message' => 'A submitted article version is required.'], 409));
+            }
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $versionId])->saveQuietly();
+            }
+            SubEditorAssignment::query()->where('article_version_id', $versionId)->whereNull('revoked_at')->update(['status' => 'superseded', 'revoked_at' => now()]);
+            $assignment = SubEditorAssignment::create(
                 [
                     'article_id' => $article->id,
+                    'article_version_id' => $versionId,
+                    'round_number' => 1,
                     'sub_editor_id' => $request->sub_editor_id,
-                ],
-                [
                     'assigned_by' => $request->user()->id,
                     'status' => 'pending',
                     'due_date' => $request->due_date,
@@ -506,6 +783,32 @@ class ArticleWorkflowController extends Controller
         $inviteeName = $reviewer?->name ?: ($preference?->name ?: $request->input('name'));
         $inviteeEmail = strtolower(trim((string) ($reviewer?->email ?: ($preference?->email ?: $request->input('email')))));
         $this->assertReviewerInviteAllowed($article, $inviteeEmail);
+        $version = $request->filled('article_version_id')
+            ? $article->versions()->whereKey($request->integer('article_version_id'))->first()
+            : ($article->currentVersion()->first() ?: $article->versions()->latest('version_number')->first());
+        if ($version && (int) $article->current_version_id !== (int) $version->id) {
+            return response()->json(['message' => 'Reviewer invitations can only be created for the current submitted version.'], 409);
+        }
+        if (! $this->isGlobal($request->user()) && $request->user()->hasRole('sub_editor')
+            && ! $article->subEditorAssignments()->where('article_version_id', $version?->id)->where('sub_editor_id', $request->user()->id)->whereNull('revoked_at')->exists()) {
+            return response()->json(['message' => 'A current-version Sub Editor assignment is required to manage reviewers.'], 403);
+        }
+        if ($version && ! $article->current_version_id) {
+            $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+        }
+        if ($version && $version->screening_status === 'pending' && in_array(ArticleStatus::normalize($article->status), [ArticleStatus::UNDER_REVIEW, ArticleStatus::ASSIGNED_TO_SUB_EDITOR, ArticleStatus::SUB_EDITOR_RECOMMENDED, ArticleStatus::REVIEWER_ASSIGNED, ArticleStatus::REVIEW_IN_PROGRESS, ArticleStatus::RESUBMITTED], true)) {
+            $version->update(['screening_status' => 'passed', 'screened_at' => $article->screened_at ?: now(), 'screened_by' => $article->screened_by ?: $request->user()->id]);
+        }
+        if (! $version || $version->screening_status !== 'passed') {
+            return response()->json(['message' => 'Reviewer invitation is prohibited until the current version passes screening.'], 409);
+        }
+        $reviewRound = app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($article, $version, $request->user());
+        if ($request->filled('review_round_id') && (int) $request->integer('review_round_id') !== (int) $reviewRound->id) {
+            return response()->json(['message' => 'The selected review round does not belong to the current article version.'], 409);
+        }
+        if ($reviewRound->status !== ArticleReviewRound::OPEN) {
+            return response()->json(['message' => 'Open a review round before inviting reviewers.'], 409);
+        }
 
         $existingReviewer = User::whereRaw('LOWER(email) = ?', [$inviteeEmail])->first();
         if ($existingReviewer && $existingReviewer->hasRole('reviewer')) {
@@ -514,22 +817,8 @@ class ArticleWorkflowController extends Controller
 
         $duplicate = ReviewerAssignment::query()
             ->where('article_id', $article->id)
-            ->where(function ($query) use ($reviewer, $inviteeEmail) {
-                if ($reviewer) {
-                    $query->where('reviewer_id', $reviewer->id);
-                }
-                $query->orWhereRaw('LOWER(invitee_email) = ?', [$inviteeEmail]);
-            })
-            ->whereNull('declined_at')
-            ->where('status', '!=', 'declined')
-            ->first();
-
-        if ($duplicate) {
-            return response()->json(['message' => 'This reviewer has already been invited or assigned for this article.'], 422);
-        }
-
-        $declinedAssignment = ReviewerAssignment::query()
-            ->where('article_id', $article->id)
+            ->where('article_version_id', $version->id)
+            ->where('review_round_id', $reviewRound->id)
             ->where(function ($query) use ($reviewer, $inviteeEmail) {
                 if ($reviewer) {
                     $query->where('reviewer_id', $reviewer->id);
@@ -537,16 +826,26 @@ class ArticleWorkflowController extends Controller
                 $query->orWhereRaw('LOWER(invitee_email) = ?', [$inviteeEmail]);
             })
             ->where(function ($query) {
-                $query->whereNotNull('declined_at')->orWhere('status', 'declined');
+                $query->whereIn('status', ['accepted', 'in_progress', 'completed'])
+                    ->orWhere(function ($pending) {
+                        $pending->whereIn('status', ['pending', 'invited'])
+                            ->where(fn ($expiry) => $expiry->whereNull('invite_expires_at')->orWhere('invite_expires_at', '>', now()));
+                    });
             })
-            ->latest('id')
             ->first();
+
+        if ($duplicate) {
+            return response()->json(['message' => 'This reviewer has already been invited or assigned for this article.'], 422);
+        }
 
         $rawToken = Str::random(48);
 
-        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $declinedAssignment) {
+        $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $reviewer, $inviteeName, $inviteeEmail, $rawToken, $version, $reviewRound) {
             $assignmentData = [
                 'article_id' => $article->id,
+                'article_version_id' => $version->id,
+                'review_round_id' => $reviewRound->id,
+                'round_number' => $reviewRound->round_number,
                 'reviewer_id' => $reviewer?->id,
                 'invitee_name' => $inviteeName,
                 'invitee_email' => $inviteeEmail,
@@ -561,21 +860,17 @@ class ArticleWorkflowController extends Controller
                 'declined_at' => null,
                 'decline_reason' => null,
                 'completed_at' => null,
+                'idempotency_key' => $request->input('idempotency_key') ?: $request->header('Idempotency-Key'),
             ];
 
-            if ($declinedAssignment) {
-                $declinedAssignment->update($assignmentData);
-                $assignment = $declinedAssignment->fresh();
-            } else {
-                $assignment = ReviewerAssignment::create($assignmentData);
-            }
+            $assignment = ReviewerAssignment::create($assignmentData);
 
             $article->update(['status' => ArticleStatus::REVIEWER_ASSIGNED]);
             $this->audit($article, $request->user()->id, 'reviewer.assigned', $oldStatus, ArticleStatus::REVIEWER_ASSIGNED, [
                 'reviewer_id' => $reviewer?->id,
                 'invitee_email' => $inviteeEmail,
                 'due_date' => $request->due_date,
-                'resent' => (bool) $declinedAssignment,
+                'review_round_id' => $reviewRound->id,
             ]);
 
             $assignment->load('reviewer:id,name,email');
@@ -592,6 +887,10 @@ class ArticleWorkflowController extends Controller
                     'recipient_user_id' => $assignment->reviewer_id,
                     'recipient_privacy_variant' => 'reviewer',
                     'due_at' => $assignment->invite_expires_at?->toISOString(),
+                    'article_version_id' => $assignment->article_version_id,
+                    'review_round_id' => $assignment->review_round_id,
+                    'round_number' => $assignment->round_number,
+                    'version_label' => app(PendingReviewDecisionService::class)->versionLabel($version),
                 ]),
                 'reviewer_assignment', $assignment->id,
                 deduplicationKey: "reviewer-invitation:{$assignment->id}:{$assignment->invited_at?->timestamp}"
@@ -645,6 +944,8 @@ class ArticleWorkflowController extends Controller
                 'recommendation' => $request->recommendation,
                 'comments' => trim(($request->comments ?? '')."\n\nInternal notes:\n".($request->internal_notes ?? '')),
                 'completed_at' => now(),
+                'author_comments' => $request->comments,
+                'internal_comments' => $request->internal_notes,
             ]);
 
             $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
@@ -676,14 +977,40 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Reviewer assignment required.'], 403);
         }
 
+        if ($assignment->invite_expires_at?->isPast()) {
+            return response()->json(['message' => 'This invitation has expired.'], 409);
+        }
+        if (in_array($assignment->status, ['accepted', 'in_progress', 'review_in_progress', 'reopened'], true)) {
+            $this->ensureQuestionnaireInstance($assignment);
+
+            return response()->json([
+                'message' => 'Reviewer assignment already accepted.',
+                'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $user),
+            ]);
+        }
+        if (! in_array($assignment->status, ['pending', 'invited'], true) || $assignment->revoked_at || $assignment->closed_at) {
+            return response()->json(['message' => 'This invitation is no longer available.'], 409);
+        }
+        $assignment->loadMissing(['version', 'reviewRound']);
+        if (! $assignment->version || ! $assignment->reviewRound
+            || (int) $assignment->reviewRound->article_version_id !== (int) $assignment->article_version_id
+            || (int) $assignment->reviewRound->article_id !== (int) $assignment->article_id) {
+            return response()->json(['message' => 'The review assignment version or review round is invalid.'], 409);
+        }
+
         $oldStatus = $assignment->article->status;
 
         DB::transaction(function () use ($request, $assignment, $oldStatus) {
-            $assignment->update([
+            $locked = ReviewerAssignment::query()->whereKey($assignment->id)->lockForUpdate()->firstOrFail();
+            if (in_array($locked->status, ['accepted', 'in_progress', 'review_in_progress', 'reopened'], true)) {
+                return;
+            }
+            $locked->update([
                 'status' => 'accepted',
                 'accepted_at' => now(),
+                'invite_token_hash' => null,
             ]);
-            $this->ensureQuestionnaireInstance($assignment->fresh());
+            $this->ensureQuestionnaireInstance($locked->fresh());
 
             $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
             $this->audit($assignment->article, $request->user()->id, 'review.accepted', $oldStatus, ArticleStatus::REVIEW_IN_PROGRESS, [
@@ -706,8 +1033,13 @@ class ArticleWorkflowController extends Controller
     public function acceptReviewerInvitation(Request $request, int $assignmentId): JsonResponse
     {
         $validated = $request->validate(['token' => 'required|string']);
-        $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
+        $assignment = ReviewerAssignment::with(['article', 'version', 'reviewRound'])->findOrFail($assignmentId);
         $this->assertValidInvitationToken($assignment, $validated['token']);
+        if (! $assignment->version || ! $assignment->reviewRound
+            || (int) $assignment->reviewRound->article_version_id !== (int) $assignment->article_version_id
+            || (int) $assignment->reviewRound->article_id !== (int) $assignment->article_id) {
+            return response()->json(['message' => 'The review assignment version or review round is invalid.'], 409);
+        }
 
         $user = $this->reviewerUserForInvitation($assignment);
         $oldStatus = $assignment->article->status;
@@ -764,8 +1096,13 @@ class ArticleWorkflowController extends Controller
             'token' => 'required|string',
             'decline_reason' => 'nullable|string|max:2000',
         ]);
-        $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
+        $assignment = ReviewerAssignment::with(['article', 'version', 'reviewRound'])->findOrFail($assignmentId);
         $this->assertValidInvitationToken($assignment, $validated['token']);
+        if (! $assignment->version || ! $assignment->reviewRound
+            || (int) $assignment->reviewRound->article_version_id !== (int) $assignment->article_version_id
+            || (int) $assignment->reviewRound->article_id !== (int) $assignment->article_id) {
+            return response()->json(['message' => 'The review assignment version or review round is invalid.'], 409);
+        }
 
         DB::transaction(function () use ($assignment, $validated) {
             $assignment->update([
@@ -797,18 +1134,8 @@ class ArticleWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden. Reviewer assignment required.'], 403);
         }
 
-        if (! $assignment->accepted_at && $assignment->invite_token_hash) {
-            if ((int) $assignment->reviewer_id !== (int) $user->id) {
-                return response()->json(['message' => 'Accept the review invitation before submitting a review.'], 422);
-            }
-
-            $assignment->forceFill([
-                'accepted_at' => now(),
-                'invite_token_hash' => null,
-                'invite_expires_at' => null,
-                'status' => 'review_in_progress',
-            ])->save();
-            $this->ensureQuestionnaireInstance($assignment->fresh('article'));
+        if (! app(ReviewerQuestionnaireService::class)->canAccess($assignment)) {
+            return response()->json(['message' => 'Accept the review invitation before submitting a review.'], 409);
         }
 
         $questionnaireError = $this->validateQuestionnaireResponses($assignment, $request->input('questionnaire_responses', []));
@@ -837,24 +1164,35 @@ class ArticleWorkflowController extends Controller
                 ]);
             }
 
+            $decisionExists = $assignment->article->editorialDecisions()
+                ->where('article_version_id', $assignment->article_version_id)
+                ->exists();
             $assignment->update([
                 'status' => 'completed',
                 'recommendation' => $recommendation,
                 'comments_for_author' => $request->comments_for_author,
                 'confidential_comments' => $request->confidential_comments,
                 'completed_at' => now(),
+                'submitted_after_decision' => $decisionExists,
+                'editorial_decision_existed_at_submission' => $decisionExists,
             ]);
             $this->persistQuestionnaireResponses($assignment->fresh(), $request->input('questionnaire_responses', []));
 
-            $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
-            $this->audit($assignment->article, $request->user()->id, 'review.submitted', $oldStatus, ArticleStatus::REVIEW_IN_PROGRESS, [
+            if (! $decisionExists) {
+                $assignment->article->update(['status' => ArticleStatus::REVIEW_IN_PROGRESS]);
+            }
+            $nextStatus = $decisionExists ? $oldStatus : ArticleStatus::REVIEW_IN_PROGRESS;
+            $this->audit($assignment->article, $request->user()->id, $decisionExists ? 'review.submitted_after_decision' : 'review.submitted', $oldStatus, $nextStatus, [
                 'reviewer_assignment_id' => $assignment->id,
+                'article_version_id' => $assignment->article_version_id,
+                'review_round_id' => $assignment->review_round_id,
                 'recommendation' => $recommendation,
+                'submitted_after_decision' => $decisionExists,
             ]);
-            event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), 'review.submitted', $request->user(), [
+            event(new ArticleWorkflowEventOccurred($assignment->article->fresh(), $decisionExists ? 'review.submitted_after_decision' : 'review.submitted', $request->user(), [
                 'assignment_id' => $assignment->id,
                 'from_status' => $oldStatus,
-                'to_status' => ArticleStatus::REVIEW_IN_PROGRESS,
+                'to_status' => $nextStatus,
                 'recommendation' => $assignment->recommendation,
             ]));
         });
@@ -894,13 +1232,29 @@ class ArticleWorkflowController extends Controller
     {
         $this->rejectObserverMutation($request);
         $assignment = ReviewerAssignment::with('article')->findOrFail($assignmentId);
-        $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor']);
+        $article = $this->findAuthorizedArticle($request, $assignment->article_id, ['editor', 'sub_editor']);
+        if (! $this->isGlobal($request->user()) && $request->user()->hasRole('sub_editor')
+            && ! $article->subEditorAssignments()->where('article_version_id', $assignment->article_version_id)->where('sub_editor_id', $request->user()->id)->whereNull('revoked_at')->exists()) {
+            return response()->json(['message' => 'A current-version Sub Editor assignment is required to remind reviewers.'], 403);
+        }
+        if ((int) $article->current_version_id !== (int) $assignment->article_version_id
+            || ! $assignment->review_round_id
+            || $assignment->reviewRound?->status !== ArticleReviewRound::OPEN) {
+            return response()->json(['message' => 'Reminders can only be sent for assignments in the current open review round.'], 409);
+        }
+        $state = $this->reviewerInvitationState($assignment);
+        if (! in_array($state, ['invited', 'accepted', 'in_progress'], true)) {
+            return response()->json(['message' => 'This reviewer assignment is not eligible for a reminder or resend.'], 409);
+        }
 
         $rawToken = Str::random(48);
         DB::transaction(function () use ($assignment, $article, $request, $rawToken) {
+            $assignment->loadMissing('version');
             $assignment->update([
                 'invite_token_hash' => hash('sha256', $rawToken),
                 'invite_expires_at' => now()->addDays(21),
+                'reminder_count' => ((int) $assignment->reminder_count) + 1,
+                'last_reminded_at' => now(),
             ]);
             app(NotificationEventRecorder::class)->record(
                 'review.invitation_reminded', $article->fresh(), $request->user(),
@@ -909,6 +1263,12 @@ class ArticleWorkflowController extends Controller
                     'recipient_user_id' => $assignment->reviewer_id,
                     'recipient_privacy_variant' => 'reviewer',
                     'due_at' => $assignment->invite_expires_at?->toISOString(),
+                    'article_version_id' => $assignment->article_version_id,
+                    'review_round_id' => $assignment->review_round_id,
+                    'round_number' => $assignment->round_number,
+                    'version_label' => $assignment->version
+                        ? app(PendingReviewDecisionService::class)->versionLabel($assignment->version)
+                        : null,
                 ]),
                 'reviewer_assignment', $assignment->id,
                 deduplicationKey: "reviewer-invitation:{$assignment->id}:reminded:{$assignment->invite_expires_at?->timestamp}"
@@ -928,6 +1288,22 @@ class ArticleWorkflowController extends Controller
         $this->rejectObserverMutation($request);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor']);
         $oldStatus = $article->status;
+        $targetVersion = $article->currentVersion()->first()
+            ?: $article->versions()->latest('version_number')->first();
+        if (! $targetVersion) {
+            return response()->json(['message' => 'A current article version is required for an editorial decision.'], 409);
+        }
+        if ($request->filled('article_version_id') && (int) $request->integer('article_version_id') !== (int) $targetVersion->id) {
+            return response()->json(['message' => 'The editorial decision must target the current selected version.'], 409);
+        }
+        app(PendingReviewDecisionService::class)->requireConfirmationWhenNeeded(
+            $article,
+            $targetVersion,
+            $request->input('pending_review_policy'),
+            $request->input('pending_review_override_reason'),
+            $request->user(),
+            $request->header('Idempotency-Key')
+        );
 
         $decisionStatus = match ($request->decision) {
             'accepted' => ArticleStatus::ACCEPTED,
@@ -943,18 +1319,43 @@ class ArticleWorkflowController extends Controller
         };
 
         $decision = DB::transaction(function () use ($request, $article, $oldStatus, $decisionStatus, $decisionEvent) {
+            $version = $article->currentVersion()->lockForUpdate()->first()
+                ?: $article->versions()->latest('version_number')->lockForUpdate()->first();
+            if (! $version) {
+                throw new HttpResponseException(response()->json(['message' => 'A current article version is required for an editorial decision.'], 409));
+            }
+            if (! $article->current_version_id) {
+                $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            }
+            if ($article->editorialDecisions()->where('article_version_id', $version->id)->exists()) {
+                throw new HttpResponseException(response()->json(['message' => 'An editorial decision already exists for this version.'], 409));
+            }
+            $override = app(PendingReviewDecisionService::class)->apply(
+                $article,
+                $version,
+                $request->user(),
+                $request->input('pending_review_policy'),
+                $request->input('pending_review_override_reason')
+            );
             $decision = EditorialDecision::create([
                 'article_id' => $article->id,
+                'article_version_id' => $version->id,
+                'round_number' => 1,
                 'decision_by' => $request->user()->id,
                 'decision' => $request->decision,
                 'decision_source' => $request->decision_source,
                 'decision_date' => now(),
                 'comments_for_author' => $request->comments_for_author,
                 'internal_notes' => $request->internal_notes,
+                'pending_review_policy' => $override['policy'],
+                'pending_review_override_reason' => $override['policy'] ? trim((string) $request->input('pending_review_override_reason')) : null,
+                'pending_review_count' => $override['count'],
+                'pending_review_assignment_ids' => $override['ids'],
             ]);
 
             if ($decisionStatus === ArticleStatus::ACCEPTED) {
                 $this->acceptedFileSetService->createForCurrentSubmission($article, $request->user());
+                $article->accepted_version_id = $version->id;
             }
 
             $article->update([
@@ -986,6 +1387,7 @@ class ArticleWorkflowController extends Controller
         $validated = $request->validate([
             'decision' => 'nullable|string|in:accept,accepted,approve,approved,deny,denied,decline,declined',
             'reason' => 'nullable|string|max:5000',
+            'correction_file_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
         ]);
         $article = $this->findAuthorizedArticle($request, $articleId, ['editor', 'publisher', 'copy_editor', 'sub_editor', 'reviewer'], false);
         $user = $request->user();
@@ -1012,25 +1414,52 @@ class ArticleWorkflowController extends Controller
             ], 422);
         }
 
+        $proof = $article->proofRounds()
+            ->where('active_marker', 1)
+            ->whereIn('status', ['awaiting_author', 'resent'])
+            ->latest('round_number')
+            ->first();
+        if (! $proof) {
+            return response()->json(['message' => 'No active proof file is awaiting author review.'], 422);
+        }
+
+        $authorCorrectionFile = null;
+        if ($isDenied && $request->filled('correction_file_upload_id')) {
+            $purpose = 'article_annotated_manuscript';
+            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->correction_file_upload_id, $purpose);
+            $authorCorrectionFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
+                $article,
+                $upload,
+                config('media_uploads.purposes.'.$purpose),
+                [
+                    'assignment_type' => 'proof_round',
+                    'assignment_id' => $proof->id,
+                ]
+            );
+        }
+
         $nextStatus = $isDenied ? ArticleStatus::COPY_EDITING : ArticleStatus::READY_FOR_PUBLICATION;
-        DB::transaction(function () use ($article, $user, $oldStatus, $nextStatus, $isDenied, $validated) {
+        DB::transaction(function () use ($article, $user, $oldStatus, $nextStatus, $isDenied, $validated, $proof, $authorCorrectionFile) {
             Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            $proof = ProofRound::query()->whereKey($proof->id)->lockForUpdate()->firstOrFail();
 
             if ($isDenied) {
                 $article->update([
                     'status' => $nextStatus,
                     'author_final_rejected_at' => now(),
                     'author_final_rejection_reason' => $validated['reason'],
-                    'author_final_review_requested_at' => null,
-                    'author_final_review_due_at' => null,
                 ]);
 
                 ProductionAssignment::query()
-                    ->where('article_id', $article->id)
-                    ->where('role', 'copy_editor')
-                    ->latest('id')
-                    ->limit(1)
-                    ->update(['status' => 'pending', 'completed_at' => null]);
+                    ->whereKey($proof->production_assignment_id)
+                    ->whereNull('revoked_at')
+                    ->update(['status' => 'correction_required', 'completed_at' => null]);
+                $proof->update([
+                    'status' => 'corrections_requested',
+                    'responded_at' => now(),
+                    'author_comments' => $validated['reason'],
+                    'author_file_id' => $authorCorrectionFile?->id,
+                ]);
             } else {
                 $article->update([
                     'status' => $nextStatus,
@@ -1038,8 +1467,8 @@ class ArticleWorkflowController extends Controller
                     'author_final_approved_by' => $user->id,
                     'author_final_rejected_at' => null,
                     'author_final_rejection_reason' => null,
-                    'author_final_review_due_at' => null,
                 ]);
+                $proof->update(['status' => 'approved', 'responded_at' => now(), 'approved_at' => now(), 'approved_by' => $user->id, 'active_marker' => null]);
             }
 
             $this->audit(
@@ -1048,7 +1477,9 @@ class ArticleWorkflowController extends Controller
                 $isDenied ? 'author.final_review_denied' : 'author.final_review_approved',
                 $oldStatus,
                 $nextStatus,
-                $isDenied ? ['reason' => $validated['reason']] : ['approved_by' => $user->id]
+                $isDenied
+                    ? ['reason' => $validated['reason'], 'proof_round_id' => $proof->id, 'author_file_id' => $authorCorrectionFile?->id]
+                    : ['approved_by' => $user->id, 'proof_round_id' => $proof->id]
             );
 
             $fresh = $article->fresh();
@@ -1056,6 +1487,8 @@ class ArticleWorkflowController extends Controller
                 'from_status' => $oldStatus,
                 'to_status' => $nextStatus,
                 'reason' => $validated['reason'] ?? null,
+                'proof_round_id' => $proof->id,
+                'author_file_id' => $authorCorrectionFile?->id,
             ]));
             if (! $isDenied) {
                 event(new ArticleWorkflowEventOccurred($fresh, 'article.ready_for_publication', $user, [
@@ -1087,13 +1520,15 @@ class ArticleWorkflowController extends Controller
         }
 
         $assignment = DB::transaction(function () use ($request, $article, $oldStatus, $nextStatus) {
-            $assignment = ProductionAssignment::updateOrCreate(
+            $set = $article->activeAcceptedFileSet()->firstOrFail();
+            ProductionAssignment::query()->where('article_id', $article->id)->where('role', $request->role)->whereNull('revoked_at')->update(['status' => 'superseded', 'revoked_at' => now()]);
+            $assignment = ProductionAssignment::create(
                 [
                     'article_id' => $article->id,
+                    'article_version_id' => $set->article_version_id,
+                    'accepted_file_set_id' => $set->id,
                     'user_id' => $request->user_id,
                     'role' => $request->role,
-                ],
-                [
                     'assigned_by' => $request->user()->id,
                     'status' => 'pending',
                     'due_date' => $request->due_date,
@@ -1127,11 +1562,6 @@ class ArticleWorkflowController extends Controller
     public function completeProduction(Request $request, int $assignmentId): JsonResponse
     {
         $this->rejectObserverMutation($request);
-        $request->validate([
-            'production_file' => 'nullable|file|mimes:'.UploadValidationService::extensionsRuleString().'|max:25600',
-            'production_file_upload_id' => 'nullable|string|exists:media_upload_sessions,id',
-        ]);
-
         $assignment = ProductionAssignment::with('article')->findOrFail($assignmentId);
         $user = $request->user();
 
@@ -1147,6 +1577,19 @@ class ArticleWorkflowController extends Controller
         if ($assignment->role !== 'copy_editor') {
             return response()->json(['message' => 'Proofreader assignments are inactive.'], 403);
         }
+        if ($assignment->revoked_at || ! in_array($assignment->status, ['pending', 'in_progress', 'correction_required'], true)) {
+            return response()->json(['message' => 'This copyediting task is not active.'], 422);
+        }
+
+        $acceptedSet = $assignment->article->activeAcceptedFileSet()->first();
+        if (! $acceptedSet || (int) $assignment->accepted_file_set_id !== (int) $acceptedSet->id) {
+            return response()->json(['message' => 'The active accepted file set for this copyediting task is unavailable.'], 422);
+        }
+
+        $request->validate([
+            'production_file' => 'nullable|file|mimes:'.UploadValidationService::extensionsRuleString().'|max:25600',
+            'production_file_upload_id' => 'required|string|exists:media_upload_sessions,id',
+        ]);
 
         $storedFile = null;
         $oldStatus = $assignment->article->status;
@@ -1157,22 +1600,40 @@ class ArticleWorkflowController extends Controller
             ], 410);
         }
 
-        if ($request->filled('production_file_upload_id')) {
-            $purpose = 'article_production_file';
-            $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
-            $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
-                $assignment->article,
-                $upload,
-                config('media_uploads.purposes.'.$purpose),
-                [
-                    'assignment_type' => 'production_assignment',
-                    'assignment_id' => $assignment->id,
-                ]
-            );
+        $isCorrection = $assignment->status === 'correction_required';
+        $activeProof = $assignment->article->proofRounds()
+            ->where('active_marker', 1)
+            ->whereIn('status', ['corrections_requested', 'correction_in_progress'])
+            ->latest('round_number')
+            ->first();
+        if ($isCorrection && ! $activeProof) {
+            return response()->json(['message' => 'No active author correction request exists for this copyediting task.'], 422);
+        }
+        if (! $isCorrection && $assignment->article->proofRounds()->where('active_marker', 1)->exists()) {
+            return response()->json(['message' => 'An active proof round already exists.'], 422);
         }
 
+        $purpose = 'article_production_file';
+        $upload = app(CleanUploadResolver::class)->resolveOwned($user, $request->production_file_upload_id, $purpose);
+        $storedFile = app(ArticleFileController::class)->createCleanDirectUploadFile(
+            $assignment->article,
+            $upload,
+            config('media_uploads.purposes.'.$purpose),
+            [
+                'assignment_type' => 'production_assignment',
+                'assignment_id' => $assignment->id,
+            ]
+        );
+
         $reviewRequestedAt = now();
-        DB::transaction(function () use ($assignment, $user, $oldStatus, $reviewRequestedAt): void {
+        $proofRound = DB::transaction(function () use ($assignment, $user, $oldStatus, $reviewRequestedAt, $storedFile, $isCorrection, $activeProof, $acceptedSet): ProofRound {
+            if ($isCorrection) {
+                ProofRound::query()->whereKey($activeProof->id)->lockForUpdate()->firstOrFail()->update([
+                    'status' => 'corrected',
+                    'corrected_file_id' => $storedFile->id,
+                    'active_marker' => null,
+                ]);
+            }
             $assignment->update([
                 'status' => 'completed',
                 'completed_at' => $reviewRequestedAt,
@@ -1181,16 +1642,27 @@ class ArticleWorkflowController extends Controller
             $assignment->article->update([
                 'status' => ArticleStatus::PROOFREADING,
                 'author_final_review_requested_at' => $reviewRequestedAt,
-                'author_final_review_due_at' => $reviewRequestedAt->copy()->addDays(14),
                 'author_final_approved_at' => null,
                 'author_final_approved_by' => null,
                 'author_final_rejected_at' => null,
                 'author_final_rejection_reason' => null,
-                'author_final_auto_approved_at' => null,
+            ]);
+            $round = ProofRound::create([
+                'article_id' => $assignment->article_id,
+                'article_version_id' => $acceptedSet->article_version_id,
+                'accepted_file_set_id' => $acceptedSet->id,
+                'production_assignment_id' => $assignment->id,
+                'round_number' => ((int) $assignment->article->proofRounds()->max('round_number')) + 1,
+                'status' => 'awaiting_author',
+                'source_file_id' => $storedFile->id,
+                'requested_at' => $reviewRequestedAt,
+                'active_marker' => 1,
             ]);
             $this->audit($assignment->article, $user->id, 'production.completed', $oldStatus, ArticleStatus::PROOFREADING, [
                 'production_assignment_id' => $assignment->id,
-                'author_review_due_at' => $reviewRequestedAt->copy()->addDays(14)->toIso8601String(),
+                'proof_round_id' => $round->id,
+                'copyedited_file_id' => $storedFile->id,
+                'correction_iteration' => $isCorrection,
             ]);
             $freshArticle = $assignment->article->fresh();
             event(new ArticleWorkflowEventOccurred($freshArticle, 'production.completed', $user, [
@@ -1200,17 +1672,23 @@ class ArticleWorkflowController extends Controller
             ]));
             event(new ArticleWorkflowEventOccurred($freshArticle, 'author.final_review_requested', $user, [
                 'assignment_id' => $assignment->id,
+                'proof_round_id' => $round->id,
+                'copyedited_file_id' => $storedFile->id,
                 'from_status' => $oldStatus,
                 'to_status' => ArticleStatus::PROOFREADING,
-                'due_at' => $reviewRequestedAt->copy()->addDays(14)->toIso8601String(),
             ]));
+
+            return $round;
         });
 
         return response()->json([
-            'message' => 'Copyediting completed and sent to the author for publication approval.',
+            'message' => $isCorrection
+                ? 'Corrected proof sent to the author for another review.'
+                : 'Copyediting completed and the exact copyedited file was sent to the author for review.',
             'assignment' => $this->minimalAssignmentPayload($assignment->fresh(['article.magazine:id,title,slug']), $user),
             'article' => $this->workflowArticlePayload($assignment->article->fresh(['magazine:id,title,slug', 'issue']), $user),
-            'file' => $storedFile ? app(ArticleFileController::class)->serializeFile($storedFile) : null,
+            'proof_round_id' => $proofRound->id,
+            'file' => app(ArticleFileController::class)->serializeFile($storedFile, $user),
         ]);
     }
 
@@ -1992,38 +2470,7 @@ class ArticleWorkflowController extends Controller
 
     private function ensureQuestionnaireInstance(ReviewerAssignment $assignment): ?ReviewQuestionnaireInstance
     {
-        $version = ReviewQuestionnaireVersion::query()
-            ->where('is_active', true)
-            ->with('questions.options')
-            ->latest('published_at')
-            ->latest('id')
-            ->first();
-
-        if (! $version) {
-            return null;
-        }
-
-        $instance = ReviewQuestionnaireInstance::where('reviewer_assignment_id', $assignment->id)->first();
-        if ($instance) {
-            if ($assignment->status !== 'completed' && $instance->review_questionnaire_version_id !== $version->id) {
-                $instance->update(['review_questionnaire_version_id' => $version->id]);
-            }
-            if (! $assignment->questionnaire_instance_id) {
-                $assignment->update(['questionnaire_instance_id' => $instance->id]);
-            }
-
-            return $instance;
-        }
-
-        $instance = ReviewQuestionnaireInstance::create([
-            'reviewer_assignment_id' => $assignment->id,
-            'article_id' => $assignment->article_id,
-            'reviewer_id' => $assignment->reviewer_id,
-            'review_questionnaire_version_id' => $version->id,
-        ]);
-        $assignment->update(['questionnaire_instance_id' => $instance->id]);
-
-        return $instance;
+        return app(ReviewerQuestionnaireService::class)->ensure($assignment);
     }
 
     private function validateQuestionnaireResponses(ReviewerAssignment $assignment, array $responses): ?string
@@ -2149,6 +2596,9 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $article->id,
             'tracking_code' => $article->tracking_code,
+            'current_version_id' => $article->current_version_id,
+            'accepted_version_id' => $article->accepted_version_id,
+            'submission_mode' => $article->submission_mode,
             'magazine_id' => $article->magazine_id,
             'magazine_issue_id' => $article->magazine_issue_id,
             'magazine' => $article->magazine ? [
@@ -2180,8 +2630,9 @@ class ArticleWorkflowController extends Controller
             'competing_interests_statement' => $article->competing_interests_statement,
             'abbreviations' => $article->abbreviations,
             'citation_text' => $article->citation_text,
-            'citation_text' => $article->citation_text,
             'status' => $article->status,
+            'lifecycle_status' => app(LifecycleStatusProjector::class)->canonical($article),
+            'status_projection' => app(LifecycleStatusProjector::class)->projection($article, request()->user()),
             'published_year' => $article->published_year,
             'published_month' => $article->published_month,
             'page_start' => $article->page_start,
@@ -2316,6 +2767,7 @@ class ArticleWorkflowController extends Controller
     private function findAuthorizedArticle(Request $request, int $articleId, array $roles, bool $requireAssignedRole = true): Article
     {
         $article = Article::findOrFail($articleId);
+        abort_if($article->isDirectPublication(), 404);
         $user = $request->user();
 
         if ($this->isGlobal($user)) {
@@ -2338,8 +2790,12 @@ class ArticleWorkflowController extends Controller
             return $article;
         }
 
-        if (in_array('copy_editor', $roles, true) && $this->hasProductionAssignment($user, $article, 'copy_editor')) {
+        if (in_array('copy_editor', $roles, true)
+            && app(ArticleWorkspaceManifestService::class)->canAccessAcceptedManuscript($article, $user)) {
             return $article;
+        }
+        if (in_array('copy_editor', $roles, true) && $user->hasRole('copy_editor')) {
+            throw new HttpResponseException(response()->json(['message' => 'Forbidden. Active Copy Editor assignment required.'], 403));
         }
 
         if (in_array('publisher', $roles, true)
@@ -2454,8 +2910,12 @@ class ArticleWorkflowController extends Controller
             return 'declined';
         }
 
+        if (! $assignment->accepted_at && $assignment->invite_expires_at?->isPast()) {
+            return 'expired';
+        }
+
         if ($assignment->accepted_at || in_array($assignment->status, ['accepted', 'in_progress'], true)) {
-            return 'accepted';
+            return $assignment->status === 'in_progress' ? 'in_progress' : 'accepted';
         }
 
         return 'invited';
@@ -2503,15 +2963,16 @@ class ArticleWorkflowController extends Controller
         $canViewReviewWorkflow = $canViewEditorial || $this->hasSubEditorAssignment($user, $article);
         $isAuthor = (int) $article->user_id === (int) ($user?->id ?? 0)
             || $this->isArticleAuthorRecord($user, $article);
-        $canAuthorViewReviews = $isAuthor && in_array(ArticleStatus::normalize($article->status), [
-            ArticleStatus::REVISION_REQUIRED,
-            ArticleStatus::MINOR_REVISION_REQUIRED,
-            ArticleStatus::MAJOR_REVISION_REQUIRED,
-        ], true);
+        $canAuthorViewReviews = $isAuthor;
         $canViewPublication = $canViewEditorial || $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         $canViewProduction = $canViewPublication
             || $this->hasProductionAssignment($user, $article, 'copy_editor');
         $canViewAcceptedFiles = $this->canViewAcceptedFileSet($user, $article);
+        $activeAuthorProof = collect($article->proofRounds ?? [])
+            ->where('active_marker', 1)
+            ->whereIn('status', ['awaiting_author', 'resent'])
+            ->sortByDesc('round_number')
+            ->first();
         $visibleFiles = app(ArticleFileController::class)->filterVisibleFiles($user, $article->files ?? []);
         $visibleSourceAssetIds = collect($visibleFiles)->pluck('source_asset_id')->filter()->map(fn ($id) => (int) $id)->all();
         $isAssignedCopyEditor = $user?->hasRole('copy_editor') && $this->hasProductionAssignment($user, $article, 'copy_editor');
@@ -2618,18 +3079,67 @@ class ArticleWorkflowController extends Controller
             'author_final_approved_at' => $article->author_final_approved_at,
             'author_final_approved_by' => $article->author_final_approved_by,
             'author_final_review_requested_at' => $article->author_final_review_requested_at,
-            'author_final_review_due_at' => $article->author_final_review_due_at,
             'author_final_rejected_at' => $article->author_final_rejected_at,
             'author_final_rejection_reason' => $isAuthor || $canViewEditorial || $canViewProduction
                 ? $article->author_final_rejection_reason
                 : null,
-            'author_final_auto_approved_at' => $article->author_final_auto_approved_at,
             'accepted_file_set' => $canViewAcceptedFiles
                 ? $this->acceptedFileSetPayload($article->activeAcceptedFileSet, $user)
                 : null,
+            'proof_rounds' => ($isAuthor || $canViewEditorial || $canViewProduction)
+                ? collect($article->proofRounds ?? [])->sortByDesc('round_number')->map(function ($round) use ($user, $canViewEditorial, $canViewProduction) {
+                    $reviewFile = $round->correctedFile ?: $round->sourceFile;
+
+                    return [
+                        'id' => $round->id,
+                        'article_version_id' => $round->article_version_id,
+                        'round_number' => $round->round_number,
+                        'label' => $round->status === 'approved' ? 'Final Proof' : 'Proof '.$round->round_number,
+                        'status' => $round->status,
+                        'active' => (int) $round->active_marker === 1,
+                        'source_file_id' => $round->source_file_id,
+                        'author_file_id' => $round->author_file_id,
+                        'corrected_file_id' => $round->corrected_file_id,
+                        'file_for_author_review' => $reviewFile
+                            ? app(ArticleFileController::class)->serializeFile($reviewFile, $user)
+                            : null,
+                        'author_file' => $round->authorFile
+                            ? app(ArticleFileController::class)->serializeFile($round->authorFile, $user)
+                            : null,
+                        'author_comments' => $round->author_comments,
+                        'production_notes' => $canViewEditorial || $canViewProduction ? $round->production_notes : null,
+                        'requested_at' => $round->requested_at,
+                        'responded_at' => $round->responded_at,
+                        'approved_at' => $round->approved_at,
+                    ];
+                })->values() : [],
+            'publication_records' => $canViewPublication
+                ? collect($article->publicationRecords ?? [])->sortByDesc('id')->map(fn ($record) => [
+                    'id' => $record->id,
+                    'article_version_id' => $record->article_version_id,
+                    'accepted_file_set_id' => $record->accepted_file_set_id,
+                    'proof_round_id' => $record->proof_round_id,
+                    'magazine_issue_id' => $record->magazine_issue_id,
+                    'status' => $record->status,
+                    'doi' => $record->doi,
+                    'page_start' => $record->page_start,
+                    'page_end' => $record->page_end,
+                    'scheduled_for' => $record->scheduled_for,
+                    'published_at' => $record->published_at,
+                    'unpublished_at' => $record->unpublished_at,
+                    'files' => $record->files->map(fn ($selection) => [
+                        'id' => $selection->id,
+                        'article_file_id' => $selection->article_file_id,
+                        'public_role' => $selection->public_role,
+                        'is_primary' => $selection->is_primary,
+                        'is_public' => $selection->is_public,
+                    ])->values(),
+                ])->values() : [],
             'can_author_final_review' => $this->canApproveAuthorFinalReview($user, $article)
                 && ArticleStatus::normalize($article->status) === ArticleStatus::PROOFREADING
-                && ! $article->author_final_approved_at,
+                && ! $article->author_final_approved_at
+                && $activeAuthorProof
+                && ($activeAuthorProof->correctedFile ?: $activeAuthorProof->sourceFile),
             'pending_transfer_request' => $this->transferRequestPayload($article->pendingTransferRequest, $this->canViewEditorialInternals($user, $article)),
             'can_request_transfer' => $this->canRequestTransfer($user, $article),
             'can_respond_transfer_request' => $this->canRespondTransferRequest($user, $article),
@@ -2684,16 +3194,22 @@ class ArticleWorkflowController extends Controller
             : [];
 
         $data['audit_logs'] = $this->canViewAuditLogs($user, $article)
-            ? collect($article->auditLogs ?? [])->map(fn ($log) => [
-                'id' => $log->id,
-                'article_id' => $log->article_id,
-                'event' => $log->event,
-                'from_status' => $log->from_status,
-                'to_status' => $log->to_status,
-                'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
-                'payload' => $log->payload,
-                'created_at' => $log->created_at,
-            ])->values()
+            ? collect($article->auditLogs ?? [])->map(function ($log) {
+                $payload = is_array($log->payload) ? $log->payload : [];
+
+                return [
+                    'id' => $log->id,
+                    'article_id' => $log->article_id,
+                    'event' => $log->event,
+                    'display_event' => $log->event === 'notification.sent' ? ($payload['workflow_event'] ?? $log->event) : $log->event,
+                    'from_status' => $log->from_status,
+                    'to_status' => $log->to_status,
+                    'article_version_id' => $payload['article_version_id'] ?? null,
+                    'workflow_stage' => $payload['workflow_stage'] ?? $log->to_status ?? $log->from_status,
+                    'actor' => $log->actor ? ['id' => $log->actor->id, 'name' => $log->actor->name] : null,
+                    'created_at' => $log->created_at,
+                ];
+            })->values()
             : [];
 
         $data['capabilities'] = [
@@ -2744,6 +3260,7 @@ class ArticleWorkflowController extends Controller
         $payload = [
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
+            'article_version_id' => $assignment->article_version_id,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
             'completed_at' => $assignment->completed_at,
@@ -2763,6 +3280,7 @@ class ArticleWorkflowController extends Controller
             $payload['role'] = $assignment->role;
             $payload['user'] = $assignment->user ? ['id' => $assignment->user->id, 'name' => $assignment->user->name] : null;
         } elseif ($assignment instanceof ReviewerAssignment) {
+            $payload['review_round_id'] = $assignment->review_round_id;
             $canViewReviewerIdentity = (int) $assignment->reviewer_id === (int) ($user?->id ?? 0)
                 || $this->canViewEditorialInternals($user, $assignment->article)
                 || $this->hasSubEditorAssignment($user, $assignment->article);
@@ -2770,6 +3288,9 @@ class ArticleWorkflowController extends Controller
             $payload['invitee_name'] = $canViewReviewerIdentity ? $assignment->invitee_name : null;
             $payload['invitee_email'] = $canViewReviewerIdentity ? $assignment->invitee_email : null;
             $payload['invited_at'] = $assignment->invited_at;
+            $payload['invite_expires_at'] = $assignment->invite_expires_at;
+            $payload['reminder_count'] = (int) $assignment->reminder_count;
+            $payload['last_reminded_at'] = $assignment->last_reminded_at;
             $payload['accepted_at'] = $assignment->accepted_at;
             $payload['declined_at'] = $assignment->declined_at;
             $payload['invitation_state'] = $this->reviewerInvitationState($assignment);
@@ -2820,6 +3341,25 @@ class ArticleWorkflowController extends Controller
         }
 
         return $payload;
+    }
+
+    private function previousReviewPayload(?ReviewerAssignment $assignment): ?array
+    {
+        if (! $assignment) {
+            return null;
+        }
+
+        $label = (int) ($assignment->version?->revision_number ?? 0) === 0
+            ? 'Initial Submission'
+            : 'R'.(int) $assignment->version->revision_number;
+
+        return [
+            'assignment_id' => $assignment->id,
+            'version_id' => $assignment->article_version_id,
+            'revision_number' => $assignment->version?->revision_number,
+            'label' => $label,
+            'completed_at' => $assignment->completed_at,
+        ];
     }
 
     private function questionnaireInstancePayload(?ReviewQuestionnaireInstance $instance): ?array
@@ -2889,11 +3429,69 @@ class ArticleWorkflowController extends Controller
         ];
     }
 
+    private function acceptedManuscriptPayload(Article $article, $version, User $viewer): array
+    {
+        $metadata = collect($version->metadata_snapshot ?? []);
+        $acceptedFileSet = $this->acceptedFileSetPayload($article->activeAcceptedFileSet, $viewer);
+        $acceptedItems = collect($acceptedFileSet['items'] ?? []);
+
+        return [
+            'article' => [
+                'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
+                'title' => $metadata->get('title'),
+                'abstract' => $metadata->get('abstract'),
+            ],
+            'publication' => $article->magazine ? [
+                'id' => $article->magazine->id,
+                'name' => $article->magazine->title,
+                'slug' => $article->magazine->slug,
+            ] : null,
+            'accepted_version' => [
+                'id' => $version->id,
+                'identifier' => $version->revision_tracking_code ?: ($version->label ?: 'Version '.$version->version_number),
+                'label' => $version->label,
+                'version_number' => $version->version_number,
+                'revision_number' => $version->revision_number,
+                'accepted_at' => $version->accepted_at ?: $article->activeAcceptedFileSet?->accepted_at,
+                'change_summary' => $version->change_summary,
+                'revision_response' => $version->author_response,
+            ],
+            'metadata' => [
+                'keywords' => $metadata->get('keywords', []),
+                'article_type' => $metadata->get('article_type'),
+                'classification' => $metadata->get('article_category'),
+                'subject_area' => $metadata->get('subject_area'),
+                'language' => $metadata->get('language'),
+            ],
+            'authors' => collect($metadata->get('authors', []))->map(fn ($author) => [
+                'name' => $author['name'] ?? null,
+                'affiliation' => $author['affiliation'] ?? null,
+                'is_corresponding' => (bool) ($author['is_corresponding'] ?? false),
+                'author_order' => $author['author_order'] ?? null,
+            ])->sortBy('author_order')->values(),
+            'declarations' => [
+                'ethical_approval_statement' => $metadata->get('ethical_approval_statement'),
+                'conflict_of_interest_statement' => $metadata->get('conflict_of_interest_statement'),
+                'funding_statement' => $metadata->get('funding_statement'),
+                'data_availability_statement' => $metadata->get('data_availability_statement'),
+                'author_contribution_statement' => $metadata->get('author_contribution_statement'),
+            ],
+            'files' => [
+                'manuscript' => $acceptedItems->where('accepted_role', 'manuscript')->values(),
+                'additional' => $acceptedItems->where('accepted_role', 'additional')->values(),
+                'supplementary' => $acceptedItems->where('accepted_role', 'supplementary')->values(),
+                'accepted_file_set' => $acceptedFileSet,
+            ],
+        ];
+    }
+
     private function editorialDecisionPayload(EditorialDecision $decision, bool $includeInternal): array
     {
         $payload = [
             'id' => $decision->id,
             'article_id' => $decision->article_id,
+            'article_version_id' => $decision->article_version_id,
             'decision' => $decision->decision,
             'decision_source' => $decision->decision_source,
             'decision_date' => $decision->decision_date,
@@ -2981,6 +3579,10 @@ class ArticleWorkflowController extends Controller
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
             'sub_editor_id' => $assignment->sub_editor_id,
+            'assignee' => $assignment->subEditor ? [
+                'id' => $assignment->subEditor->id,
+                'name' => $assignment->subEditor->name,
+            ] : null,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
             'completed_at' => $assignment->completed_at,
@@ -2993,6 +3595,7 @@ class ArticleWorkflowController extends Controller
             'primary_action' => $primaryAction,
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'slug' => $article->slug,
                 'status' => $article->status,
@@ -3007,14 +3610,26 @@ class ArticleWorkflowController extends Controller
         ];
     }
 
-    private function reviewerAssignmentListPayload(ReviewerAssignment $assignment): array
+    private function reviewerAssignmentListPayload(ReviewerAssignment $assignment, bool $actionable = true): array
     {
         $article = $assignment->article;
 
-        $primaryAction = match ($assignment->status) {
-            'pending' => 'accept_decline',
+        $status = in_array($assignment->status, ['pending', 'invited'], true) && $assignment->invite_expires_at?->isPast()
+            ? 'expired'
+            : $assignment->status;
+        $hasDraft = (bool) ($assignment->questionnaireInstance
+            && ! $assignment->questionnaireInstance->submitted_at
+            && $assignment->questionnaireInstance->responses->isNotEmpty());
+        $questionnaireAllowed = $actionable && app(ReviewerQuestionnaireService::class)->canAccess($assignment);
+        $versionLabel = $assignment->version
+            ? app(PendingReviewDecisionService::class)->versionLabel($assignment->version)
+            : 'Version unavailable';
+        $decisionExists = (bool) $article?->editorialDecisions?->contains(fn ($decision) => (int) $decision->article_version_id === (int) $assignment->article_version_id);
+
+        $primaryAction = match ($status) {
+            'pending', 'invited' => 'accept_decline',
             'accepted' => 'start_review',
-            'in_progress' => 'continue_review',
+            'in_progress', 'review_in_progress' => 'continue_review',
             'completed' => 'view_submitted_review',
             'reopened' => 'continue_review',
             default => 'start_review',
@@ -3024,7 +3639,18 @@ class ArticleWorkflowController extends Controller
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
             'reviewer_id' => $assignment->reviewer_id,
-            'status' => $assignment->status,
+            'assignee' => $assignment->reviewer || $assignment->invitee_name ? [
+                'id' => $assignment->reviewer?->id,
+                'name' => $assignment->reviewer?->name ?: $assignment->invitee_name,
+            ] : null,
+            'status' => $status,
+            'assignment_id' => $assignment->id,
+            'article_version_id' => $assignment->article_version_id,
+            'version_id' => $assignment->article_version_id,
+            'version_label' => $versionLabel,
+            'review_round_id' => $assignment->review_round_id,
+            'review_round' => $assignment->reviewRound?->round_number ?: $assignment->round_number,
+            'invited_at' => $assignment->invited_at,
             'due_date' => $assignment->due_date,
             'accepted_at' => $assignment->accepted_at,
             'completed_at' => $assignment->completed_at,
@@ -3034,8 +3660,18 @@ class ArticleWorkflowController extends Controller
                 && $assignment->due_date->isPast()
                 && ! in_array($assignment->status, ['completed'], true)),
             'primary_action' => $primaryAction,
+            'decision_exists' => $decisionExists,
+            'submitted_after_decision' => (bool) $assignment->submitted_after_decision,
+            'capabilities' => [
+                'accept_invitation' => $actionable && in_array($status, ['pending', 'invited'], true),
+                'decline_invitation' => $actionable && in_array($status, ['pending', 'invited'], true),
+                'start_review' => $questionnaireAllowed && $status === 'accepted' && ! $hasDraft,
+                'continue_review' => $questionnaireAllowed && (in_array($status, ['in_progress', 'review_in_progress', 'reopened'], true) || $hasDraft),
+                'view_completed' => $status === 'completed',
+            ],
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'slug' => $article->slug,
                 'status' => $article->status,
@@ -3057,6 +3693,10 @@ class ArticleWorkflowController extends Controller
         return [
             'id' => $assignment->id,
             'article_id' => $assignment->article_id,
+            'assignee' => $assignment->user ? [
+                'id' => $assignment->user->id,
+                'name' => $assignment->user->name,
+            ] : null,
             'role' => $assignment->role,
             'status' => $assignment->status,
             'due_date' => $assignment->due_date,
@@ -3068,6 +3708,7 @@ class ArticleWorkflowController extends Controller
                 && ! in_array($assignment->status, ['completed'], true),
             'article' => $article ? [
                 'id' => $article->id,
+                'tracking_code' => $article->tracking_code,
                 'title' => $article->title,
                 'status' => $article->status,
                 'created_at' => $article->created_at,

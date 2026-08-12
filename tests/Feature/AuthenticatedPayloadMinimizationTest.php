@@ -28,14 +28,23 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
     use RefreshDatabase;
 
     private Magazine $magazine;
+
     private Article $article;
+
     private User $author;
+
     private User $editor;
+
     private User $subEditor;
+
     private User $reviewer;
+
     private User $publisher;
+
     private User $copyEditor;
+
     private User $proofreader;
+
     private User $superAdmin;
 
     protected function setUp(): void
@@ -237,7 +246,7 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
         $this->assertArrayNotHasKey('audit_logs', $payload);
     }
 
-    public function test_author_workflow_response_excludes_assignments_internal_notes_and_tokens(): void
+    public function test_author_workflow_response_includes_only_completed_author_facing_reviews(): void
     {
         Sanctum::actingAs($this->author);
 
@@ -250,7 +259,9 @@ class AuthenticatedPayloadMinimizationTest extends TestCase
 
         $this->assertPayloadHasNoStoragePaths($payload);
         $this->assertSame([], $payload['article']['sub_editor_assignments']);
-        $this->assertSame([], $payload['article']['reviewer_assignments']);
+        $this->assertCount(1, $payload['article']['reviewer_assignments']);
+        $this->assertSame('Author-facing review', $payload['article']['reviewer_assignments'][0]['comments_for_author']);
+        $this->assertArrayNotHasKey('confidential_comments', $payload['article']['reviewer_assignments'][0]);
         $this->assertSame([], $payload['article']['production_assignments']);
         $this->assertSame([], $payload['article']['audit_logs']);
     }

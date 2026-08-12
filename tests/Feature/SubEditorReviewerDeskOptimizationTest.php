@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Constants\ArticleStatus;
 use App\Models\Article;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\Permission;
 use App\Models\ReviewerAssignment;
@@ -19,11 +20,17 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private User $editor;
+
     private User $subEditorA;
+
     private User $subEditorB;
+
     private User $reviewerA;
+
     private User $reviewerB;
+
     private Magazine $magazine;
 
     protected function setUp(): void
@@ -84,10 +91,10 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $otherArticle = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "SubEditor B Article",
-            'slug' => "sub-editor-b-article",
-            'abstract' => "Abstract B",
-            'full_text' => "Heavy text payload B",
+            'title' => 'SubEditor B Article',
+            'slug' => 'sub-editor-b-article',
+            'abstract' => 'Abstract B',
+            'full_text' => 'Heavy text payload B',
             'status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
         ]);
         SubEditorAssignment::create([
@@ -108,6 +115,9 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         // Verify payload does NOT expose heavy full_text, files, or audit logs
         $item = $response->json('data.0');
         $this->assertArrayHasKey('primary_action', $item);
+        $this->assertSame($this->subEditorA->name, $item['assignee']['name']);
+        $this->assertNotEmpty($item['article']['tracking_code']);
+        $this->assertNotNull($item['due_date']);
         $this->assertArrayNotHasKey('full_text', $item);
         $this->assertArrayNotHasKey('files', $item);
         $this->assertArrayNotHasKey('audit_logs', $item);
@@ -145,6 +155,9 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
 
         $item = $response->json('data.0');
         $this->assertEquals('accept_decline', $item['primary_action']);
+        $this->assertSame($this->reviewerA->name, $item['assignee']['name']);
+        $this->assertNotEmpty($item['article']['tracking_code']);
+        $this->assertNotNull($item['due_date']);
         $this->assertArrayNotHasKey('full_text', $item);
     }
 
@@ -162,10 +175,10 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $articleA = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "SubEditor A Special Task",
-            'slug' => "sub-editor-a-special-task",
-            'abstract' => "Abstract A",
-            'full_text' => "Secret text A",
+            'title' => 'SubEditor A Special Task',
+            'slug' => 'sub-editor-a-special-task',
+            'abstract' => 'Abstract A',
+            'full_text' => 'Secret text A',
             'status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
         ]);
         SubEditorAssignment::create([
@@ -178,10 +191,10 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $articleB = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "SubEditor B Special Task",
-            'slug' => "sub-editor-b-special-task",
-            'abstract' => "Abstract B",
-            'full_text' => "Secret text B",
+            'title' => 'SubEditor B Special Task',
+            'slug' => 'sub-editor-b-special-task',
+            'abstract' => 'Abstract B',
+            'full_text' => 'Secret text B',
             'status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
         ]);
         SubEditorAssignment::create([
@@ -210,33 +223,57 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $articleA = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "Reviewer A Manuscript",
-            'slug' => "reviewer-a-manuscript",
-            'abstract' => "Abstract A",
-            'full_text' => "Content A",
+            'title' => 'Reviewer A Manuscript',
+            'slug' => 'reviewer-a-manuscript',
+            'abstract' => 'Abstract A',
+            'full_text' => 'Content A',
             'status' => ArticleStatus::REVIEWER_ASSIGNED,
         ]);
+        $versionA = ArticleVersion::create([
+            'article_id' => $articleA->id,
+            'version_number' => 1,
+            'created_by' => $this->admin->id,
+            'status_snapshot' => ArticleStatus::REVIEWER_ASSIGNED,
+            'submitted_at' => now(),
+            'screening_status' => 'passed',
+            'screened_at' => now(),
+        ]);
+        $articleA->update(['current_version_id' => $versionA->id]);
         ReviewerAssignment::create([
             'article_id' => $articleA->id,
+            'article_version_id' => $versionA->id,
             'reviewer_id' => $this->reviewerA->id,
             'assigned_by' => $this->editor->id,
-            'status' => 'pending',
+            'status' => 'accepted',
+            'accepted_at' => now(),
         ]);
 
         $articleB = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "Reviewer B Manuscript",
-            'slug' => "reviewer-b-manuscript",
-            'abstract' => "Abstract B",
-            'full_text' => "Content B",
+            'title' => 'Reviewer B Manuscript',
+            'slug' => 'reviewer-b-manuscript',
+            'abstract' => 'Abstract B',
+            'full_text' => 'Content B',
             'status' => ArticleStatus::REVIEWER_ASSIGNED,
         ]);
+        $versionB = ArticleVersion::create([
+            'article_id' => $articleB->id,
+            'version_number' => 1,
+            'created_by' => $this->admin->id,
+            'status_snapshot' => ArticleStatus::REVIEWER_ASSIGNED,
+            'submitted_at' => now(),
+            'screening_status' => 'passed',
+            'screened_at' => now(),
+        ]);
+        $articleB->update(['current_version_id' => $versionB->id]);
         ReviewerAssignment::create([
             'article_id' => $articleB->id,
+            'article_version_id' => $versionB->id,
             'reviewer_id' => $this->reviewerB->id,
             'assigned_by' => $this->editor->id,
-            'status' => 'pending',
+            'status' => 'accepted',
+            'accepted_at' => now(),
         ]);
 
         Sanctum::actingAs($this->reviewerA);
@@ -257,10 +294,10 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $article1 = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "Active Task Article",
-            'slug' => "active-task-article",
-            'abstract' => "Abstract 1",
-            'full_text' => "Full text 1",
+            'title' => 'Active Task Article',
+            'slug' => 'active-task-article',
+            'abstract' => 'Abstract 1',
+            'full_text' => 'Full text 1',
             'status' => ArticleStatus::ASSIGNED_TO_SUB_EDITOR,
         ]);
         SubEditorAssignment::create([
@@ -273,10 +310,10 @@ class SubEditorReviewerDeskOptimizationTest extends TestCase
         $article2 = Article::create([
             'magazine_id' => $this->magazine->id,
             'user_id' => $this->admin->id,
-            'title' => "Completed Task Article",
-            'slug' => "completed-task-article",
-            'abstract' => "Abstract 2",
-            'full_text' => "Full text 2",
+            'title' => 'Completed Task Article',
+            'slug' => 'completed-task-article',
+            'abstract' => 'Abstract 2',
+            'full_text' => 'Full text 2',
             'status' => ArticleStatus::REVIEW_IN_PROGRESS,
         ]);
         SubEditorAssignment::create([

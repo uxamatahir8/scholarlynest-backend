@@ -9,6 +9,6 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('workflow:send-deadline-reminders')->dailyAt('08:00')->withoutOverlapping()->onOneServer();
-Schedule::command('workflow:auto-approve-author-final-reviews')->hourly()->withoutOverlapping();
 Schedule::command('notifications:send-digests')->hourly()->withoutOverlapping()->onOneServer();
 Schedule::command('notifications:recover-outbox')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+Schedule::command('direct-publications:publish-scheduled')->everyMinute()->withoutOverlapping()->onOneServer();

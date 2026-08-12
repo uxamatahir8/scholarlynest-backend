@@ -2,9 +2,11 @@
 
 use App\Http\Controllers\Admin\AdvertisementController;
 use App\Http\Controllers\Admin\ArticleCategoryController;
+use App\Http\Controllers\Admin\ArticleLifecycleController;
 use App\Http\Controllers\Admin\ArticleTypeController;
 use App\Http\Controllers\Admin\ArticleWorkflowController;
 use App\Http\Controllers\Admin\DeskObserverController;
+use App\Http\Controllers\Admin\DirectPublicationController;
 use App\Http\Controllers\Admin\EditorSubEditorController;
 use App\Http\Controllers\Admin\FooterCategoryController;
 use App\Http\Controllers\Admin\FooterPageController;
@@ -19,6 +21,7 @@ use App\Http\Controllers\AdvertisementEventController;
 use App\Http\Controllers\AdvertisementResolutionController;
 use App\Http\Controllers\ArticleAssetController;
 use App\Http\Controllers\ArticleController;
+use App\Http\Controllers\ArticleThreadController;
 use App\Http\Controllers\ArticleFileController;
 use App\Http\Controllers\ArticleTransferController;
 use App\Http\Controllers\AuthController;
@@ -202,6 +205,32 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Article submissions
     Route::post('/articles', [ArticleController::class, 'store'])->middleware('permission:articles.create');
+    Route::get('/article-threads/unread-count', [ArticleThreadController::class, 'dashboardUnreadCount']);
+    Route::prefix('/articles/{article}/threads')->group(function () {
+        Route::get('/', [ArticleThreadController::class, 'index']);
+        Route::post('/', [ArticleThreadController::class, 'store'])->middleware('throttle:article-thread-mutations');
+        Route::get('/manifest', [ArticleThreadController::class, 'index']);
+        Route::get('/unread-count', [ArticleThreadController::class, 'unreadCount']);
+        Route::get('/search', [ArticleThreadController::class, 'search'])->middleware('throttle:article-thread-search');
+        Route::get('/{thread}', [ArticleThreadController::class, 'show']);
+        Route::patch('/{thread}', [ArticleThreadController::class, 'update'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/lock', [ArticleThreadController::class, 'lock'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/unlock', [ArticleThreadController::class, 'unlock'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/archive', [ArticleThreadController::class, 'archive'])->middleware('throttle:article-thread-mutations');
+        Route::post('/{thread}/reopen', [ArticleThreadController::class, 'reopen'])->middleware('throttle:article-thread-mutations');
+        Route::get('/{thread}/participants', [ArticleThreadController::class, 'participants']);
+        Route::get('/{thread}/eligible-users', [ArticleThreadController::class, 'eligibleUsers']);
+        Route::post('/{thread}/participants', [ArticleThreadController::class, 'addParticipant'])->middleware('throttle:article-thread-mutations');
+        Route::delete('/{thread}/participants/{participant}', [ArticleThreadController::class, 'removeParticipant'])->middleware('throttle:article-thread-mutations');
+        Route::get('/{thread}/messages', [ArticleThreadController::class, 'messages']);
+        Route::post('/{thread}/messages', [ArticleThreadController::class, 'storeMessage'])->middleware('throttle:article-thread-messages');
+        Route::patch('/{thread}/messages/{message}', [ArticleThreadController::class, 'updateMessage'])->middleware('throttle:article-thread-messages');
+        Route::delete('/{thread}/messages/{message}', [ArticleThreadController::class, 'deleteMessage'])->middleware('throttle:article-thread-messages');
+        Route::get('/{thread}/messages/{message}/attachments/{attachment}/download', [ArticleThreadController::class, 'download'])->middleware('throttle:media-download');
+        Route::post('/{thread}/read', [ArticleThreadController::class, 'markRead']);
+        Route::get('/{thread}/mentionable-users', [ArticleThreadController::class, 'mentionable']);
+        Route::get('/{thread}/audit', [ArticleThreadController::class, 'audit']);
+    });
     Route::get('/articles/{article}/transfer-target-magazines', [ArticleTransferController::class, 'targetMagazines'])->middleware('permission:articles.view-own');
     Route::post('/articles/{article}/transfer-requests', [ArticleTransferController::class, 'store'])->middleware('permission:articles.approve');
     Route::get('/articles/{article}/transfer-request', [ArticleTransferController::class, 'show'])->middleware('permission:articles.view-own');
@@ -251,6 +280,27 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
 
     // Admin Dashboard
     Route::prefix('admin')->group(function () {
+        Route::prefix('direct-publications')->middleware('throttle:direct-publication')->group(function () {
+            Route::get('/options', [DirectPublicationController::class, 'options']);
+            Route::get('/', [DirectPublicationController::class, 'index']);
+            Route::post('/', [DirectPublicationController::class, 'store']);
+            Route::get('/{article}', [DirectPublicationController::class, 'show']);
+            Route::put('/{article}', [DirectPublicationController::class, 'update']);
+            Route::delete('/{article}', [DirectPublicationController::class, 'destroy']);
+            Route::post('/{article}/files', [DirectPublicationController::class, 'attachFile']);
+            Route::delete('/{article}/files/{file}', [DirectPublicationController::class, 'deleteFile']);
+            Route::get('/{article}/readiness', [DirectPublicationController::class, 'readiness']);
+            Route::post('/{article}/select-primary-file', [DirectPublicationController::class, 'selectPrimary']);
+            Route::post('/{article}/public-assets', [DirectPublicationController::class, 'publicAssets']);
+            Route::post('/{article}/assign-issue', [DirectPublicationController::class, 'assignIssue']);
+            Route::post('/{article}/mark-ready', [DirectPublicationController::class, 'markReady']);
+            Route::post('/{article}/move-to-draft', [DirectPublicationController::class, 'moveToDraft']);
+            Route::post('/{article}/schedule', [DirectPublicationController::class, 'schedule']);
+            Route::post('/{article}/unschedule', [DirectPublicationController::class, 'unschedule']);
+            Route::post('/{article}/publish', [DirectPublicationController::class, 'publish']);
+            Route::post('/{article}/correct-metadata', [DirectPublicationController::class, 'correctMetadata']);
+            Route::post('/{article}/unpublish', [DirectPublicationController::class, 'unpublish']);
+        });
         Route::get('/notification-deliveries', [NotificationDeliveryController::class, 'index'])->middleware('permission:notifications.delivery.manage');
         Route::get('/notification-deliveries/{notificationDelivery}', [NotificationDeliveryController::class, 'show'])->middleware('permission:notifications.delivery.manage');
         Route::post('/notification-deliveries/{notificationDelivery}/retry', [NotificationDeliveryController::class, 'retry'])->middleware('permission:notifications.delivery.manage');
@@ -357,11 +407,36 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::patch('/articles/{id}/review', [ArticleController::class, 'review'])->middleware('permission:articles.approve');
         Route::patch('/articles/{id}/seo', [ArticleController::class, 'updateSeo']);
         Route::get('/articles/{id}/workflow', [ArticleWorkflowController::class, 'context'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/workspace-manifest', [ArticleWorkflowController::class, 'workspaceManifest'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/versions/{versionId}/reviewers', [ArticleWorkflowController::class, 'versionReviewers'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/versions', [ArticleWorkflowController::class, 'versions'])->middleware('permission:articles.view-own');
         Route::get('/articles/{id}/accepted-files', [ArticleWorkflowController::class, 'acceptedFiles'])->middleware('permission:articles.view-own');
+        Route::get('/articles/{id}/accepted-manuscript', [ArticleWorkflowController::class, 'acceptedManuscript'])->middleware('permission:articles.view-own');
+        Route::prefix('lifecycle')->middleware('throttle:30,1')->group(function () {
+            Route::post('/articles/{article}/screen', [ArticleLifecycleController::class, 'screen']);
+            Route::post('/articles/{article}/sub-editors', [ArticleLifecycleController::class, 'assignSubEditor']);
+            Route::post('/sub-editor-assignments/{assignment}/recommendation', [ArticleLifecycleController::class, 'recommend']);
+            Route::post('/articles/{article}/reviewer-invitations', [ArticleLifecycleController::class, 'inviteReviewer']);
+            Route::post('/reviewer-assignments/{assignment}/response', [ArticleLifecycleController::class, 'reviewResponse']);
+            Route::post('/reviewer-assignments/{assignment}/start', [ArticleLifecycleController::class, 'startReview']);
+            Route::put('/reviewer-assignments/{assignment}/draft', [ArticleLifecycleController::class, 'saveReviewDraft']);
+            Route::post('/reviewer-assignments/{assignment}/review', [ArticleLifecycleController::class, 'submitReview']);
+            Route::post('/reviewer-assignments/{assignment}/reopen', [ArticleLifecycleController::class, 'reopenReview']);
+            Route::post('/articles/{article}/editorial-decisions', [ArticleLifecycleController::class, 'editorialDecision']);
+            Route::post('/articles/{article}/copy-editor', [ArticleLifecycleController::class, 'assignCopyEditor']);
+            Route::post('/production-assignments/{assignment}/complete-copyediting', [ArticleLifecycleController::class, 'completeCopyediting']);
+            Route::post('/articles/{article}/proof-rounds', [ArticleLifecycleController::class, 'requestProof']);
+            Route::post('/proof-rounds/{proof}/author-response', [ArticleLifecycleController::class, 'proofResponse']);
+            Route::post('/proof-rounds/{proof}/correction', [ArticleLifecycleController::class, 'correctProof']);
+            Route::post('/articles/{article}/publication-records', [ArticleLifecycleController::class, 'preparePublication']);
+            Route::put('/publication-records/{publication}/files', [ArticleLifecycleController::class, 'selectPublicationFiles']);
+            Route::post('/publication-records/{publication}/publish', [ArticleLifecycleController::class, 'publish']);
+            Route::post('/publication-records/{publication}/unpublish', [ArticleLifecycleController::class, 'unpublish']);
+        });
         Route::get('/workflow/assignees', [ArticleWorkflowController::class, 'assignees'])->middleware('permission:articles.view-own');
         Route::get('/my-sub-editor-assignments', [ArticleWorkflowController::class, 'mySubEditorAssignments'])->middleware('permission:articles.view-own');
         Route::get('/my-reviewer-assignments', [ArticleWorkflowController::class, 'myReviewerAssignments'])->middleware('permission:articles.view-own');
+        Route::get('/my-reviewer-assignments/{assignmentId}', [ArticleWorkflowController::class, 'myReviewerAssignment'])->middleware('permission:articles.view-own');
         Route::get('/my-production-assignments', [ArticleWorkflowController::class, 'myProductionAssignments'])->middleware('permission:articles.view-own');
         Route::get('/publisher-dashboard', [ArticleWorkflowController::class, 'publisherDashboard'])->middleware('permission:articles.view-own');
 
@@ -388,7 +463,7 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         Route::post('/reviewer-assignments/{id}/accept', [ArticleWorkflowController::class, 'acceptReviewerAssignment']);
         Route::post('/reviewer-assignments/{id}/submit-review', [ArticleWorkflowController::class, 'submitReview']);
         Route::post('/reviewer-assignments/{id}/reopen', [ArticleWorkflowController::class, 'reopenReviewer'])->middleware('permission:articles.approve');
-        Route::post('/reviewer-assignments/{id}/remind', [ArticleWorkflowController::class, 'remindReviewer'])->middleware('permission:articles.approve');
+        Route::post('/reviewer-assignments/{id}/remind', [ArticleWorkflowController::class, 'remindReviewer'])->middleware('permission:articles.view-own');
         Route::get('/review-questionnaire', [ArticleWorkflowController::class, 'questionnaire'])->middleware('super-admin');
         Route::post('/review-questionnaire', [ArticleWorkflowController::class, 'storeQuestionnaire'])->middleware('super-admin');
         Route::post('/articles/{id}/final-decision', [ArticleWorkflowController::class, 'finalDecision'])->middleware('permission:articles.approve');

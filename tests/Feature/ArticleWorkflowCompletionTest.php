@@ -8,6 +8,7 @@ use App\Models\ArticleAsset;
 use App\Models\ArticleFile;
 use App\Models\ArticlePublicationSection;
 use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleVersion;
 use App\Models\Magazine;
 use App\Models\MediaUploadSession;
 use App\Models\NotificationLog;
@@ -370,7 +371,9 @@ class ArticleWorkflowCompletionTest extends TestCase
         Sanctum::actingAs($this->author);
         $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
             ->assertOk()
-            ->assertJsonCount(0, 'article.reviewer_assignments')
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
             ->assertJsonMissing(['Confidential Reviewer'])
             ->assertJsonMissing(['confidential.reviewer@example.test'])
             ->assertJsonMissing(['Confidential editorial note.']);
@@ -553,8 +556,23 @@ class ArticleWorkflowCompletionTest extends TestCase
 
     private function pendingInvitation(string $email, string $token): ReviewerAssignment
     {
+        $version = $this->article->currentVersion()->first() ?: ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'revision_number' => 0,
+            'status_snapshot' => ArticleStatus::UNDER_REVIEW,
+            'screening_status' => 'passed',
+            'submitted_at' => now(),
+        ]);
+        $this->article->update(['current_version_id' => $version->id]);
+        $round = app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($this->article->fresh(), $version, $this->editor);
+
         return ReviewerAssignment::create([
             'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'review_round_id' => $round->id,
+            'round_number' => $round->round_number,
             'reviewer_id' => null,
             'invitee_name' => 'External Reviewer',
             'invitee_email' => $email,

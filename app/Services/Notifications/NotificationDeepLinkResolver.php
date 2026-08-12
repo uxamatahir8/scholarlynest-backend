@@ -15,6 +15,7 @@ class NotificationDeepLinkResolver
         $articleSlug = (string) ($params['article_slug'] ?? '');
         $publicationSlug = (string) ($params['publication_slug'] ?? '');
         $publicationType = (string) ($params['publication_type'] ?? '');
+        $threadId = (int) ($params['thread_id'] ?? 0);
 
         $href = match ($notification->deep_link_key) {
             'article.workflow' => $articleId ? "/admin/articles/{$articleId}/workflow" : null,
@@ -29,6 +30,10 @@ class NotificationDeepLinkResolver
             'admin.support.ticket' => $ticketId ? "/admin/support-tickets/{$ticketId}" : '/admin/support-tickets',
             'account.settings' => '/admin/settings',
             'notifications.center' => '/admin/notifications',
+            'direct.publication' => $articleId ? "/admin/direct-publications/{$articleId}" : '/admin/direct-publications',
+            'article.thread' => $articleId ? ($notification->article?->isDirectPublication()
+                ? "/admin/direct-publications/{$articleId}?step=6&thread={$threadId}"
+                : "/admin/articles/{$articleId}/workflow?thread={$threadId}") : null,
             'article.public' => $articleSlug && $publicationSlug && in_array($publicationType, ['magazine', 'journal'], true)
                 ? '/'.($publicationType === 'journal' ? 'journals' : 'magazines')."/{$publicationSlug}/articles/{$articleSlug}"
                 : null,

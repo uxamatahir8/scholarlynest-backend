@@ -14,8 +14,8 @@ use App\Models\Role;
 use App\Models\User;
 use App\Services\AcceptedFileSetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Laravel\Sanctum\Sanctum;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class ProductionDashboardTest extends TestCase
@@ -23,12 +23,19 @@ class ProductionDashboardTest extends TestCase
     use RefreshDatabase;
 
     private User $admin;
+
     private User $publisher;
+
     private User $copyEditor;
+
     private User $otherCopyEditor;
+
     private User $proofreader;
+
     private User $author;
+
     private Magazine $magazine;
+
     private Magazine $otherMagazine;
 
     protected function setUp(): void
@@ -105,7 +112,7 @@ class ProductionDashboardTest extends TestCase
 
         Sanctum::actingAs($this->copyEditor);
 
-        $this->getJson('/api/admin/my-production-assignments?role=copy_editor')
+        $response = $this->getJson('/api/admin/my-production-assignments?role=copy_editor')
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.article.title', 'Copy Edited Article')
@@ -114,6 +121,10 @@ class ProductionDashboardTest extends TestCase
             ->assertJsonMissingPath('data.0.user')
             ->assertJsonMissingPath('data.0.files')
             ->assertJsonPath('data.0.is_overdue', true);
+
+        $this->assertSame($this->copyEditor->name, $response->json('data.0.assignee.name'));
+        $this->assertNotEmpty($response->json('data.0.article.tracking_code'));
+        $this->assertNotNull($response->json('data.0.due_date'));
     }
 
     public function test_copy_editor_sees_only_files_from_latest_accepted_submission(): void
@@ -328,8 +339,12 @@ class ProductionDashboardTest extends TestCase
 
     public function test_copy_editor_can_complete_only_own_copyediting_assignment(): void
     {
+        $ownArticle = $this->article('Own Copy Complete', ArticleStatus::COPY_EDITING, $this->magazine);
+        $acceptedSet = $this->prepareAcceptedFileSet($ownArticle);
         $own = ProductionAssignment::create([
-            'article_id' => $this->article('Own Copy Complete', ArticleStatus::COPY_EDITING, $this->magazine)->id,
+            'article_id' => $ownArticle->id,
+            'article_version_id' => $acceptedSet->article_version_id,
+            'accepted_file_set_id' => $acceptedSet->id,
             'user_id' => $this->copyEditor->id,
             'role' => 'copy_editor',
             'assigned_by' => $this->publisher->id,
@@ -357,7 +372,10 @@ class ProductionDashboardTest extends TestCase
         $this->postJson("/api/admin/production-assignments/{$other->id}/complete")->assertForbidden();
         $this->postJson("/api/admin/production-assignments/{$proofreaderRoleMismatch->id}/complete")->assertForbidden();
 
-        $this->postJson("/api/admin/production-assignments/{$own->id}/complete")
+        $upload = $this->cleanManuscriptUpload($this->copyEditor, $ownArticle, 'article_production_file');
+        $this->postJson("/api/admin/production-assignments/{$own->id}/complete", [
+            'production_file_upload_id' => $upload->id,
+        ])
             ->assertOk()
             ->assertJsonPath('assignment.status', 'completed')
             ->assertJsonPath('article.status', ArticleStatus::PROOFREADING);
@@ -368,8 +386,15 @@ class ProductionDashboardTest extends TestCase
         ]);
         $reviewArticle = $own->article->fresh();
         $this->assertNotNull($reviewArticle->author_final_review_requested_at);
-        $this->assertNotNull($reviewArticle->author_final_review_due_at);
-        $this->assertEquals(14, $reviewArticle->author_final_review_requested_at->diffInDays($reviewArticle->author_final_review_due_at));
+        $this->assertDatabaseHas('proof_rounds', [
+            'article_id' => $ownArticle->id,
+            'production_assignment_id' => $own->id,
+            'status' => 'awaiting_author',
+            'round_number' => 1,
+        ]);
+        $proof = $ownArticle->proofRounds()->firstOrFail();
+        $createdFile = ArticleFile::where('media_upload_session_id', $upload->id)->firstOrFail();
+        $this->assertSame($createdFile->id, $proof->source_file_id);
     }
 
     public function test_observer_mode_can_list_copy_editor_tasks_but_cannot_complete_them(): void
@@ -400,10 +425,37 @@ class ProductionDashboardTest extends TestCase
             'magazine_id' => $magazine->id,
             'user_id' => $this->author->id,
             'title' => $title,
-            'slug' => Str::slug($title) . '-' . uniqid(),
+            'slug' => Str::slug($title).'-'.uniqid(),
             'abstract' => 'Abstract',
             'full_text' => 'Full text',
             'status' => $status,
         ]);
+    }
+
+    private function prepareAcceptedFileSet(Article $article)
+    {
+        $version = ArticleVersion::create([
+            'article_id' => $article->id,
+            'version_number' => 1,
+            'created_by' => $this->author->id,
+            'status_snapshot' => ArticleStatus::SUBMITTED,
+            'submitted_at' => now(),
+        ]);
+        $article->update(['current_version_id' => $version->id]);
+        ArticleFile::create([
+            'article_id' => $article->id,
+            'article_version_id' => $version->id,
+            'uploaded_by' => $this->author->id,
+            'file_type' => ArticleFile::MANUSCRIPT,
+            'visibility' => 'author_visible',
+            'file_path' => 'clean/accepted-'.$article->id.'.pdf',
+            'storage_key' => 'clean/accepted-'.$article->id.'.pdf',
+            'original_name' => 'accepted.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 100,
+            'scan_status' => 'clean',
+        ]);
+
+        return app(AcceptedFileSetService::class)->createForCurrentSubmission($article, $this->publisher);
     }
 }

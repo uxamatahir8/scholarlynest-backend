@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class ArticleAcceptedFileSet extends Model
 {
     public const POLICY_CARRY_FORWARD = 'carry_forward_latest_per_purpose';
+
     public const POLICY_VERSION_LOCAL = 'accepted_version_only';
 
     protected $fillable = [
@@ -18,6 +19,7 @@ class ArticleAcceptedFileSet extends Model
         'accepted_at',
         'selection_policy',
         'superseded_at',
+        'active_marker',
     ];
 
     protected $casts = [

@@ -82,6 +82,9 @@ class ArticleFileController extends Controller
         }
 
         $wantsJson = $request->has('json') || $request->query('json') === '1';
+        $downloadName = $request->user('sanctum')?->hasRole('reviewer')
+            ? $this->reviewerSafeFilename($file)
+            : $file->original_name;
 
         $disposition = $request->has('preview') ? 'inline' : 'attachment';
 
@@ -96,14 +99,14 @@ class ArticleFileController extends Controller
 
             $ttl = (int) config('media_uploads.download_url_ttl_minutes', 5);
             $temporaryUrl = Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes($ttl), [
-                'ResponseContentDisposition' => $disposition.'; filename="'.addslashes($file->safe_original_name ?: $file->original_name).'"',
+                'ResponseContentDisposition' => $disposition.'; filename="'.addslashes($downloadName).'"',
                 'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
             ]);
 
             if ($wantsJson) {
                 return response()->json([
                     'download_url' => $temporaryUrl,
-                    'filename' => $file->original_name,
+                    'filename' => $downloadName,
                     'expires_at' => now()->addMinutes($ttl)->toIso8601String(),
                 ]);
             }
@@ -124,14 +127,14 @@ class ArticleFileController extends Controller
         if ($wantsJson) {
             return response()->json([
                 'download_url' => $publicUrl,
-                'filename' => $file->original_name,
+                'filename' => $downloadName,
                 'expires_at' => null,
             ]);
         }
 
         return response()->file(Storage::disk('public')->path($relativePath), [
             'Content-Type' => $file->mime_type,
-            'Content-Disposition' => $disposition.'; filename="'.$file->original_name.'"',
+            'Content-Disposition' => $disposition.'; filename="'.$downloadName.'"',
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }
@@ -253,7 +256,7 @@ class ArticleFileController extends Controller
         return $file;
     }
 
-    public function serializeFile(ArticleFile $file): array
+    public function serializeFile(ArticleFile $file, $viewer = null): array
     {
         $file->loadMissing('uploader:id,name');
 
@@ -267,6 +270,8 @@ class ArticleFileController extends Controller
             $thumbnailUrl = $displayUrl;
         }
 
+        $displayName = $viewer?->hasRole('reviewer') ? $this->reviewerSafeFilename($file) : $file->original_name;
+
         return [
             'id' => $file->id,
             'article_id' => $file->article_id,
@@ -274,15 +279,16 @@ class ArticleFileController extends Controller
             'source_asset_id' => $file->source_asset_id,
             'file_type' => $file->file_type,
             'file_title' => $file->file_title,
-            'title' => $file->original_name,
-            'original_filename' => $file->original_name,
+            'title' => $displayName,
+            'original_filename' => $displayName,
             'visibility' => $file->visibility,
-            'original_name' => $file->original_name,
+            'original_name' => $displayName,
             'mime_type' => $file->mime_type,
             'size' => $file->size,
             'size_bytes' => $file->size,
             'scan_status' => $file->scan_status ?? 'clean',
             'available' => ($file->scan_status ?? 'clean') === 'clean',
+            'is_active' => data_get($file->metadata, 'direct_publication.active', true) !== false,
             'uploader' => $file->uploader ? [
                 'id' => $file->uploader->id,
                 'name' => $file->uploader->name,
@@ -312,7 +318,7 @@ class ArticleFileController extends Controller
         return collect($files)
             ->filter(fn (ArticleFile $file) => $this->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $this->canAccess($user, $file))
-            ->map(fn (ArticleFile $file) => $this->serializeFile($file))
+            ->map(fn (ArticleFile $file) => $this->serializeFile($file, $user))
             ->values()
             ->all();
     }
@@ -329,6 +335,24 @@ class ArticleFileController extends Controller
 
         if (! $article) {
             return false;
+        }
+
+        if ($article->isDirectPublication()) {
+            $isSelectedPublic = DB::table('publication_file_selections as selections')
+                ->join('publication_records as publications', 'publications.id', '=', 'selections.publication_record_id')
+                ->where('publications.article_id', $article->id)
+                ->where('publications.publication_mode', 'direct')
+                ->where('publications.status', 'published')
+                ->where('selections.article_file_id', $file->id)
+                ->where('selections.is_public', true)->exists();
+            if (! $user) {
+                return $article->status === 'published' && $isSelectedPublic;
+            }
+            if ($user->hasRole('super_admin')) {
+                return true;
+            }
+
+            return $user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
         }
 
         if ($this->isGlobal($user)) {
@@ -369,16 +393,14 @@ class ArticleFileController extends Controller
                 return true;
             }
 
-            return in_array($file->file_type, [
-                ArticleFile::COPY_EDITED_FILE,
-                ArticleFile::PROOF_FILE,
-                ArticleFile::PUBLICATION_PDF,
-                ArticleFile::SUPPLEMENTARY,
-                ArticleFile::MANUSCRIPT,
-            ], true);
+            return DB::table('proof_rounds')->where('article_id', $article->id)
+                ->whereIn('status', ['approved'])
+                ->where(fn ($query) => $query->where('source_file_id', $file->id)->orWhere('author_file_id', $file->id)->orWhere('corrected_file_id', $file->id))
+                ->exists()
+                || DB::table('publication_file_selections')->where('article_file_id', $file->id)->exists();
         }
 
-        if ($this->hasReviewerAssignment($user, $article)) {
+        if ($this->hasReviewerAssignment($user, $article, null, $file->article_version_id)) {
             return in_array($file->file_type, [
                 ArticleFile::MANUSCRIPT,
                 ArticleFile::SUPPLEMENTARY,
@@ -389,6 +411,16 @@ class ArticleFileController extends Controller
         if ($this->hasProductionAssignment($user, $article, null, 'copy_editor')) {
             if ($file->file_type === ArticleFile::COPY_EDITED_FILE && (int) $file->uploaded_by === (int) $user->id) {
                 return true;
+            }
+
+            if ($file->file_type === ArticleFile::ANNOTATED_MANUSCRIPT) {
+                return DB::table('proof_rounds')
+                    ->join('production_assignments', 'production_assignments.id', '=', 'proof_rounds.production_assignment_id')
+                    ->where('proof_rounds.article_id', $article->id)
+                    ->where('proof_rounds.author_file_id', $file->id)
+                    ->where('production_assignments.user_id', $user->id)
+                    ->whereNull('production_assignments.revoked_at')
+                    ->exists();
             }
 
             return $this->isActiveAcceptedFile($file);
@@ -407,6 +439,19 @@ class ArticleFileController extends Controller
             ->exists();
     }
 
+    private function reviewerSafeFilename(ArticleFile $file): string
+    {
+        $extension = strtolower(pathinfo((string) $file->original_name, PATHINFO_EXTENSION));
+        $base = match ($file->file_type) {
+            ArticleFile::MANUSCRIPT => 'manuscript',
+            ArticleFile::SUPPLEMENTARY => 'supplementary-file',
+            ArticleFile::REVIEWED_MANUSCRIPT => 'review-attachment',
+            default => 'review-file',
+        };
+
+        return $extension ? "{$base}.{$extension}" : $base;
+    }
+
     public function canUploadForDirectSession($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
         return $this->canUpload($user, $article, $fileType, $assignmentType, $assignmentId);
@@ -414,6 +459,20 @@ class ArticleFileController extends Controller
 
     private function canUpload($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
     {
+        if (in_array($fileType, [
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE,
+        ], true)) {
+            $allowedStatus = in_array($article?->status, ['direct_publication_draft', 'direct_publication_ready'], true)
+                || ($article?->status === 'published' && $fileType === ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT);
+            if (! $user || ! $article?->isDirectPublication() || ! $allowedStatus) {
+                return false;
+            }
+
+            return $user->hasRole('super_admin') || ($user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']));
+        }
+
         if ($this->isGlobal($user)) {
             return true;
         }
@@ -468,7 +527,15 @@ class ArticleFileController extends Controller
         return match ($fileType) {
             ArticleFile::MANUSCRIPT => $user && $user->can('update', $article),
             ArticleFile::PLAGIARISM_REPORT => $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']),
-            ArticleFile::ANNOTATED_MANUSCRIPT => $this->hasSubEditorAssignment($user, $article, $assignmentId),
+            ArticleFile::ANNOTATED_MANUSCRIPT => $user && (
+                $this->hasSubEditorAssignment($user, $article, $assignmentId)
+                || (($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                    && ArticleStatus::normalize($article->status) === ArticleStatus::PROOFREADING
+                    && DB::table('proof_rounds')->where('article_id', $article->id)
+                        ->where('active_marker', 1)
+                        ->whereIn('status', ['awaiting_author', 'resent'])
+                        ->exists())
+            ),
             ArticleFile::REVIEWED_MANUSCRIPT => $this->hasReviewerAssignment($user, $article, $assignmentId),
             ArticleFile::REVISION_RESPONSE => $user
                 && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
@@ -483,6 +550,9 @@ class ArticleFileController extends Controller
     private function defaultVisibility(string $fileType): string
     {
         return match ($fileType) {
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE => 'internal',
             ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::ADDITIONAL_MANUSCRIPT_FILE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
             ArticleFile::REVIEWED_MANUSCRIPT => 'reviewer_editor',
             default => 'workflow',
@@ -547,7 +617,7 @@ class ArticleFileController extends Controller
             ->exists();
     }
 
-    private function hasReviewerAssignment($user, Article $article, ?int $assignmentId = null): bool
+    private function hasReviewerAssignment($user, Article $article, ?int $assignmentId = null, ?int $versionId = null): bool
     {
         if (! $user) {
             return false;
@@ -556,9 +626,9 @@ class ArticleFileController extends Controller
         return DB::table('reviewer_assignments')
             ->where('article_id', $article->id)
             ->where('reviewer_id', $user->id)
-            // A reviewer may access permitted manuscript files only during an accepted
-            // or completed review.
-            ->whereIn('status', ['accepted', 'completed'])
+            ->whereNull('revoked_at')
+            ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened'])
+            ->when($versionId, fn ($query) => $query->where('article_version_id', $versionId))
             ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
             ->exists();
     }
@@ -572,6 +642,7 @@ class ArticleFileController extends Controller
         return DB::table('production_assignments')
             ->where('article_id', $article->id)
             ->where('user_id', $user->id)
+            ->whereNull('revoked_at')
             ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
             ->when($role, fn ($query) => $query->where('role', $role))
             ->exists();

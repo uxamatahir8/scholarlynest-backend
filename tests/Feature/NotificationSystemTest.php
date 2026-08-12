@@ -9,6 +9,7 @@ use App\Models\Article;
 use App\Models\Magazine;
 use App\Models\NotificationLog;
 use App\Models\Permission;
+use App\Models\ProductionAssignment;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserNotification;
@@ -86,7 +87,8 @@ class NotificationSystemTest extends TestCase
         $projector->project($first->id);
         $projector->project($second->id);
 
-        $this->assertSame(2, UserNotification::where('recipient_user_id', $this->editor->id)->count());
+        $this->assertSame(0, UserNotification::where('recipient_user_id', $this->editor->id)->count());
+        $this->assertSame(2, UserNotification::where('recipient_user_id', $this->author->id)->count());
     }
 
     public function test_author_variant_excludes_reviewer_identity_tokens_and_storage_data(): void
@@ -197,7 +199,14 @@ class NotificationSystemTest extends TestCase
 
     public function test_digest_preferences_queue_one_idempotent_digest_and_mark_items(): void
     {
-        $event = app(NotificationEventRecorder::class)->record('article_file.available', $this->article, $this->editor);
+        ProductionAssignment::create([
+            'article_id' => $this->article->id,
+            'user_id' => $this->editor->id,
+            'role' => 'copy_editor',
+            'assigned_by' => $this->author->id,
+            'status' => 'in_progress',
+        ]);
+        $event = app(NotificationEventRecorder::class)->record('article_file.available', $this->article, $this->author);
         app(NotificationEventProjector::class)->project($event->id);
 
         $notification = UserNotification::where('recipient_user_id', $this->editor->id)->firstOrFail();
@@ -232,6 +241,62 @@ class NotificationSystemTest extends TestCase
         $this->assertDatabaseMissing('notification_logs', [
             'recipient_email' => $this->author->email,
             'purpose' => 'article.under_review',
+        ]);
+    }
+
+    public function test_impersonation_events_never_queue_email_but_remain_visible_in_app(): void
+    {
+        foreach (['account.impersonation_started', 'account.impersonation_stopped'] as $index => $eventType) {
+            $event = app(NotificationEventRecorder::class)->record(
+                $eventType,
+                null,
+                $this->editor,
+                ['recipient_user_id' => $this->author->id, 'recipient_privacy_variant' => 'account'],
+                'user',
+                $this->author->id,
+                deduplicationKey: "impersonation-email-disabled-{$index}"
+            );
+
+            app(NotificationEventProjector::class)->project($event->id);
+
+            $this->assertDatabaseHas('user_notifications', [
+                'notification_event_id' => $event->id,
+                'recipient_user_id' => $this->author->id,
+                'in_app_visible' => true,
+                'email_mode' => 'off',
+            ]);
+            $this->assertDatabaseMissing('notification_logs', [
+                'notification_event_id' => $event->id,
+                'purpose' => $eventType,
+            ]);
+        }
+    }
+
+    public function test_article_acceptance_projector_always_queues_the_author_email(): void
+    {
+        $event = app(NotificationEventRecorder::class)->record(
+            'article.accepted',
+            $this->article,
+            $this->editor,
+            ['article_version_id' => 1],
+            'article',
+            $this->article->id,
+            deduplicationKey: 'acceptance-email-projection'
+        );
+
+        app(NotificationEventProjector::class)->project($event->id);
+
+        $this->assertDatabaseHas('user_notifications', [
+            'notification_event_id' => $event->id,
+            'recipient_user_id' => $this->author->id,
+            'email_mode' => 'immediate',
+        ]);
+        $this->assertDatabaseHas('notification_logs', [
+            'notification_event_id' => $event->id,
+            'user_id' => $this->author->id,
+            'recipient_email' => $this->author->email,
+            'purpose' => 'article.accepted',
+            'status' => 'queued',
         ]);
     }
 

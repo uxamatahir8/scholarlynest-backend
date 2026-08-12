@@ -67,6 +67,7 @@ class ArticleVersionWorkflowTest extends TestCase
         $this->assertDatabaseHas('article_versions', [
             'article_id' => $articleId,
             'version_number' => 1,
+            'revision_number' => 0,
             'label' => 'Initial Submission',
             'status_snapshot' => ArticleStatus::SUBMITTED,
         ]);
@@ -109,6 +110,7 @@ class ArticleVersionWorkflowTest extends TestCase
         $this->assertDatabaseHas('article_versions', [
             'article_id' => $article->id,
             'version_number' => 2,
+            'revision_number' => 1,
             'label' => 'Revised Manuscript',
             'status_snapshot' => ArticleStatus::RESUBMITTED,
             'change_summary' => 'Updated methods and discussion.',

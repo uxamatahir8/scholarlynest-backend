@@ -23,22 +23,26 @@ class ArticleVersionService
         return DB::transaction(function () use ($article, $user, $label, $changeSummary, $authorResponse, $linkFileIds) {
             $article->loadMissing(['articleAuthors', 'tags', 'files.uploader:id,name,email']);
 
+            $parentVersionId = $article->current_version_id ?: $article->versions()->orderByDesc('version_number')->value('id');
             $version = ArticleVersion::create([
                 'article_id' => $article->id,
+                'parent_version_id' => $parentVersionId,
                 'created_by' => $user->id,
                 'version_number' => $this->nextVersionNumber($article),
+                'revision_number' => $label === 'Initial Submission' ? 0 : null,
                 'label' => $label,
                 'status_snapshot' => $article->status,
                 'metadata_snapshot' => $this->metadataSnapshot($article),
                 'file_snapshot' => [],
                 'change_summary' => $changeSummary,
                 'author_response' => $authorResponse,
+                'submitted_at' => now(),
+                'locked_at' => now(),
             ]);
             if ($label === 'Revised Manuscript') {
-                $revision = max(1, $version->version_number - 1);
+                $revision = ((int) $article->versions()->whereNotNull('revision_number')->max('revision_number')) + 1;
                 $version->update(['revision_number' => $revision, 'revision_tracking_code' => $article->tracking_code.'-R'.$revision]);
             }
-
             $this->linkFiles($article, $version, $linkFileIds);
 
             app(PrimaryManuscriptService::class)->authoritativeForSubmission($article, $version);
@@ -46,6 +50,10 @@ class ArticleVersionService
             $version->update([
                 'file_snapshot' => $this->fileSnapshot($article, $version),
             ]);
+            $article->forceFill(['current_version_id' => $version->id])->saveQuietly();
+            if (in_array($label, ['Initial Submission', 'Revised Manuscript'], true)) {
+                app(ArticleReviewRoundService::class)->ensureForSubmittedVersion($article->fresh(), $version->fresh(), $user);
+            }
 
             app(NotificationEventRecorder::class)->record(
                 'article.version_created',
@@ -144,7 +152,7 @@ class ArticleVersionService
             ->filter(fn (ArticleFile $file) => $fileController->isWorkflowReady($file))
             ->filter(fn (ArticleFile $file) => $fileController->canAccess($viewer, $file))
             ->reject(fn (ArticleFile $file) => $file->isPrimaryManuscript() && (int) $file->id !== (int) $version->manuscript_file_id)
-            ->map(fn (ArticleFile $file) => $fileController->serializeFile($file))
+            ->map(fn (ArticleFile $file) => $fileController->serializeFile($file, $viewer))
             ->values()
             ->all();
 
@@ -168,6 +176,7 @@ class ArticleVersionService
                 'id' => $version->creator->id,
                 'name' => $version->creator->name,
             ] : null,
+            'submitted_at' => $version->submitted_at,
             'created_at' => $version->created_at,
         ];
     }

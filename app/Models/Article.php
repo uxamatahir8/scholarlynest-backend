@@ -2,18 +2,19 @@
 
 namespace App\Models;
 
+use App\Services\Media\MediaStorageService;
+use App\Traits\Auditable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use App\Services\Media\MediaStorageService;
-use App\Traits\Auditable;
 
 class Article extends Model
 {
-    use HasFactory, Auditable;
+    use Auditable, HasFactory;
 
     protected $appends = [
         'featured_image_url',
@@ -53,6 +54,13 @@ class Article extends Model
         'abbreviations',
         'citation_text',
         'status',
+        'submission_mode',
+        'directly_created_by',
+        'direct_publication_ready_at',
+        'lifecycle_status',
+        'current_version_id',
+        'accepted_version_id',
+        'lifecycle_sequence',
         'terms_accepted_at',
         'terms_accepted_by',
         'terms_acceptance_ip',
@@ -68,10 +76,8 @@ class Article extends Model
         'author_final_approved_at',
         'author_final_approved_by',
         'author_final_review_requested_at',
-        'author_final_review_due_at',
         'author_final_rejected_at',
         'author_final_rejection_reason',
-        'author_final_auto_approved_at',
         'published_year',
         'published_month',
         'page_start',
@@ -89,18 +95,17 @@ class Article extends Model
         'terms_accepted_at' => 'datetime',
         'author_final_approved_at' => 'datetime',
         'author_final_review_requested_at' => 'datetime',
-        'author_final_review_due_at' => 'datetime',
         'author_final_rejected_at' => 'datetime',
-        'author_final_auto_approved_at' => 'datetime',
         'received_at' => 'date',
         'accepted_at' => 'date',
         'is_peer_reviewed' => 'boolean',
+        'direct_publication_ready_at' => 'datetime',
     ];
 
     protected static function booted(): void
     {
         static::created(function (Article $article) {
-            if (!$article->tracking_code) {
+            if (! $article->tracking_code) {
                 $year = optional($article->created_at)->format('Y') ?: now()->format('Y');
                 $article->forceFill([
                     'tracking_code' => sprintf('SN-%s-%06d', $year, $article->id),
@@ -123,6 +128,16 @@ class Article extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function directCreator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'directly_created_by');
+    }
+
+    public function isDirectPublication(): bool
+    {
+        return $this->submission_mode === 'direct_publication';
     }
 
     public function issue(): BelongsTo
@@ -165,6 +180,50 @@ class Article extends Model
     }
 
     /**
+     * Limit a query to manuscripts owned by the user or naming them as a
+     * corresponding author. Email matching keeps invitations linked when the
+     * author record was created before the user's account existed.
+     */
+    public function scopeForPrimaryOrCorrespondingAuthor(Builder $query, User $user): Builder
+    {
+        $email = strtolower(trim((string) $user->email));
+
+        return $query->where(function (Builder $authorQuery) use ($user, $email) {
+            $authorQuery->where('user_id', $user->id)
+                ->orWhereHas('articleAuthors', function (Builder $articleAuthorQuery) use ($user, $email) {
+                    $articleAuthorQuery->where('is_corresponding', true)
+                        ->where(function (Builder $identityQuery) use ($user, $email) {
+                            $identityQuery->where('user_id', $user->id);
+
+                            if ($email !== '') {
+                                $identityQuery->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                            }
+                        });
+                });
+        });
+    }
+
+    public function isPrimaryOrCorrespondingAuthor(User $user): bool
+    {
+        if ((int) $this->user_id === (int) $user->id) {
+            return true;
+        }
+
+        $email = strtolower(trim((string) $user->email));
+
+        return $this->articleAuthors()
+            ->where('is_corresponding', true)
+            ->where(function (Builder $query) use ($user, $email) {
+                $query->where('user_id', $user->id);
+
+                if ($email !== '') {
+                    $query->orWhereRaw('LOWER(co_author_email) = ?', [$email]);
+                }
+            })
+            ->exists();
+    }
+
+    /**
      * Get the supplementary assets associated with this article.
      */
     public function assets()
@@ -197,6 +256,11 @@ class Article extends Model
     public function reviewerAssignments(): HasMany
     {
         return $this->hasMany(ReviewerAssignment::class);
+    }
+
+    public function reviewRounds(): HasMany
+    {
+        return $this->hasMany(ArticleReviewRound::class);
     }
 
     public function reviewerPreferences(): HasMany
@@ -234,6 +298,31 @@ class Article extends Model
         return $this->hasOne(ArticleVersion::class)->ofMany('version_number', 'max');
     }
 
+    public function currentVersion(): BelongsTo
+    {
+        return $this->belongsTo(ArticleVersion::class, 'current_version_id');
+    }
+
+    public function acceptedVersion(): BelongsTo
+    {
+        return $this->belongsTo(ArticleVersion::class, 'accepted_version_id');
+    }
+
+    public function proofRounds(): HasMany
+    {
+        return $this->hasMany(ProofRound::class);
+    }
+
+    public function publicationRecords(): HasMany
+    {
+        return $this->hasMany(PublicationRecord::class);
+    }
+
+    public function latestPublicationRecord(): HasOne
+    {
+        return $this->hasOne(PublicationRecord::class)->latestOfMany();
+    }
+
     public function acceptedFileSets(): HasMany
     {
         return $this->hasMany(ArticleAcceptedFileSet::class);
@@ -249,6 +338,11 @@ class Article extends Model
     public function auditLogs(): HasMany
     {
         return $this->hasMany(ArticleAuditLog::class);
+    }
+
+    public function threads(): HasMany
+    {
+        return $this->hasMany(ArticleThread::class);
     }
 
     public function transferRequests(): HasMany

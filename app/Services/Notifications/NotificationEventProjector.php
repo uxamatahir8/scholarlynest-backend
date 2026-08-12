@@ -57,6 +57,9 @@ class NotificationEventProjector
                 $emailMode = $template['legacyEmail']
                     ? 'off'
                     : ($template['mandatoryEmail'] ? 'immediate' : $preference['email']['mode']);
+                if (! ($template['emailEnabled'] ?? true)) {
+                    $emailMode = 'off';
+                }
                 if (! config('notification_system.features.email_projection', true) && ! $template['mandatoryEmail']) {
                     $emailMode = 'off';
                 }
@@ -100,6 +103,7 @@ class NotificationEventProjector
                                 'publication_slug' => $event->article?->magazine?->slug,
                                 'publication_type' => $event->article?->magazine?->publication_type,
                                 'ticket_id' => $event->subject_type === 'support_ticket' ? $event->subject_id : null,
+                                'thread_id' => $event->payload['thread_id'] ?? null,
                             ],
                             'group_key' => $event->article_id ? "article:{$event->article_id}:{$event->event_type}" : "{$event->subject_type}:{$event->subject_id}",
                             'in_app_visible' => $inAppEnabled,
@@ -152,7 +156,7 @@ class NotificationEventProjector
         }
 
         if ($variant === 'author' && ! in_array($eventType, [
-            'revision.requested', 'author.final_review_requested', 'author.final_review_reminder',
+            'revision.requested', 'author.final_review_requested',
         ], true)) {
             return false;
         }

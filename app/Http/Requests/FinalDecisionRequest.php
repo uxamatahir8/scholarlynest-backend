@@ -18,6 +18,9 @@ class FinalDecisionRequest extends FormRequest
             'decision_source' => 'required|in:editor_personal_review,sub_editor_recommendation,reviewer_recommendation,mixed_editorial_decision',
             'comments_for_author' => 'nullable|string',
             'internal_notes' => 'nullable|string',
+            'article_version_id' => 'nullable|integer|exists:article_versions,id',
+            'pending_review_policy' => 'nullable|in:keep_open,close_pending',
+            'pending_review_override_reason' => 'nullable|string|max:10000',
         ];
     }
 }
