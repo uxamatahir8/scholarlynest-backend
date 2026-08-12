@@ -1,0 +1,668 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Constants\ArticleStatus;
+use App\Http\Controllers\ArticleFileController;
+use App\Jobs\ScanPendingMedia;
+use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\Magazine;
+use App\Models\MediaUploadSession;
+use App\Models\Permission;
+use App\Models\Role;
+use App\Models\User;
+use App\Services\Media\AntivirusScanResult;
+use App\Services\Media\AntivirusScannerContract;
+use App\Services\Media\S3MediaKeyResolver;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
+use Tests\TestCase;
+
+class MediaUploadPipelineTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $author;
+    private User $otherUser;
+    private Article $article;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'media_uploads.disk' => 's3',
+            'media_uploads.s3_prefix' => 'dev',
+            'queue.default' => 'sync',
+        ]);
+
+        Storage::fake('s3');
+        Storage::fake('public');
+
+        $role = Role::create(['name' => 'author', 'display_name' => 'Author', 'is_system' => true]);
+        foreach (['articles.view-own', 'articles.edit-own', 'articles.manage-assets'] as $permission) {
+            Permission::firstOrCreate(['name' => $permission], ['module' => 'articles', 'description' => $permission]);
+        }
+        $role->permissions()->sync(Permission::pluck('id'));
+
+        $this->author = User::factory()->create(['role_id' => $role->id]);
+        $this->otherUser = User::factory()->create(['role_id' => $role->id]);
+        $magazine = Magazine::create(['title' => 'Security Magazine', 'slug' => 'security-magazine']);
+        $this->article = Article::create([
+            'magazine_id' => $magazine->id,
+            'user_id' => $this->author->id,
+            'title' => 'Secure Uploads',
+            'slug' => 'secure-uploads',
+            'abstract' => 'Abstract',
+            'full_text' => 'Full text',
+            'status' => ArticleStatus::DRAFT,
+        ]);
+    }
+
+    public function test_unauthenticated_user_cannot_initiate_upload(): void
+    {
+        $this->postJson('/api/media/uploads/initiate', [])->assertUnauthorized();
+    }
+
+    public function test_clean_upload_preview_is_available_only_to_its_owner(): void
+    {
+        $key = 'dev/clean/articles/publication-sections/preview.webp';
+        $upload = $this->uploadSession([
+            'purpose' => 'publication_section_image',
+            'original_filename' => 'preview.webp',
+            'safe_display_filename' => 'preview.webp',
+            'declared_mime_type' => 'image/webp',
+            'detected_mime_type' => 'image/webp',
+            's3_clean_key' => $key,
+            'status' => MediaUploadSession::STATUS_CLEAN,
+        ]);
+        Storage::disk('s3')->put($key, 'preview-bytes');
+
+        Sanctum::actingAs($this->otherUser);
+        $this->get("/api/media/uploads/{$upload->id}/preview?stream=1")->assertForbidden();
+
+        Sanctum::actingAs($this->author);
+        $this->get("/api/media/uploads/{$upload->id}/preview?stream=1")->assertOk();
+    }
+
+    public function test_client_cannot_use_unknown_purpose_or_oversized_file(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'arbitrary_shell',
+            'attachable_id' => $this->article->id,
+            'original_filename' => 'shell.php',
+            'size_bytes' => 100,
+        ])->assertUnprocessable();
+
+        $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_supplementary',
+            'attachable_id' => $this->article->id,
+            'original_filename' => 'large.pdf',
+            'size_bytes' => 50 * 1024 * 1024,
+        ])->assertStatus(422);
+    }
+
+    public function test_article_media_purposes_enforce_allowed_extensions(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'manuscript.docx',
+            'declared_mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'file_fingerprint' => 'manuscript.docx:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'manuscript.png',
+            'declared_mime_type' => 'image/png',
+            'file_fingerprint' => 'manuscript.png:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_supplementary',
+            'original_filename' => 'dataset.zip',
+            'declared_mime_type' => 'application/zip',
+            'file_fingerprint' => 'dataset.zip:1024:1',
+        ]))->assertCreated();
+
+        // Rejection message validation for workflow files
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_manuscript',
+            'original_filename' => 'malicious.exe',
+            'declared_mime_type' => 'application/x-msdownload',
+            'file_fingerprint' => 'malicious.exe:1024:1',
+        ]))->assertStatus(422)
+            ->assertJsonPath('message', \App\Services\Media\UploadValidationService::getErrorMessage());
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'figure.webp',
+            'declared_mime_type' => 'image/webp',
+            'file_fingerprint' => 'figure.webp:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'figure.pdf',
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'figure.pdf:1024:1',
+        ]))->assertStatus(422)
+            ->assertJsonPath('message', 'Unsupported file type. Allowed: PNG, JPG, JPEG, WEBP.');
+    }
+
+    public function test_author_can_upload_queued_revision_assets_after_resubmission(): void
+    {
+        $this->article->update(['status' => ArticleStatus::RESUBMITTED]);
+
+        Sanctum::actingAs($this->author);
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'purpose' => 'article_image',
+            'original_filename' => 'revision-figure.webp',
+            'declared_mime_type' => 'image/webp',
+            'file_fingerprint' => 'revision-figure.webp:1024:1',
+        ]))->assertCreated();
+
+        Sanctum::actingAs($this->otherUser);
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertForbidden();
+    }
+
+    public function test_direct_upload_keys_are_server_generated_under_configured_prefix(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_supplementary',
+            'attachable_id' => $this->article->id,
+            'original_filename' => '../../chosen/prefix.pdf',
+            'size_bytes' => 1024,
+            'declared_mime_type' => 'application/pdf',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+
+        $this->assertStringStartsWith('dev/incoming/article_supplementary/', $session->s3_incoming_key);
+        $this->assertStringNotContainsString('chosen/prefix', $session->s3_incoming_key);
+        $this->assertArrayNotHasKey('s3_incoming_key', $response->json('upload'));
+        $this->assertSame('application/pdf', $response->json('put.headers.Content-Type'));
+        $this->assertArrayNotHasKey('x-amz-meta-upload-session-id', $response->json('put.headers'));
+        $this->assertArrayNotHasKey('x-amz-meta-purpose', $response->json('put.headers'));
+        $this->assertStringNotContainsString('x-amz-meta-upload-session-id', urldecode($response->json('put.url')));
+        $this->assertStringNotContainsString('x-amz-meta-purpose', urldecode($response->json('put.url')));
+    }
+
+    public function test_active_upload_session_limit_returns_conflict_not_rate_limit(): void
+    {
+        config(['media_uploads.max_active_sessions_per_user' => 2]);
+        Sanctum::actingAs($this->author);
+
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADING]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_INITIATED]);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'active_upload_session_limit_reached')
+            ->assertJsonPath('active_uploads', 2)
+            ->assertJsonPath('limit', 2);
+    }
+
+    public function test_expired_aborted_and_scan_stage_sessions_do_not_block_initiation(): void
+    {
+        config(['media_uploads.max_active_sessions_per_user' => 1]);
+        Sanctum::actingAs($this->author);
+
+        $expired = $this->uploadSession([
+            'status' => MediaUploadSession::STATUS_UPLOADING,
+            'expires_at' => now()->subMinute(),
+        ]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_ABORTED]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN]);
+        $this->uploadSession(['status' => MediaUploadSession::STATUS_SCANNING]);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $expired->id,
+            'status' => MediaUploadSession::STATUS_EXPIRED,
+            'failure_reason' => 'upload_session_expired',
+        ]);
+    }
+
+    public function test_one_initiate_request_creates_one_upload_session(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload())
+            ->assertCreated();
+
+        $this->assertDatabaseCount('media_upload_sessions', 1);
+    }
+
+    public function testUploadIdempotencyRepeatedInitiationRestoresOneSession(): void
+    {
+        Sanctum::actingAs($this->author);
+        $clientUploadId = (string) \Illuminate\Support\Str::uuid();
+        $payload = $this->initiatePayload(['client_upload_id' => $clientUploadId]);
+
+        $firstId = $this->postJson('/api/media/uploads/initiate', $payload)
+            ->assertCreated()
+            ->json('upload.id');
+        $this->postJson('/api/media/uploads/initiate', $payload)
+            ->assertOk()
+            ->assertJsonPath('reused', true)
+            ->assertJsonPath('upload.id', $firstId);
+
+        $this->assertSame(1, MediaUploadSession::where('client_upload_id', $clientUploadId)->count());
+    }
+
+    public function testUploadIdempotencyKeyCannotBeReusedForAnotherFile(): void
+    {
+        Sanctum::actingAs($this->author);
+        $clientUploadId = (string) \Illuminate\Support\Str::uuid();
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'client_upload_id' => $clientUploadId,
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'client_upload_id' => $clientUploadId,
+            'original_filename' => 'different.pdf',
+        ]))->assertConflict()
+            ->assertJsonPath('message', 'This upload identifier is already assigned to another file.');
+    }
+
+    public function test_can_initiate_and_complete_detached_manuscript_upload(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        $fakePdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF";
+        $pdfSize = strlen($fakePdf);
+
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'attachable_id' => null,
+            'original_filename' => 'manuscript.pdf',
+            'size_bytes' => $pdfSize,
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'manuscript.pdf:' . $pdfSize . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        $this->assertNull($session->attachable_type);
+        $this->assertNull($session->attachable_id);
+
+        Storage::disk('s3')->put($session->s3_incoming_key, $fakePdf);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete", [
+            'parts' => null,
+        ])->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status);
+        $this->assertDatabaseCount('article_files', 0);
+    }
+
+    public function test_actual_initiate_rate_limit_returns_structured_429(): void
+    {
+        RateLimiter::for('media-upload-initiate', function ($request) {
+            return \Illuminate\Cache\RateLimiting\Limit::perMinute(1)
+                ->by($request->user()->id . '|' . $request->ip());
+        });
+        Sanctum::actingAs($this->author);
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'file_fingerprint' => 'first.pdf:1024:1',
+        ]))->assertCreated();
+
+        $this->postJson('/api/media/uploads/initiate', $this->initiatePayload([
+            'original_filename' => 'second.pdf',
+            'file_fingerprint' => 'second.pdf:1024:2',
+        ]))
+            ->assertStatus(429)
+            ->assertHeader('Retry-After')
+            ->assertHeader('X-RateLimit-Limit', '1')
+            ->assertJsonPath('code', 'rate_limit_exceeded');
+    }
+
+    public function test_generic_raw_media_upload_endpoint_is_disabled(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->post('/api/media', [
+            'file' => UploadedFile::fake()->image('raw.jpg'),
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled. Use the media upload-session direct S3 flow.');
+    }
+
+    public function test_raw_article_asset_upload_endpoint_is_disabled(): void
+    {
+        Sanctum::actingAs($this->author);
+
+        $this->post("/api/articles/{$this->article->id}/assets", [
+            'file' => UploadedFile::fake()->create('raw.pdf', 16, 'application/pdf'),
+        ])->assertGone()
+            ->assertJsonPath('message', 'Raw browser uploads are disabled for article assets. Use the direct S3 upload-session flow.');
+    }
+
+    public function test_clean_direct_upload_session_can_be_attached_as_article_file(): void
+    {
+        $session = $this->uploadSession();
+        $session->forceFill([
+            'status' => MediaUploadSession::STATUS_CLEAN,
+            's3_clean_key' => 'dev/clean/articles/original/' . $session->id . '.pdf',
+            'detected_mime_type' => 'application/pdf',
+            'checksum_sha256' => str_repeat('a', 64),
+            'scan_engine' => 'fake-clamav',
+            'scanned_at' => now(),
+        ])->save();
+
+        $file = app(ArticleFileController::class)->createCleanDirectUploadFile($this->article, $session, [
+            'article_file_type' => ArticleFile::MANUSCRIPT,
+        ]);
+
+        $this->assertSame('clean', $file->scan_status);
+        $this->assertSame($session->s3_clean_key, $file->storage_key);
+        $this->assertSame($session->id, $file->metadata['upload_session_id']);
+    }
+
+    public function test_pending_scan_file_cannot_be_downloaded(): void
+    {
+        $file = app(ArticleFileController::class)->createPendingDirectUploadFile($this->article, $this->uploadSession(), [
+            'article_file_type' => ArticleFile::SUPPLEMENTARY,
+        ]);
+
+        Sanctum::actingAs($this->author);
+
+        $this->getJson("/api/articles/files/{$file->id}/download")->assertNotFound();
+        $this->assertSame([], app(ArticleFileController::class)->filterVisibleFiles($this->author, [$file]));
+    }
+
+    public function test_missing_storage_object_cannot_complete_or_create_article_file(): void
+    {
+        Sanctum::actingAs($this->author);
+        $session = $this->uploadSession([
+            'status' => MediaUploadSession::STATUS_UPLOADING,
+            'expected_size_bytes' => 128,
+        ]);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'The upload did not reach storage. Please retry.');
+
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $session->id,
+            'status' => MediaUploadSession::STATUS_SCAN_FAILED,
+            'failure_reason' => 'incoming_object_missing',
+        ]);
+        $this->assertDatabaseCount('article_files', 0);
+    }
+
+    public function test_failed_single_upload_abort_removes_incoming_object_without_file_reference(): void
+    {
+        Sanctum::actingAs($this->author);
+        $session = $this->uploadSession(['status' => MediaUploadSession::STATUS_UPLOADING]);
+        Storage::disk('s3')->put($session->s3_incoming_key, 'partial upload');
+
+        $this->deleteJson("/api/media/uploads/{$session->id}/abort")->assertOk();
+
+        Storage::disk('s3')->assertMissing($session->s3_incoming_key);
+        $this->assertDatabaseHas('media_upload_sessions', [
+            'id' => $session->id,
+            'status' => MediaUploadSession::STATUS_ABORTED,
+        ]);
+        $this->assertDatabaseCount('article_files', 0);
+    }
+
+    public function test_scan_job_promotes_clean_pdf_and_marks_record_available(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        $session = $this->uploadSession();
+        Storage::disk('s3')->put($session->s3_incoming_key, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF");
+        $file = app(ArticleFileController::class)->createPendingDirectUploadFile($this->article, $session, [
+            'article_file_type' => ArticleFile::SUPPLEMENTARY,
+            'clean_prefix' => 'clean/articles/supplementary/',
+        ]);
+        $session->metadata = ['article_file_id' => $file->id];
+        $session->save();
+
+        app(ScanPendingMedia::class, ['uploadSessionId' => $session->id])->handle(
+            app(\App\Services\Media\MediaContentInspector::class),
+            app(AntivirusScannerContract::class),
+            app(\App\Services\Media\DirectS3UploadService::class),
+        );
+
+        $this->assertDatabaseHas('media_upload_sessions', ['id' => $session->id, 'status' => 'clean']);
+        $this->assertDatabaseHas('article_files', ['id' => $file->id, 'scan_status' => 'clean']);
+        $this->assertStringStartsWith('dev/clean/articles/supplementary/', $session->fresh()->s3_clean_key);
+        Storage::disk('s3')->assertMissing($session->s3_incoming_key);
+    }
+
+    public function test_scanner_failure_fails_closed(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('infected', 'fake-clamav', 'infected');
+            }
+        });
+
+        $session = $this->uploadSession();
+        Storage::disk('s3')->put($session->s3_incoming_key, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF");
+        $file = app(ArticleFileController::class)->createPendingDirectUploadFile($this->article, $session, [
+            'article_file_type' => ArticleFile::SUPPLEMENTARY,
+            'clean_prefix' => 'clean/articles/supplementary/',
+        ]);
+        $session->metadata = ['article_file_id' => $file->id];
+        $session->save();
+
+        app(ScanPendingMedia::class, ['uploadSessionId' => $session->id])->handle(
+            app(\App\Services\Media\MediaContentInspector::class),
+            app(AntivirusScannerContract::class),
+            app(\App\Services\Media\DirectS3UploadService::class),
+        );
+
+        $this->assertDatabaseHas('media_upload_sessions', ['id' => $session->id, 'status' => 'rejected']);
+        $this->assertDatabaseHas('article_files', ['id' => $file->id, 'scan_status' => 'rejected']);
+        Storage::disk('s3')->assertExists(app(S3MediaKeyResolver::class)->quarantine($session));
+    }
+
+    public function test_comprehensive_manuscript_validation_formats(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        $jpgFile = \Illuminate\Http\UploadedFile::fake()->image('test.jpg');
+        $pngFile = \Illuminate\Http\UploadedFile::fake()->image('test.png');
+        $jpgContent = file_get_contents($jpgFile->getRealPath());
+        $pngContent = file_get_contents($pngFile->getRealPath());
+
+        $formats = [
+            'doc' => ["\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 'application/msword'],
+            'docx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+            'xlsx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+            'pptx' => ["PK\x03\x04", 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+            'rtf' => ["{\\rtf1", 'application/rtf'],
+            'odt' => ["PK\x03\x04", 'application/vnd.oasis.opendocument.text'],
+            'csv' => ["col1,col2\nval1,val2", 'text/csv'],
+            'jpg' => [$jpgContent, 'image/jpeg'],
+            'png' => [$pngContent, 'image/png'],
+            'webp' => ["RIFF\x00\x00\x00\x00WEBP", 'image/webp'],
+            'tiff' => ["II\x2A\x00", 'image/tiff'],
+        ];
+
+        foreach ($formats as $ext => [$header, $mime]) {
+            // Initiate
+            $response = $this->postJson('/api/media/uploads/initiate', [
+                'purpose' => 'article_manuscript',
+                'original_filename' => "test.{$ext}",
+                'size_bytes' => strlen($header),
+                'declared_mime_type' => $mime,
+                'file_fingerprint' => "test.{$ext}:" . strlen($header) . ":1",
+            ])->assertCreated();
+
+            $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+            
+            // Upload mock content
+            Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+            // Complete and verify scan succeeds
+            $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+            $session = $session->fresh();
+            $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status, "Failed format: {$ext}");
+        }
+    }
+
+    public function test_invalid_executable_upload_is_rejected(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // Spoofing executable as .docx
+        $header = "MZ\x90\x00\x03\x00\x00\x00"; // Exe signature
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "spoofed.docx",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'file_fingerprint' => 'spoofed.docx:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_REJECTED, $session->status);
+        $this->assertStringContainsString('This file type is not supported', $session->failure_reason);
+    }
+
+    public function test_invalid_mime_spoofing_is_rejected(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // Uploading actual PNG content but declaring extension .pdf (mime/extension mismatch)
+        $header = "\x89PNG\r\n\x1A\n";
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "mismatch.pdf",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'mismatch.pdf:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_REJECTED, $session->status);
+        $this->assertStringContainsString('This file type is not supported', $session->failure_reason);
+    }
+
+    public function test_cross_browser_mime_variations_are_supported(): void
+    {
+        $this->app->bind(AntivirusScannerContract::class, fn () => new class implements AntivirusScannerContract {
+            public function scan(string $path): AntivirusScanResult
+            {
+                return new AntivirusScanResult('clean', 'fake-clamav');
+            }
+        });
+
+        Sanctum::actingAs($this->author);
+
+        // docx uploaded as application/octet-stream (common browser behavior)
+        $header = "PK\x03\x04";
+        $response = $this->postJson('/api/media/uploads/initiate', [
+            'purpose' => 'article_manuscript',
+            'original_filename' => "browser.docx",
+            'size_bytes' => strlen($header),
+            'declared_mime_type' => 'application/octet-stream',
+            'file_fingerprint' => 'browser.docx:' . strlen($header) . ':1',
+        ])->assertCreated();
+
+        $session = MediaUploadSession::findOrFail($response->json('upload.id'));
+        Storage::disk('s3')->put($session->s3_incoming_key, $header);
+
+        $this->postJson("/api/media/uploads/{$session->id}/complete")->assertOk();
+
+        $session = $session->fresh();
+        $this->assertSame(MediaUploadSession::STATUS_CLEAN, $session->status);
+    }
+
+    private function initiatePayload(array $overrides = []): array
+    {
+        return array_merge([
+            'purpose' => 'article_supplementary',
+            'attachable_id' => $this->article->id,
+            'original_filename' => 'supplement.pdf',
+            'size_bytes' => 1024,
+            'declared_mime_type' => 'application/pdf',
+            'file_fingerprint' => 'supplement.pdf:1024:1',
+        ], $overrides);
+    }
+
+    private function uploadSession(array $overrides = []): MediaUploadSession
+    {
+        return MediaUploadSession::create(array_merge([
+            'user_id' => $this->author->id,
+            'purpose' => 'article_supplementary',
+            'attachable_type' => Article::class,
+            'attachable_id' => $this->article->id,
+            'original_filename' => 'supplement.pdf',
+            'safe_display_filename' => 'supplement.pdf',
+            'expected_size_bytes' => 37,
+            'declared_mime_type' => 'application/pdf',
+            'disk' => 's3',
+            's3_incoming_key' => app(S3MediaKeyResolver::class)->incoming('article_supplementary', 'pdf'),
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
+            'expires_at' => now()->addHour(),
+        ], $overrides));
+    }
+}

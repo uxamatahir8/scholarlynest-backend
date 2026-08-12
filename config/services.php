@@ -35,4 +35,10 @@ return [
         ],
     ],
 
+    'contact' => [
+        'email' => env('CONTACT_EMAIL', 'contact@scholarlynest.com'),
+        'phone' => env('CONTACT_PHONE', '+1 (617) 555-0198'),
+        'address' => env('CONTACT_ADDRESS', "ScholarlyNest Press\n750 University Research Boulevard, Suite 400\nCambridge, MA 02138, United States"),
+    ],
+
 ];

@@ -1,0 +1,586 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Constants\ArticleStatus;
+use App\Models\Article;
+use App\Models\ArticleAsset;
+use App\Models\ArticleFile;
+use App\Models\ArticlePublicationSection;
+use App\Models\ArticleReviewerPreference;
+use App\Models\ArticleVersion;
+use App\Models\Magazine;
+use App\Models\MediaUploadSession;
+use App\Models\NotificationLog;
+use App\Models\Permission;
+use App\Models\ReviewerAssignment;
+use App\Models\ReviewQuestion;
+use App\Models\ReviewQuestionnaireVersion;
+use App\Models\ReviewQuestionResponse;
+use App\Models\Role;
+use App\Models\SubEditorAssignment;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
+use Database\Seeders\ReviewerEvaluationQuestionnaireSeeder;
+use Laravel\Sanctum\Sanctum;
+use Tests\TestCase;
+
+class ArticleWorkflowCompletionTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $admin;
+    private User $editor;
+    private User $author;
+    private Magazine $magazine;
+    private Article $article;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $adminRole = Role::create(['name' => 'super_admin', 'display_name' => 'Super Admin', 'is_system' => true]);
+        $editorRole = Role::create(['name' => 'editor', 'display_name' => 'Editor', 'is_system' => true]);
+        $authorRole = Role::create(['name' => 'author', 'display_name' => 'Author', 'is_system' => true]);
+        $reviewerRole = Role::create(['name' => 'reviewer', 'display_name' => 'Reviewer', 'is_system' => true]);
+
+        foreach (['articles.view-own', 'articles.create', 'articles.edit-own', 'articles.approve', 'articles.manage-assets'] as $permission) {
+            Permission::firstOrCreate(['name' => $permission], ['module' => 'articles', 'description' => $permission]);
+        }
+
+        $adminRole->permissions()->sync(Permission::pluck('id'));
+        $editorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.approve'])->pluck('id'));
+        $authorRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own', 'articles.create', 'articles.edit-own'])->pluck('id'));
+        $reviewerRole->permissions()->sync(Permission::whereIn('name', ['articles.view-own'])->pluck('id'));
+
+        $this->admin = User::factory()->create(['role_id' => $adminRole->id, 'email_verified_at' => now()]);
+        $this->editor = User::factory()->create(['role_id' => $editorRole->id, 'email_verified_at' => now()]);
+        $this->author = User::factory()->create(['role_id' => $authorRole->id, 'email_verified_at' => now()]);
+
+        $this->magazine = Magazine::create([
+            'title' => 'Workflow Completion Magazine',
+            'slug' => 'workflow-completion-magazine',
+            'description' => 'Workflow completion tests.',
+        ]);
+        $this->editor->magazines()->attach($this->magazine->id, ['role' => 'editor']);
+
+        $this->article = Article::create([
+            'magazine_id' => $this->magazine->id,
+            'user_id' => $this->author->id,
+            'title' => 'Workflow Completion Article',
+            'slug' => 'workflow-completion-article',
+            'abstract' => 'Abstract',
+            'full_text' => 'Legacy full text fallback',
+            'status' => ArticleStatus::UNDER_REVIEW,
+        ]);
+    }
+
+    public function test_questionnaire_settings_are_super_admin_only(): void
+    {
+        Sanctum::actingAs($this->author);
+        $this->getJson('/api/admin/review-questionnaire')->assertForbidden();
+        $this->postJson('/api/admin/review-questionnaire', [
+            'name' => 'Blocked Form',
+            'questions' => [[
+                'prompt' => 'Blocked question',
+                'response_type' => 'textarea',
+                'is_required' => true,
+            ]],
+        ])->assertForbidden();
+
+        Sanctum::actingAs($this->admin);
+        $this->getJson('/api/admin/review-questionnaire')->assertOk();
+    }
+
+    public function test_opposed_reviewer_cannot_be_assigned_or_manually_invited(): void
+    {
+        ArticleReviewerPreference::create([
+            'article_id' => $this->article->id,
+            'created_by_author_id' => $this->author->id,
+            'type' => ArticleReviewerPreference::OPPOSED,
+            'name' => 'Blocked Reviewer',
+            'email' => 'blocked@example.test',
+        ]);
+
+        Sanctum::actingAs($this->editor);
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'name' => 'Blocked Reviewer',
+            'email' => 'blocked@example.test',
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'This reviewer is listed as an opposing reviewer and cannot be assigned.');
+
+        $this->postJson("/api/admin/articles/{$this->article->id}/assign-reviewer", [
+            'name' => $this->author->name,
+            'email' => $this->author->email,
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Article authors and co-authors cannot be assigned as reviewers.');
+    }
+
+    public function test_external_invitation_accepts_creates_account_and_decline_does_not(): void
+    {
+        $acceptToken = 'accept-token';
+        $acceptAssignment = $this->pendingInvitation('external.accept@example.test', $acceptToken);
+
+        $reviewer = User::where('email', 'external.accept@example.test')->first();
+        $this->assertNull($reviewer);
+
+        $this->postJson("/api/reviewer-invitations/{$acceptAssignment->id}/accept", [
+            'token' => 'wrong-token',
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'This review invitation is invalid or expired.');
+        $this->assertNull(User::where('email', 'external.accept@example.test')->first());
+
+        $this->postJson("/api/reviewer-invitations/{$acceptAssignment->id}/accept", [
+            'token' => $acceptToken,
+        ])->assertOk();
+
+        $createdReviewer = User::where('email', 'external.accept@example.test')->firstOrFail();
+        $this->assertTrue($createdReviewer->hasRole('reviewer'));
+        $this->assertNull($createdReviewer->password);
+        $this->assertTrue((bool) $createdReviewer->needs_password_reset);
+        $this->assertDatabaseHas('notification_logs', [
+            'recipient_email' => 'external.accept@example.test',
+            'subject' => 'Set Your Scholarly Nest Password',
+        ]);
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'id' => $acceptAssignment->id,
+            'reviewer_id' => $createdReviewer->id,
+            'status' => 'accepted',
+            'invite_token_hash' => null,
+        ]);
+
+        $declineToken = 'decline-token';
+        $declineAssignment = $this->pendingInvitation('external.decline@example.test', $declineToken);
+
+        $this->postJson("/api/reviewer-invitations/{$declineAssignment->id}/decline", [
+            'token' => $declineToken,
+            'decline_reason' => 'Conflict of interest.',
+        ])->assertOk();
+
+        $this->assertNull(User::where('email', 'external.decline@example.test')->first());
+        $this->assertDatabaseHas('reviewer_assignments', [
+            'id' => $declineAssignment->id,
+            'reviewer_id' => null,
+            'status' => 'declined',
+            'decline_reason' => 'Conflict of interest.',
+            'invite_token_hash' => null,
+        ]);
+    }
+
+    public function test_reviewer_desk_shows_assignment_only_after_acceptance_and_required_questionnaire_is_enforced(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $questionnaire = $this->postJson('/api/admin/review-questionnaire', [
+            'name' => 'Default Reviewer Form',
+            'questions' => [[
+                'prompt' => 'Is the method sound?',
+                'response_type' => 'radio',
+                'is_required' => true,
+                'options' => ['Yes', 'No'],
+            ]],
+        ])->assertCreated()->json('questionnaire');
+        $firstQuestionId = $questionnaire['active_version']['questions'][0]['id'];
+        $firstVersionId = $questionnaire['active_version']['id'];
+
+        $token = 'desk-token';
+        $assignment = $this->pendingInvitation('desk.reviewer@example.test', $token);
+
+        $reviewer = User::factory()->create([
+            'email' => 'desk.reviewer@example.test',
+            'role_id' => Role::where('name', 'reviewer')->value('id'),
+            'email_verified_at' => now(),
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->getJson('/api/admin/my-reviewer-assignments')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->postJson("/api/reviewer-invitations/{$assignment->id}/accept", [
+            'token' => $token,
+        ])->assertOk();
+
+        $this->getJson('/api/admin/my-reviewer-assignments')
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+
+        $assignment->refresh();
+        $this->assertSame($firstVersionId, $assignment->questionnaireInstance->review_questionnaire_version_id);
+
+        Sanctum::actingAs($this->admin);
+        $updatedQuestionnaire = $this->postJson('/api/admin/review-questionnaire', [
+            'name' => 'Default Reviewer Form',
+            'questions' => [[
+                'prompt' => 'Updated required question',
+                'response_type' => 'textarea',
+                'is_required' => true,
+            ]],
+        ])->assertCreated()->json('questionnaire');
+        $this->assertSame(2, ReviewQuestionnaireVersion::count());
+        $secondQuestionId = $updatedQuestionnaire['active_version']['questions'][0]['id'];
+
+        Sanctum::actingAs($reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'recommendation' => 'accept',
+            'comments_for_author' => 'Useful contribution.',
+            'questionnaire_responses' => [],
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'recommendation' => 'accept',
+            'comments_for_author' => 'Useful contribution.',
+            'questionnaire_responses' => [[
+                'question_id' => $secondQuestionId,
+                'answer' => 'yes',
+            ]],
+        ])->assertOk();
+
+        $response = ReviewQuestionResponse::firstOrFail();
+        $this->assertSame($assignment->questionnaire_instance_id, $response->review_questionnaire_instance_id);
+        $this->assertSame('yes', $response->answer);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['prompt' => 'Updated required question'])
+            ->assertJsonMissing(['prompt' => 'Is the method sound?']);
+
+        Sanctum::actingAs($reviewer);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonMissing(['private.reviewer@example.test']);
+    }
+
+    public function test_seeded_questionnaire_submission_saves_comments_maps_decision_and_respects_blind_review(): void
+    {
+        $this->seed(ReviewerEvaluationQuestionnaireSeeder::class);
+        $reviewer = User::factory()->create([
+            'name' => 'Confidential Reviewer',
+            'email' => 'confidential.reviewer@example.test',
+            'role_id' => Role::where('name', 'reviewer')->value('id'),
+            'email_verified_at' => now(),
+        ]);
+        $assignment = ReviewerAssignment::create([
+            'article_id' => $this->article->id,
+            'reviewer_id' => $reviewer->id,
+            'invitee_name' => $reviewer->name,
+            'invitee_email' => $reviewer->email,
+            'assigned_by' => $this->editor->id,
+            'status' => 'accepted',
+            'accepted_at' => now(),
+        ]);
+
+        Sanctum::actingAs($reviewer);
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'recommendation' => 'accept',
+            'questionnaire_responses' => [],
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Please answer all required reviewer questionnaire questions before submitting your review.');
+
+        $assignment->refresh()->load('questionnaireInstance.version.questions.options');
+        $questions = $assignment->questionnaireInstance->version->questions;
+        $responses = $questions->reject(fn ($question) => $question->prompt === 'Final Decision')->map(function ($question) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                default => 'yes',
+            };
+
+            return ['question_id' => $question->id, 'answer' => $answer];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'recommendation' => 'accept',
+            'questionnaire_responses' => $responses,
+        ])->assertUnprocessable();
+
+        $finalQuestion = $questions->firstWhere('prompt', 'Final Decision');
+        $evaluationQuestion = $questions->firstWhere('prompt', 'Are scientific methods adequately used?');
+        $responses = $questions->map(function ($question) use ($finalQuestion, $evaluationQuestion) {
+            $answer = match ($question->prompt) {
+                'Manuscript Category' => 'original_research_paper',
+                'Reviewer comments, if any' => 'The study is useful after revision.',
+                'Final Decision' => 'moderate_revision',
+                default => $question->id === $evaluationQuestion->id ? 'no' : 'yes',
+            };
+
+            return [
+                'question_id' => $question->id,
+                'answer' => $answer,
+                'comment' => $question->id === $evaluationQuestion->id
+                    ? 'Describe the sampling and statistical analysis in more detail.'
+                    : null,
+            ];
+        })->values()->all();
+
+        $this->postJson("/api/admin/reviewer-assignments/{$assignment->id}/submit-review", [
+            'recommendation' => 'accept',
+            'comments_for_author' => 'Please address the methodological detail.',
+            'confidential_comments' => 'Confidential editorial note.',
+            'questionnaire_responses' => $responses,
+        ])->assertOk();
+
+        $assignment->refresh();
+        $this->assertSame('completed', $assignment->status);
+        $this->assertSame('major_revision', $assignment->recommendation);
+        $this->assertDatabaseHas('review_question_responses', [
+            'review_questionnaire_instance_id' => $assignment->questionnaire_instance_id,
+            'review_question_id' => $evaluationQuestion->id,
+            'comment' => 'Describe the sampling and statistical analysis in more detail.',
+        ]);
+
+        $subEditorRole = Role::firstOrCreate(
+            ['name' => 'sub_editor'],
+            ['display_name' => 'Sub Editor', 'is_system' => true]
+        );
+        $subEditorRole->permissions()->sync(Permission::where('name', 'articles.view-own')->pluck('id'));
+        $subEditor = User::factory()->create([
+            'role_id' => $subEditorRole->id,
+            'email_verified_at' => now(),
+        ]);
+        SubEditorAssignment::create([
+            'article_id' => $this->article->id,
+            'sub_editor_id' => $subEditor->id,
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+        ]);
+
+        Sanctum::actingAs($subEditor);
+        $subEditorPayload = $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonFragment(['confidential_comments' => 'Confidential editorial note.'])
+            ->json('article.reviewer_assignments.0.questionnaire_instance.questions');
+        $this->assertCount($questions->count(), $subEditorPayload);
+
+        Sanctum::actingAs($this->editor);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonFragment(['name' => 'Confidential Reviewer'])
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.']);
+
+        Sanctum::actingAs($this->author);
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonPath('article.reviewer_assignments.0.comments_for_author', 'Please address the methodological detail.')
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
+
+        $this->article->update(['status' => ArticleStatus::MAJOR_REVISION_REQUIRED]);
+
+        $this->getJson("/api/admin/articles/{$this->article->id}/workflow")
+            ->assertOk()
+            ->assertJsonCount(1, 'article.reviewer_assignments')
+            ->assertJsonPath('article.reviewer_assignments.0.recommendation', 'major_revision')
+            ->assertJsonFragment(['prompt' => 'Manuscript Category'])
+            ->assertJsonFragment(['prompt' => 'Final Decision'])
+            ->assertJsonFragment(['comment' => 'Describe the sampling and statistical analysis in more detail.'])
+            ->assertJsonMissing(['Confidential Reviewer'])
+            ->assertJsonMissing(['confidential.reviewer@example.test'])
+            ->assertJsonMissing(['Confidential editorial note.']);
+    }
+
+    public function test_public_invitation_context_requires_a_valid_token_and_excludes_files(): void
+    {
+        $assignment = $this->pendingInvitation('context.reviewer@example.test', 'context-token');
+
+        $this->getJson("/api/reviewer-invitations/{$assignment->id}?token=wrong-token")
+            ->assertStatus(422);
+
+        $this->getJson("/api/reviewer-invitations/{$assignment->id}?token=context-token")
+            ->assertOk()
+            ->assertJsonPath('invitation.article.title', $this->article->title)
+            ->assertJsonPath('invitation.article.magazine', $this->magazine->title)
+            ->assertJsonPath('invitation.article.abstract', $this->article->abstract)
+            ->assertJsonMissingPath('invitation.article.files');
+    }
+
+    public function test_publication_metadata_sections_are_sanitized_and_public_payload_is_safe(): void
+    {
+        Storage::fake('s3');
+        $this->article->update(['status' => ArticleStatus::READY_FOR_PUBLICATION]);
+        $sectionImage = MediaUploadSession::create([
+            'user_id' => $this->admin->id,
+            'purpose' => 'publication_section_image',
+            'original_filename' => 'section.webp',
+            'safe_display_filename' => 'section.webp',
+            'expected_size_bytes' => strlen('image-bytes'),
+            'declared_mime_type' => 'image/webp',
+            'detected_mime_type' => 'image/webp',
+            'disk' => 's3',
+            's3_incoming_key' => 'incoming/section.webp',
+            's3_clean_key' => 'clean/articles/publication-sections/section.webp',
+            'upload_mode' => 'single',
+            'status' => MediaUploadSession::STATUS_CLEAN,
+        ]);
+        Storage::disk('s3')->put($sectionImage->s3_clean_key, 'image-bytes');
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'title' => 'Publisher Edited Article Title',
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'article_type' => 'Research Article',
+            'open_access_label' => 'Open Access',
+            'is_peer_reviewed' => true,
+            'academic_editor' => 'Dr Editor',
+            'received_at' => '2026-06-01',
+            'accepted_at' => '2026-06-20',
+            'license_statement' => 'CC BY 4.0',
+            'data_availability_statement' => 'Data available on request.',
+            'funding_statement' => 'No external funding.',
+            'competing_interests_statement' => 'None declared.',
+            'abbreviations' => 'AI: Artificial Intelligence',
+            'citation_text' => 'Custom citation.',
+            'doi' => '10.1234/example',
+            'page_start' => 10,
+            'page_end' => 20,
+            'publication_sections' => [[
+                'section_key' => 'introduction',
+                'title' => 'Introduction',
+                'sort_order' => 2,
+                'content_html' => '<h2 onclick="bad()">Intro</h2><p><a href="javascript:alert(1)">unsafe</a></p><script>alert(1)</script>',
+                'media_upload_session_id' => $sectionImage->id,
+            ], [
+                'section_key' => 'custom-results',
+                'title' => 'Custom Results',
+                'sort_order' => 1,
+                'content_html' => '<p>Results body</p>',
+            ]],
+        ])->assertOk();
+
+        ArticleAsset::create([
+            'article_id' => $this->article->id,
+            'asset_type' => 'image',
+            'disk' => 's3',
+            'file_path' => 'clean/articles/images/figure.webp',
+            'storage_key' => 'clean/articles/images/figure.webp',
+            'original_filename' => 'figure.webp',
+            'safe_original_filename' => 'figure.webp',
+            'title' => 'Figure 1',
+            'caption' => 'Main result.',
+            'file_size' => 1024,
+            'mime_type' => 'image/webp',
+            'scan_status' => 'clean',
+        ]);
+
+        $section = ArticlePublicationSection::where('article_id', $this->article->id)->where('section_key', 'introduction')->firstOrFail();
+        $this->assertStringNotContainsString('onclick', $section->content_html);
+        $this->assertStringNotContainsString('javascript:', $section->content_html);
+        $this->assertStringNotContainsString('<script>', $section->content_html);
+        $this->assertSame($sectionImage->id, ArticlePublicationSection::where('article_id', $this->article->id)->where('section_key', 'introduction')->value('media_upload_session_id'));
+
+        ArticleReviewerPreference::create([
+            'article_id' => $this->article->id,
+            'created_by_author_id' => $this->author->id,
+            'type' => ArticleReviewerPreference::SUGGESTED,
+            'name' => 'Private Reviewer',
+            'email' => 'private.reviewer@example.test',
+        ]);
+
+        $this->getJson('/api/articles/workflow-completion-article')
+            ->assertOk()
+            ->assertJsonPath('article.title', 'Publisher Edited Article Title')
+            ->assertJsonMissingPath('article.tracking_code')
+            ->assertJsonPath('article.open_access_label', 'Open Access')
+            ->assertJsonPath('article.is_peer_reviewed', true)
+            ->assertJsonPath('article.article_images.0.title', 'Figure 1')
+            ->assertJsonPath('article.publication_sections.0.section_key', 'abstract')
+            ->assertJsonPath('article.publication_sections.1.section_key', 'custom_results')
+            ->assertJsonPath('article.publication_sections.2.section_key', 'introduction')
+            ->assertJsonPath('article.publication_sections.2.has_image', true)
+            ->assertJsonMissing(['reviewer_preferences'])
+            ->assertJsonMissing(['private.reviewer@example.test'])
+            ->assertJsonMissing(['invite_token_hash']);
+    }
+
+    public function test_publication_uses_one_clean_production_pdf_and_persists_public_visibility(): void
+    {
+        Storage::fake('s3');
+        $this->article->update(['status' => ArticleStatus::READY_FOR_PUBLICATION]);
+        $copyedited = ArticleFile::create([
+            'article_id' => $this->article->id,
+            'uploaded_by' => $this->admin->id,
+            'file_type' => ArticleFile::COPY_EDITED_FILE,
+            'visibility' => 'workflow',
+            'disk' => 's3',
+            'file_path' => 'clean/articles/production/final.pdf',
+            'storage_key' => 'clean/articles/production/final.pdf',
+            'original_name' => 'copyedited-final.pdf',
+            'safe_original_name' => 'copyedited-final.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 1024,
+            'scan_status' => 'clean',
+        ]);
+        Storage::disk('s3')->put($copyedited->storage_key, '%PDF production file');
+
+        Sanctum::actingAs($this->editor);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+        ])->assertForbidden();
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/admin/articles/{$this->article->id}/publish", [
+            'published_year' => 2026,
+            'published_month' => 'July',
+            'final_source_file_id' => $copyedited->id,
+            'publication_file_settings' => [[
+                'file_id' => $copyedited->id,
+                'show_on_article' => true,
+                'show_in_downloads' => true,
+                'include_in_package' => true,
+            ]],
+        ])->assertOk();
+
+        $this->assertSame($copyedited->storage_key, $this->article->fresh()->pdf_path);
+        $this->assertTrue((bool) data_get($copyedited->fresh()->metadata, 'publication_visibility.include_in_package'));
+        $this->getJson('/api/articles/workflow-completion-article')
+            ->assertOk()
+            ->assertJsonPath('article.publication_files.0.id', $copyedited->id)
+            ->assertJsonPath('article.publication_files.0.show_in_downloads', true);
+    }
+
+    private function pendingInvitation(string $email, string $token): ReviewerAssignment
+    {
+        $version = $this->article->currentVersion()->first() ?: ArticleVersion::create([
+            'article_id' => $this->article->id,
+            'created_by' => $this->author->id,
+            'version_number' => 1,
+            'revision_number' => 0,
+            'status_snapshot' => ArticleStatus::UNDER_REVIEW,
+            'screening_status' => 'passed',
+            'submitted_at' => now(),
+        ]);
+        $this->article->update(['current_version_id' => $version->id]);
+        $round = app(\App\Services\ArticleReviewRoundService::class)->ensureForSubmittedVersion($this->article->fresh(), $version, $this->editor);
+
+        return ReviewerAssignment::create([
+            'article_id' => $this->article->id,
+            'article_version_id' => $version->id,
+            'review_round_id' => $round->id,
+            'round_number' => $round->round_number,
+            'reviewer_id' => null,
+            'invitee_name' => 'External Reviewer',
+            'invitee_email' => $email,
+            'invite_token_hash' => hash('sha256', $token),
+            'invited_at' => now(),
+            'invite_expires_at' => now()->addDays(7),
+            'assigned_by' => $this->editor->id,
+            'status' => 'pending',
+        ]);
+    }
+}

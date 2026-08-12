@@ -1,0 +1,650 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Constants\ArticleStatus;
+use App\Models\Article;
+use App\Models\ArticleFile;
+use App\Models\Magazine;
+use App\Models\MediaUploadSession;
+use App\Models\User;
+use App\Services\Media\MediaStorageService;
+use App\Services\Notifications\NotificationEventRecorder;
+use App\Services\PrimaryManuscriptService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+
+class ArticleFileController extends Controller
+{
+    public function destroyAdditionalManuscriptFile(Request $request, Article $article, ArticleFile $file): JsonResponse
+    {
+        if ((int) $file->article_id !== (int) $article->id
+            || $file->file_type !== ArticleFile::ADDITIONAL_MANUSCRIPT_FILE
+            || $file->article_version_id
+            || ! $request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && ! $this->isAuthorRecord($request->user(), $article))) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $status = ArticleStatus::normalize($article->status);
+        if ($status !== ArticleStatus::DRAFT && ! ArticleStatus::isRevisionRequired($status)) {
+            return response()->json(['message' => 'Historical submission files cannot be removed.'], 422);
+        }
+
+        $file->delete();
+
+        return response()->json(['message' => 'Additional manuscript file removed.']);
+    }
+
+    public function destroyPrimaryManuscript(Request $request, Article $article, ArticleFile $file): JsonResponse
+    {
+        if (! $request->user()
+            || ((int) $article->user_id !== (int) $request->user()->id && ! $this->isAuthorRecord($request->user(), $article))) {
+            return response()->json(['message' => 'This action is unauthorized.'], 403);
+        }
+
+        $result = app(PrimaryManuscriptService::class)->removeDraft($article, $file);
+
+        return response()->json([
+            'message' => $result['storage_warning']
+                ? 'The manuscript was removed. Storage cleanup will be retried.'
+                : 'The manuscript was removed from this draft submission.',
+            'storage_cleanup_pending' => $result['storage_warning'],
+        ]);
+    }
+
+    public function store(Request $request, int $articleId): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Raw browser uploads are disabled for article files. Use the direct S3 upload-session flow.',
+        ], 410);
+    }
+
+    public function download(Request $request, int $fileId)
+    {
+        $file = ArticleFile::with(['article', 'uploader:id,name'])->findOrFail($fileId);
+
+        if (! $this->canAccess($request->user('sanctum'), $file)) {
+            return response()->json([
+                'message' => 'This action is unauthorized.',
+                'code' => 'FILE_ACCESS_DENIED',
+            ], 403);
+        }
+
+        if (($file->scan_status ?? 'clean') !== 'clean') {
+            return response()->json([
+                'message' => 'The requested file is not available.',
+                'code' => 'FILE_NOT_CLEAN',
+            ], 404);
+        }
+
+        $wantsJson = $request->has('json') || $request->query('json') === '1';
+        $downloadName = $request->user('sanctum')?->hasRole('reviewer')
+            ? $this->reviewerSafeFilename($file)
+            : $file->original_name;
+
+        $disposition = $request->has('preview') ? 'inline' : 'attachment';
+
+        if (($file->disk ?? 'public') !== 'public') {
+            $key = $file->storage_key ?: $file->file_path;
+            if (! $key) {
+                return response()->json([
+                    'message' => 'The requested file is not available.',
+                    'code' => 'FILE_NOT_FOUND',
+                ], 404);
+            }
+
+            $ttl = (int) config('media_uploads.download_url_ttl_minutes', 5);
+            $temporaryUrl = Storage::disk($file->disk)->temporaryUrl($key, now()->addMinutes($ttl), [
+                'ResponseContentDisposition' => $disposition.'; filename="'.addslashes($downloadName).'"',
+                'ResponseContentType' => $file->mime_type ?: 'application/octet-stream',
+            ]);
+
+            if ($wantsJson) {
+                return response()->json([
+                    'download_url' => $temporaryUrl,
+                    'filename' => $downloadName,
+                    'expires_at' => now()->addMinutes($ttl)->toIso8601String(),
+                ]);
+            }
+
+            return redirect()->away($temporaryUrl);
+        }
+
+        $relativePath = str_replace('storage/', '', $file->file_path);
+        if (! Storage::disk('public')->exists($relativePath)) {
+            return response()->json([
+                'message' => 'The requested file is not available.',
+                'code' => 'FILE_NOT_FOUND',
+            ], 404);
+        }
+
+        $publicUrl = Storage::disk('public')->url($relativePath);
+
+        if ($wantsJson) {
+            return response()->json([
+                'download_url' => $publicUrl,
+                'filename' => $downloadName,
+                'expires_at' => null,
+            ]);
+        }
+
+        return response()->file(Storage::disk('public')->path($relativePath), [
+            'Content-Type' => $file->mime_type,
+            'Content-Disposition' => $disposition.'; filename="'.$downloadName.'"',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
+    public function createPendingDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig): ArticleFile
+    {
+        $metadata = $upload->metadata ?: [];
+        $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
+
+        if ($purposeConfig['article_file_type'] === ArticleFile::MANUSCRIPT) {
+            return DB::transaction(function () use ($article, $upload, $purposeConfig, $metadata) {
+                Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+                app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+
+                return $this->createPendingFile($article, $upload, $purposeConfig, $metadata, null);
+            });
+        }
+
+        return $this->createPendingFile($article, $upload, $purposeConfig, $metadata, $isAdditionalManuscriptFile
+            ? null
+            : ($metadata['article_version_id'] ?? $article->versions()->latest('version_number')->value('id')));
+    }
+
+    private function createPendingFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $metadata, ?int $versionId): ArticleFile
+    {
+
+        return ArticleFile::firstOrCreate(['media_upload_session_id' => $upload->id], [
+            'article_id' => $article->id,
+            'article_version_id' => $versionId,
+            'uploaded_by' => $upload->user_id,
+            'assignment_type' => $metadata['assignment_type'] ?? null,
+            'assignment_id' => $metadata['assignment_id'] ?? null,
+            'file_type' => $purposeConfig['article_file_type'],
+            'file_title' => $metadata['file_title'] ?? null,
+            'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
+            'disk' => $upload->disk,
+            'file_path' => $upload->s3_incoming_key,
+            'storage_key' => $upload->s3_incoming_key,
+            'original_name' => $upload->safe_display_filename,
+            'safe_original_name' => $upload->safe_display_filename,
+            'mime_type' => $upload->declared_mime_type ?: 'application/octet-stream',
+            'size' => $upload->expected_size_bytes,
+            'checksum_sha256' => null,
+            'scan_status' => MediaUploadSession::STATUS_UPLOADED_PENDING_SCAN,
+            'metadata' => [
+                'upload_session_id' => $upload->id,
+                'direct_s3_upload' => true,
+            ],
+        ]);
+    }
+
+    public function createCleanDirectUploadFile(Article $article, MediaUploadSession $upload, array $purposeConfig, array $extra = []): ArticleFile
+    {
+        $isAdditionalManuscriptFile = $purposeConfig['article_file_type'] === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE;
+        $isPrimaryManuscript = $purposeConfig['article_file_type'] === ArticleFile::MANUSCRIPT;
+        $values = [
+            'article_id' => $article->id,
+            'article_version_id' => array_key_exists('article_version_id', $extra)
+                ? $extra['article_version_id']
+                : (($isAdditionalManuscriptFile || $isPrimaryManuscript) ? null : $article->versions()->latest('version_number')->value('id')),
+            'uploaded_by' => $upload->user_id,
+            'assignment_type' => $extra['assignment_type'] ?? ($upload->metadata['assignment_type'] ?? null),
+            'assignment_id' => $extra['assignment_id'] ?? ($upload->metadata['assignment_id'] ?? null),
+            'file_type' => $purposeConfig['article_file_type'],
+            'file_title' => $extra['file_title'] ?? ($upload->metadata['file_title'] ?? null),
+            'visibility' => $this->defaultVisibility($purposeConfig['article_file_type']),
+            'disk' => $upload->disk,
+            'file_path' => $upload->s3_clean_key,
+            'storage_key' => $upload->s3_clean_key,
+            'original_name' => $upload->safe_display_filename,
+            'safe_original_name' => $upload->safe_display_filename,
+            'mime_type' => $upload->detected_mime_type ?: $upload->declared_mime_type ?: 'application/octet-stream',
+            'size' => $upload->expected_size_bytes,
+            'checksum_sha256' => $upload->checksum_sha256,
+            'scan_status' => 'clean',
+            'scan_engine' => $upload->scan_engine,
+            'scanned_at' => $upload->scanned_at,
+            'metadata' => array_merge([
+                'upload_session_id' => $upload->id,
+                'direct_s3_upload' => true,
+            ], $extra['metadata'] ?? []),
+        ];
+
+        [$file, $alreadyAttached] = DB::transaction(function () use ($article, $upload, $values, $isPrimaryManuscript) {
+            Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            if ($isPrimaryManuscript) {
+                app(PrimaryManuscriptService::class)->assertDraftSlotAvailable($article, $upload->id);
+            }
+            $file = ArticleFile::firstOrNew(['media_upload_session_id' => $upload->id]);
+            $alreadyAttached = $file->exists;
+            $file->fill($values)->save();
+
+            if (! $alreadyAttached && ($file->assignment_type || in_array($file->file_type, [
+                ArticleFile::ANNOTATED_MANUSCRIPT,
+                ArticleFile::REVIEWED_MANUSCRIPT,
+                ArticleFile::COPY_EDITED_FILE,
+                ArticleFile::PROOF_FILE,
+                ArticleFile::PUBLICATION_PDF,
+            ], true))) {
+                app(NotificationEventRecorder::class)->record(
+                    'article_file.available', $article, User::find($upload->user_id),
+                    ['article_file_id' => $file->id], 'article_file', $file->id,
+                    deduplicationKey: "article-file:{$file->id}:available"
+                );
+            }
+
+            return [$file, $alreadyAttached];
+        });
+
+        Log::info($alreadyAttached ? 'upload.attach_duplicate_prevented' : 'upload.attached', [
+            'user_id' => $upload->user_id,
+            'article_id' => $article->id,
+            'article_version_id' => $file->article_version_id,
+            'upload_session_id' => $upload->id,
+            'article_file_id' => $file->id,
+            'purpose' => $upload->purpose,
+        ]);
+
+        return $file;
+    }
+
+    public function serializeFile(ArticleFile $file, $viewer = null): array
+    {
+        $file->loadMissing('uploader:id,name');
+
+        $isImage = str_starts_with($file->mime_type ?? '', 'image/');
+        $canPreview = in_array($file->mime_type, ['application/pdf', 'text/plain', 'text/html'], true) || $isImage;
+
+        $displayUrl = null;
+        $thumbnailUrl = null;
+        if ($isImage && ($file->scan_status ?? 'clean') === 'clean') {
+            $displayUrl = app(MediaStorageService::class)->temporaryUrl($file->storage_key ?: $file->file_path, now()->addMinutes(30));
+            $thumbnailUrl = $displayUrl;
+        }
+
+        $displayName = $viewer?->hasRole('reviewer') ? $this->reviewerSafeFilename($file) : $file->original_name;
+
+        return [
+            'id' => $file->id,
+            'article_id' => $file->article_id,
+            'article_version_id' => $file->article_version_id,
+            'source_asset_id' => $file->source_asset_id,
+            'file_type' => $file->file_type,
+            'file_title' => $file->file_title,
+            'title' => $displayName,
+            'original_filename' => $displayName,
+            'visibility' => $file->visibility,
+            'original_name' => $displayName,
+            'mime_type' => $file->mime_type,
+            'size' => $file->size,
+            'size_bytes' => $file->size,
+            'scan_status' => $file->scan_status ?? 'clean',
+            'available' => ($file->scan_status ?? 'clean') === 'clean',
+            'is_active' => data_get($file->metadata, 'direct_publication.active', true) !== false,
+            'uploader' => $file->uploader ? [
+                'id' => $file->uploader->id,
+                'name' => $file->uploader->name,
+            ] : null,
+            'created_at' => $file->created_at,
+            'download_url' => ($file->scan_status ?? 'clean') === 'clean' ? "/api/articles/files/{$file->id}/download" : null,
+            'download_endpoint' => ($file->scan_status ?? 'clean') === 'clean' ? "/articles/files/{$file->id}/download" : null,
+            'assignment_type' => $file->assignment_type,
+            'assignment_id' => $file->assignment_id,
+            'publication_visibility' => $file->metadata['publication_visibility'] ?? [
+                'show_on_article' => false,
+                'show_in_downloads' => false,
+                'include_in_package' => false,
+            ],
+            'is_image' => $isImage,
+            'can_preview' => $canPreview,
+            'preview_url' => $canPreview && ! $isImage ? "/articles/files/{$file->id}/preview" : null,
+            'display_url' => $displayUrl,
+            'thumbnail_url' => $thumbnailUrl,
+            'width' => $file->metadata['width'] ?? null,
+            'height' => $file->metadata['height'] ?? null,
+        ];
+    }
+
+    public function filterVisibleFiles($user, iterable $files): array
+    {
+        return collect($files)
+            ->filter(fn (ArticleFile $file) => $this->isWorkflowReady($file))
+            ->filter(fn (ArticleFile $file) => $this->canAccess($user, $file))
+            ->map(fn (ArticleFile $file) => $this->serializeFile($file, $user))
+            ->values()
+            ->all();
+    }
+
+    public function isWorkflowReady(ArticleFile $file): bool
+    {
+        return ($file->scan_status ?? 'clean') === 'clean'
+            && (bool) ($file->storage_key ?: $file->file_path);
+    }
+
+    public function canAccess($user, ArticleFile $file): bool
+    {
+        $article = $file->article;
+
+        if (! $article) {
+            return false;
+        }
+
+        if ($article->isDirectPublication()) {
+            $isSelectedPublic = DB::table('publication_file_selections as selections')
+                ->join('publication_records as publications', 'publications.id', '=', 'selections.publication_record_id')
+                ->where('publications.article_id', $article->id)
+                ->where('publications.publication_mode', 'direct')
+                ->where('publications.status', 'published')
+                ->where('selections.article_file_id', $file->id)
+                ->where('selections.is_public', true)->exists();
+            if (! $user) {
+                return $article->status === 'published' && $isSelectedPublic;
+            }
+            if ($user->hasRole('super_admin')) {
+                return true;
+            }
+
+            return $user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']);
+        }
+
+        if ($this->isGlobal($user)) {
+            return true;
+        }
+
+        if (! $user) {
+            $isPublicationVisible = (bool) data_get($file->metadata, 'publication_visibility.show_on_article')
+                || (bool) data_get($file->metadata, 'publication_visibility.show_in_downloads');
+            $isActivePublicationPdf = $file->file_type === ArticleFile::PUBLICATION_PDF
+                && ($file->storage_key ?: $file->file_path) === $article->pdf_path;
+
+            return ArticleStatus::normalize($article->status) === ArticleStatus::PUBLISHED
+                && ($isPublicationVisible || $isActivePublicationPdf || $file->file_type === ArticleFile::SUPPLEMENTARY);
+        }
+
+        if ($article->user_id === $user->id || $this->isAuthorRecord($user, $article)) {
+            return in_array($file->file_type, [
+                ArticleFile::MANUSCRIPT,
+                ArticleFile::SUPPLEMENTARY,
+                ArticleFile::COPY_EDITED_FILE,
+                ArticleFile::PROOF_FILE,
+                ArticleFile::PUBLICATION_PDF,
+                ArticleFile::ANNOTATED_MANUSCRIPT,
+                ArticleFile::REVIEWED_MANUSCRIPT,
+                ArticleFile::REVISION_RESPONSE,
+                ArticleFile::ADDITIONAL_MANUSCRIPT_FILE,
+            ], true);
+        }
+
+        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['editor'])
+            || ($user->hasRole('sub_editor') && $this->hasSubEditorAssignment($user, $article))) {
+            return true;
+        }
+
+        if ($this->isAssignedToMagazine($user, $article->magazine_id, ['publisher'])) {
+            if ($this->isActiveAcceptedFile($file)) {
+                return true;
+            }
+
+            return DB::table('proof_rounds')->where('article_id', $article->id)
+                ->whereIn('status', ['approved'])
+                ->where(fn ($query) => $query->where('source_file_id', $file->id)->orWhere('author_file_id', $file->id)->orWhere('corrected_file_id', $file->id))
+                ->exists()
+                || DB::table('publication_file_selections')->where('article_file_id', $file->id)->exists();
+        }
+
+        if ($this->hasReviewerAssignment($user, $article, null, $file->article_version_id)) {
+            return in_array($file->file_type, [
+                ArticleFile::MANUSCRIPT,
+                ArticleFile::SUPPLEMENTARY,
+                ArticleFile::REVIEWED_MANUSCRIPT,
+            ], true);
+        }
+
+        if ($this->hasProductionAssignment($user, $article, null, 'copy_editor')) {
+            if ($file->file_type === ArticleFile::COPY_EDITED_FILE && (int) $file->uploaded_by === (int) $user->id) {
+                return true;
+            }
+
+            if ($file->file_type === ArticleFile::ANNOTATED_MANUSCRIPT) {
+                return DB::table('proof_rounds')
+                    ->join('production_assignments', 'production_assignments.id', '=', 'proof_rounds.production_assignment_id')
+                    ->where('proof_rounds.article_id', $article->id)
+                    ->where('proof_rounds.author_file_id', $file->id)
+                    ->where('production_assignments.user_id', $user->id)
+                    ->whereNull('production_assignments.revoked_at')
+                    ->exists();
+            }
+
+            return $this->isActiveAcceptedFile($file);
+        }
+
+        return false;
+    }
+
+    private function isActiveAcceptedFile(ArticleFile $file): bool
+    {
+        return DB::table('article_accepted_file_set_items as accepted_items')
+            ->join('article_accepted_file_sets as accepted_sets', 'accepted_sets.id', '=', 'accepted_items.accepted_file_set_id')
+            ->where('accepted_items.article_file_id', $file->id)
+            ->where('accepted_sets.article_id', $file->article_id)
+            ->whereNull('accepted_sets.superseded_at')
+            ->exists();
+    }
+
+    private function reviewerSafeFilename(ArticleFile $file): string
+    {
+        $extension = strtolower(pathinfo((string) $file->original_name, PATHINFO_EXTENSION));
+        $base = match ($file->file_type) {
+            ArticleFile::MANUSCRIPT => 'manuscript',
+            ArticleFile::SUPPLEMENTARY => 'supplementary-file',
+            ArticleFile::REVIEWED_MANUSCRIPT => 'review-attachment',
+            default => 'review-file',
+        };
+
+        return $extension ? "{$base}.{$extension}" : $base;
+    }
+
+    public function canUploadForDirectSession($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
+    {
+        return $this->canUpload($user, $article, $fileType, $assignmentType, $assignmentId);
+    }
+
+    private function canUpload($user, ?Article $article, string $fileType, ?string $assignmentType, ?int $assignmentId): bool
+    {
+        if (in_array($fileType, [
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE,
+        ], true)) {
+            $allowedStatus = in_array($article?->status, ['direct_publication_draft', 'direct_publication_ready'], true)
+                || ($article?->status === 'published' && $fileType === ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT);
+            if (! $user || ! $article?->isDirectPublication() || ! $allowedStatus) {
+                return false;
+            }
+
+            return $user->hasRole('super_admin') || ($user->hasRole('publisher') && $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']));
+        }
+
+        if ($this->isGlobal($user)) {
+            return true;
+        }
+
+        if (! $article) {
+            if ($fileType === ArticleFile::MANUSCRIPT) {
+                return $user && (
+                    $user->hasPermission('articles.create')
+                    || $user->hasRole(['author', 'editor'])
+                    || $this->isGlobal($user)
+                );
+            }
+            if ($fileType === ArticleFile::PUBLICATION_PDF) {
+                return $user && ($user->hasRole(['publisher', 'editor']) || $this->isGlobal($user));
+            }
+            if ($fileType === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE) {
+                return $user && ($user->hasPermission('articles.create') || $user->hasRole(['author', 'editor']));
+            }
+
+            return false;
+        }
+
+        if ($fileType === ArticleFile::SUPPLEMENTARY) {
+            $status = ArticleStatus::normalize($article->status);
+            $isAllowedStatus = $status === ArticleStatus::DRAFT
+                || $status === ArticleStatus::SUBMITTED
+                || $status === ArticleStatus::RESUBMITTED
+                || ArticleStatus::isEditableStatus($status);
+
+            if (! $isAllowedStatus) {
+                return false;
+            }
+
+            return $user && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article));
+        }
+
+        if ($fileType === ArticleFile::ADDITIONAL_MANUSCRIPT_FILE) {
+            $status = ArticleStatus::normalize($article->status);
+
+            return $user
+                && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                && ($status === ArticleStatus::DRAFT || ArticleStatus::isRevisionRequired($status));
+        }
+
+        if (
+            $fileType === ArticleFile::MANUSCRIPT
+            && ! ArticleStatus::isEditableStatus($article->status)
+        ) {
+            return false;
+        }
+
+        return match ($fileType) {
+            ArticleFile::MANUSCRIPT => $user && $user->can('update', $article),
+            ArticleFile::PLAGIARISM_REPORT => $this->isAssignedToMagazine($user, $article->magazine_id, ['editor']),
+            ArticleFile::ANNOTATED_MANUSCRIPT => $user && (
+                $this->hasSubEditorAssignment($user, $article, $assignmentId)
+                || (($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                    && ArticleStatus::normalize($article->status) === ArticleStatus::PROOFREADING
+                    && DB::table('proof_rounds')->where('article_id', $article->id)
+                        ->where('active_marker', 1)
+                        ->whereIn('status', ['awaiting_author', 'resent'])
+                        ->exists())
+            ),
+            ArticleFile::REVIEWED_MANUSCRIPT => $this->hasReviewerAssignment($user, $article, $assignmentId),
+            ArticleFile::REVISION_RESPONSE => $user
+                && ($article->user_id === $user->id || $this->isAuthorRecord($user, $article))
+                && ArticleStatus::isRevisionRequired($article->status),
+            ArticleFile::COPY_EDITED_FILE => $this->hasProductionAssignment($user, $article, $assignmentId, 'copy_editor'),
+            ArticleFile::PROOF_FILE => false,
+            ArticleFile::PUBLICATION_PDF => $this->isAssignedToMagazine($user, $article->magazine_id, ['publisher']),
+            default => false,
+        };
+    }
+
+    private function defaultVisibility(string $fileType): string
+    {
+        return match ($fileType) {
+            ArticleFile::DIRECT_PUBLICATION_MANUSCRIPT, ArticleFile::DIRECT_PUBLICATION_FIGURE,
+            ArticleFile::DIRECT_PUBLICATION_SUPPLEMENTARY, ArticleFile::DIRECT_PUBLICATION_COVER,
+            ArticleFile::DIRECT_PUBLICATION_SOURCE => 'internal',
+            ArticleFile::MANUSCRIPT, ArticleFile::SUPPLEMENTARY, ArticleFile::REVISION_RESPONSE, ArticleFile::ADDITIONAL_MANUSCRIPT_FILE, ArticleFile::PROOF_FILE, ArticleFile::PUBLICATION_PDF => 'author_visible',
+            ArticleFile::REVIEWED_MANUSCRIPT => 'reviewer_editor',
+            default => 'workflow',
+        };
+    }
+
+    private function isGlobal($user): bool
+    {
+        return $user && ($user->hasRole('super_admin') || $user->hasRole('admin'));
+    }
+
+    private function isAuthorRecord($user, Article $article): bool
+    {
+        return DB::table('article_author')
+            ->where('article_id', $article->id)
+            ->where(function ($query) use ($user) {
+                $query->where('user_id', $user->id)
+                    ->orWhere('co_author_email', $user->email);
+            })
+            ->exists();
+    }
+
+    private function isAssignedToMagazine($user, int $magazineId, array $roles): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        if (in_array('editor', $roles, true) && $user->isPublicationEditor()) {
+            $publicationType = Magazine::query()->whereKey($magazineId)->value('publication_type');
+            if (! $publicationType || ! in_array($publicationType, $user->editorPublicationTypes(), true)) {
+                return false;
+            }
+        }
+
+        $normalizedRoles = collect($roles)
+            ->map(fn ($role) => str_replace('-', '_', $role))
+            ->unique()
+            ->values()
+            ->all();
+
+        return DB::table('magazine_user')
+            ->where('user_id', $user->id)
+            ->where('magazine_id', $magazineId)
+            ->where(function ($query) use ($normalizedRoles) {
+                $query->whereIn('role', $normalizedRoles)
+                    ->orWhereNull('role');
+            })
+            ->exists();
+    }
+
+    private function hasSubEditorAssignment($user, Article $article, ?int $assignmentId = null): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        return DB::table('sub_editor_assignments')
+            ->where('article_id', $article->id)
+            ->where('sub_editor_id', $user->id)
+            ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
+            ->exists();
+    }
+
+    private function hasReviewerAssignment($user, Article $article, ?int $assignmentId = null, ?int $versionId = null): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        return DB::table('reviewer_assignments')
+            ->where('article_id', $article->id)
+            ->where('reviewer_id', $user->id)
+            ->whereNull('revoked_at')
+            ->whereIn('status', ['accepted', 'in_progress', 'review_in_progress', 'reopened'])
+            ->when($versionId, fn ($query) => $query->where('article_version_id', $versionId))
+            ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
+            ->exists();
+    }
+
+    private function hasProductionAssignment($user, Article $article, ?int $assignmentId = null, ?string $role = null): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        return DB::table('production_assignments')
+            ->where('article_id', $article->id)
+            ->where('user_id', $user->id)
+            ->whereNull('revoked_at')
+            ->when($assignmentId, fn ($query) => $query->where('id', $assignmentId))
+            ->when($role, fn ($query) => $query->where('role', $role))
+            ->exists();
+    }
+}
